@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/session-start-superpowers.py\"",
+            "shell": "bash",
+            "timeout": 10,
+            "statusMessage": "Loading using-superpowers skill"
+          }
+        ]
+      }
+    ]
+  }
+}

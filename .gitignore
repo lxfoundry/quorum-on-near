@@ -1,0 +1,65 @@
+# >>> scaffold-hackathon-repo >>>
+# Product repo: may become public at any time. Nothing secret is ever committed:
+# when in doubt, add the pattern here first. Commit a .env.example with empty values.
+
+# --- Secrets & credentials (never commit, no exceptions) ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.asc
+*.gpg
+id_rsa*
+id_ed25519*
+*.keystore
+secrets/
+credentials/
+*credentials*.json
+*secret*
+!*secret*.example
+
+# --- Wallets & mnemonics (chain-specific key material goes in its own block) ---
+*.mnemonic
+*mnemonic*
+*.wallet
+wallets/
+keystore/
+
+# --- Local agent and editor state ---
+.superpowers/
+CLAUDE.local.md
+.claude/settings.local.json
+.claude/*.local.*
+.vscode/
+!.vscode/extensions.json
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# --- Build, dependency and test output ---
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+__pycache__/
+*.py[cod]
+.venv/
+*.log
+coverage/
+test-results/
+.cache/
+# <<< scaffold-hackathon-repo <<<
+
+# >>> near >>>
+# NEAR key material and build output. near-cli-rs's legacy keychain and near-kit's FileKeyStore
+# keep access keys under .near-credentials/<network>/<account>.json (normally in the home folder;
+# ignored here in case one is created in the repo). cargo near new's template ignores /target.
+.near-credentials/
+target/
+# NEAR's Agent Skills carry no licence: a local install must never be committed.
+.claude/skills/near-*/
+# <<< near <<<

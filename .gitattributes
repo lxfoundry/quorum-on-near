@@ -1,0 +1,6 @@
+# >>> scaffold-hackathon-repo >>>
+# LF in the working tree on every platform. The vendored skills ship shell scripts
+# (.claude/skills/**/*.sh and extensionless scripts), and a CRLF checkout -- the
+# Git-for-Windows default, core.autocrlf=true -- breaks them under bash.
+* text=auto eol=lf
+# <<< scaffold-hackathon-repo <<<
