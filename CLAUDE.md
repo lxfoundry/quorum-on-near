@@ -11,11 +11,18 @@ The provider in that example is simulated; the money flow is real, on testnet.
 
 ## Architecture (implementation-relevant facts)
 
-Nothing is built yet. The design is being written in `docs/specs/`; this section is updated as it
-is decided. What is fixed so far:
+Nothing is built yet. The design is
+[`docs/specs/2026-11-09-quorum-on-near-design.md`](docs/specs/2026-11-09-quorum-on-near-design.md);
+the spec wins where this summary is shorter. In brief:
 
 - **One NEAR contract** holds the pools, the seats and the bonuses, in a mock NEP-141 stablecoin on
-  testnet.
+  testnet. It has no owner or admin methods: `settle`, `refund` and `claim_refund` are open to
+  anyone, so no buyer's money depends on our server.
+- **Buyers are agents' sub-accounts** with full-access keys, each holding only its own budget. A
+  buyer pays by signing an NEP-366 delegate action wrapping `ft_transfer_call`. The gateway checks
+  it against the offer, then relays it, paying the gas and the 1 yoctoNEAR deposit.
+- **The gateway plays both x402 roles**, resource server and facilitator, for the `quorum` scheme on
+  `near:testnet`. A standard `exact` facilitator cannot take a seat.
 - **Seats** arrive through NEP-141 `ft_transfer_call`, which calls the contract's `ft_on_transfer`.
   A payment that cannot take a seat is returned through the token's `ft_resolve_transfer` (the
   amount `ft_on_transfer` reports as unused).
@@ -24,15 +31,15 @@ is decided. What is fixed so far:
 - **Settlement and refunds** are promises with `#[private]` callbacks. State is zeroed before a
   transfer and restored if the transfer fails.
 - **HTTP flow:** `402 Payment Required` with the offer, then `202 Accepted` with a receipt while the
-  pool fills, then `200` with the access credential once it has settled.
+  pool fills, then `200` with the access credential once it has filled (a full pool is final).
 
 NEAR rules the design relies on (from NEAR's documentation):
 
-- A **function-call access key cannot attach a deposit**, not even 1 yoctoNEAR. A method an agent
-  calls with such a key must be deposit-free, so it cannot be `ft_transfer_call`.
-- A function-call key **can sign an NEP-366 delegate action** (a meta-transaction): the sender's key
-  is checked against the receiver and the method names. The relayer pays the gas, and the key's
-  allowance is not checked. Gas keys cannot sign the inner delegate action.
+- A **function-call access key cannot attach a deposit**, not even 1 yoctoNEAR, and
+  `ft_transfer_call` requires 1 yoctoNEAR. That is why buyers sign with a full-access key.
+- In an NEP-366 delegate action (a meta-transaction), **the relayer pays the gas and any deposit
+  attached to the inner actions**; the tokens moved still come from the sender. A delegate action
+  has one receiver. Gas keys cannot sign the inner delegate action.
 - With a relayed call, `signer_account_id` is the relayer. The buyer is always
   `predecessor_account_id`.
 
