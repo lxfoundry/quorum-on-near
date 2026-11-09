@@ -63,3 +63,8 @@ target/
 # NEAR's Agent Skills carry no licence: a local install must never be committed.
 .claude/skills/near-*/
 # <<< near <<<
+
+# >>> runtime data >>>
+# The gateway's activity feed and any other local runtime output.
+data/
+# <<< runtime data <<<
