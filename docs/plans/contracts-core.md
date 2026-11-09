@@ -23,12 +23,12 @@ Executors read the spec and this plan together. Section numbers below refer to t
 
 ## Status of the code in this plan
 
-This plan was written without a Rust compiler to hand. The logic is complete and reasoned through,
-but **no snippet has been compiled**. Every code step therefore ends in a command with an expected
-result. Where a compile error names a different import path, method name or trait signature than the
-snippet uses (the near crates rename things between releases), fix the name in place: do not change
-the logic. The sandbox helper in Task 2 is the one place that depends on `near-api` details; the
-rest of the sandbox tests use only the helper's own interface.
+**No snippet in this plan has been compiled.** Treat each as unverified until the command at the end
+of its step has run. Where a compile error names a different import path, method name or trait
+signature than the snippet uses (the near crates rename things between releases), fix the name in
+place: do not change the logic. The sandbox helper in Task 2 is the one place that depends on
+`near-sandbox` and `near-api` details; the rest of the sandbox tests use only the helper's own
+interface. Run Tasks 1 and 2 first and settle any such fixes before going on.
 
 ## Global Constraints
 
@@ -82,7 +82,7 @@ rules.
 | `contracts/pools/tests/common/mod.rs` | `World`: the two contracts deployed in a sandbox, plus the invariant check |
 | `contracts/pools/tests/*.rs` | Sandbox scenarios (one file per theme) |
 
-**Not in this plan** (built later, each depends on this plan's contracts): the `packages/protocol`
+**Out of scope for this plan** (each depends on this plan's contracts): the `packages/protocol`
 TypeScript package, the gateway, the swarm, the MCP server and the live page. The spec's sandbox test
 that records which account is debited the 1 yoctoNEAR of a relayed payment needs the relayer, so it
 belongs with the gateway.
@@ -92,6 +92,12 @@ belongs with the gateway.
 ### Task 0: Toolchain
 
 No code and no commit. Run these once and confirm each prints a version.
+
+**Platform.** `near-sandbox`, which runs the sandbox tests of Tasks 2 and 7 to 11, supports Linux
+(x86_64, aarch64) and macOS on Apple silicon. On Windows, do all of this inside WSL2 (an Ubuntu
+distribution, with the repository checked out on the WSL filesystem, not under `/mnt/c`), or in CI on
+Linux. The installers below are Unix shell scripts. Tasks 1 and 3 to 6 (the build and the unit tests)
+also run natively on Windows, but one environment for everything avoids surprises.
 
 - [ ] **Step 1: Install the Rust toolchain and the NEAR build tool**
 
@@ -113,8 +119,8 @@ Expected: three version lines, and `wasm32-unknown-unknown` in the target list.
 **Files:**
 - Create: `Cargo.toml`, `rust-toolchain.toml`, `contracts/mock-usd/Cargo.toml`,
   `contracts/mock-usd/src/lib.rs`
-- Modify: `CLAUDE.md` (Layout and Toolchain sections), `docs/specs/2026-11-09-quorum-on-near-design.md`
-  (three wording fixes, step 7)
+- Modify: `CLAUDE.md` (Layout and Toolchain sections, step 8),
+  `docs/specs/2026-11-09-quorum-on-near-design.md` (four wording fixes, step 9)
 
 **Interfaces:**
 - Produces: the token contract, with methods `new()`, `mint(account_id: AccountId, amount: U128)`, and
@@ -127,12 +133,15 @@ Expected: three version lines, and `wasm32-unknown-unknown` in the target list.
 git switch -c feat/contracts-core
 ```
 
-- [ ] **Step 2: Scaffold the token crate with the official generator**
+- [ ] **Step 2: Create the token crate's folder**
 
-Run: `cargo near new contracts/mock-usd` and accept the default template. The generator writes a
-`Cargo.toml`, a `src/lib.rs`, a `tests/` folder and possibly a `rust-toolchain.toml`.
-Then delete `contracts/mock-usd/tests/` and `contracts/mock-usd/src/lib.rs` (replaced in step 5), and
-move any generated `rust-toolchain.toml` to the repository root.
+```bash
+mkdir -p contracts/mock-usd/src
+```
+
+Do not scaffold with `cargo near new`: it runs `git init` and commits inside the new folder, which
+would leave a nested repository here, and it adds workflow files this repository does not use. The
+manifest in step 4 carries the settings the template would have set.
 
 - [ ] **Step 3: Write the workspace manifest and the toolchain file**
 
@@ -154,7 +163,7 @@ panic = "abort"
 overflow-checks = true
 ```
 
-`rust-toolchain.toml` (repository root, if the generator did not supply one):
+`rust-toolchain.toml` (repository root):
 
 ```toml
 [toolchain]
@@ -163,11 +172,12 @@ components = ["rustfmt", "clippy"]
 targets = ["wasm32-unknown-unknown"]
 ```
 
+If `cargo check` later reports that `near-sdk` needs a newer minimum Rust version than the stable
+channel provides, or the reverse, pin `channel` to the version it names.
+
 - [ ] **Step 4: Write the token manifest and add its dependencies**
 
-Replace `contracts/mock-usd/Cargo.toml` with the following. Keep any build setting the generator
-emitted that is not listed here (for example a `[package.metadata.near.reproducible_build]` block),
-and drop the generated `[profile.release]` (the workspace root owns it).
+Write `contracts/mock-usd/Cargo.toml`:
 
 ```toml
 [package]
@@ -185,7 +195,12 @@ Then add the dependencies at their current versions:
 
 ```bash
 cargo add -p mock-usd near-sdk@5 near-contract-standards@5
+cargo add -p mock-usd --dev near-sdk@5 --features unit-testing
 ```
+
+`near-sdk` refuses to compile for a native target unless a test or ABI feature is on. The
+dev-dependency turns on `unit-testing` for `cargo check`, `cargo clippy` and the sandbox tests, and
+does not touch the wasm build.
 
 - [ ] **Step 5: Write the token**
 
@@ -357,28 +372,41 @@ Run: `cargo near build non-reproducible-wasm --manifest-path contracts/mock-usd/
 (older `cargo-near` versions: `cargo near build` from inside `contracts/mock-usd`)
 Expected: a `mock_usd.wasm` under `target/near/`.
 
-- [ ] **Step 7: Record the toolchain and correct the spec's test-library name**
+- [ ] **Step 7: Commit the workspace and the token**
 
-In `CLAUDE.md`, add these three rows to the Layout table:
+```bash
+git add Cargo.toml rust-toolchain.toml contracts/mock-usd
+git commit -m "add the workspace and the Mock USD token"
+```
+
+- [ ] **Step 8: Record the toolchain and the layout in `CLAUDE.md`**
+
+Add this row to the Layout table:
 
 | Path | Content |
 |---|---|
 | `contracts/mock-usd/` | The Mock USD token (NEP-141) |
-| `contracts/pools/` | The pools escrow contract |
-| `crates/sandbox-support/` | Test helper: starts a local NEAR sandbox and wraps calls and views |
 
-Then replace the sentence `The code layout is set by the first implementation plan.` with `The
-TypeScript packages and apps are added by later plans.`
+Replace the sentence `The code layout is set by the first implementation plan.` with `The
+TypeScript packages and apps are added by later plans.` (Tasks 2 and 3 add the rows for the folders
+they create.)
 
-In `CLAUDE.md`, replace the paragraph under `## Toolchain` with: `Rust stable with the
-wasm32-unknown-unknown target; near-sdk 5 and near-contract-standards 5; cargo-near for builds
-(cargo near build non-reproducible-wasm). Unit tests: cargo test --lib. Sandbox tests use near-sandbox
-and near-api and build the contracts themselves: cargo test --workspace. NEAR testnet only until the
-test circuit passes (rule 4).`
+Replace the paragraph under `## Toolchain` with: `Rust stable with the wasm32-unknown-unknown target;
+near-sdk 5 and near-contract-standards 5; cargo-near for builds (cargo near build
+non-reproducible-wasm). Unit tests: cargo test --lib. Sandbox tests use near-sandbox and near-api and
+build the contracts themselves: cargo test --workspace (Linux or macOS on Apple silicon, or WSL2).
+NEAR testnet only until the test circuit passes (rule 4).`
 
-In `docs/specs/2026-11-09-quorum-on-near-design.md` make three edits, because NEAR's documentation now
-recommends `near-sandbox` with `near-api` for sandbox tests, and the standard token rejects a
-zero-amount `ft_transfer_call`:
+```bash
+git add CLAUDE.md
+git commit -m "record the toolchain and the contracts layout"
+```
+
+- [ ] **Step 9: Correct the spec**
+
+NEAR's documentation now recommends `near-sandbox` with `near-api` for sandbox tests, and the standard
+token rejects a zero-amount `ft_transfer_call`. In
+`docs/specs/2026-11-09-quorum-on-near-design.md` make four edits:
 1. Section 4, "Toolchain": replace ``with sandbox tests in `near-workspaces` `` with ``with sandbox
    tests in `near-sandbox` and `near-api` ``.
 2. Section 10, the "Sandbox integration" row: replace ``(`near-workspaces`, with the real mock
@@ -386,12 +414,13 @@ zero-amount `ft_transfer_call`:
 3. Section 10, the same row: replace `a pool whose dust is 0, and one whose bonus is 0;` with `a pool
    whose dust is 0 (a bonus of 0 is covered by unit tests only, because the standard token rejects a
    zero-amount `ft_transfer_call`);`.
-
-- [ ] **Step 8: Commit**
+4. Section 5.3, "Open a pool": replace `(0 is allowed)` with `(0 is allowed by the contract, though
+   the standard NEP-141 token rejects a zero-amount `ft_transfer_call`, so a pool with no bonus needs
+   a token that accepts one)`.
 
 ```bash
-git add Cargo.toml rust-toolchain.toml contracts/mock-usd CLAUDE.md docs/specs/2026-11-09-quorum-on-near-design.md
-git commit -m "add the workspace and the Mock USD token"
+git add docs/specs/2026-11-09-quorum-on-near-design.md
+git commit -m "name the sandbox test libraries and the zero-bonus limit in the spec"
 ```
 
 ---
@@ -441,10 +470,15 @@ description = "Test helper: a local NEAR sandbox with thin call and view wrapper
 ```
 
 ```bash
-cargo add -p quorum-sandbox-support anyhow serde_json near-sandbox near-api cargo-near-build
+cargo add -p quorum-sandbox-support anyhow serde_json near-api cargo-near-build
+cargo add -p quorum-sandbox-support near-sandbox@0.3
 cargo add -p quorum-sandbox-support tokio --features full
 cargo add -p quorum-sandbox-support reqwest --features json
 ```
+
+`near-sandbox` is pinned to 0.3 because it and `near-api` 0.8 must agree on one `near-account-id`
+version, or the `AccountId` types clash. If a later release pair agrees, `cargo tree -d` shows no
+duplicate `near-account-id` and the pin can go.
 
 - [ ] **Step 2: Write the helper**
 
@@ -454,12 +488,12 @@ cargo add -p quorum-sandbox-support reqwest --features json
 //! A local NEAR sandbox with the few operations the contract tests need. Everything that depends on
 //! `near-sandbox` and `near-api` lives here, so the tests use only this file's interface.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Result};
 pub use near_api::AccountId;
-use near_api::{Account, Contract, Gas, NearToken, NetworkConfig, Signer};
+use near_api::{Account, Contract, NearGas, NearToken, NetworkConfig, Signer};
 use near_sandbox::Sandbox;
 use serde_json::{json, Value};
 
@@ -548,7 +582,7 @@ impl Chain {
             .as_contract()
             .call_function(method, args)
             .transaction()
-            .gas(Gas::from_tgas(tgas))
+            .gas(NearGas::from_tgas(tgas))
             .deposit(NearToken::from_yoctonear(deposit_yocto))
             .with_signer(caller.clone(), self.signer.clone())
             .send_to(&self.network)
@@ -564,7 +598,7 @@ impl Chain {
         let data: Value = Account(contract.clone())
             .as_contract()
             .call_function(method, args)
-            .read_only()
+            .read_only::<Value>()
             .fetch_from(&self.network)
             .await?
             .data;
@@ -607,6 +641,9 @@ impl Chain {
     }
 }
 
+/// Builds a contract to wasm. The ABI steps and the lockfile check are switched off: they slow the
+/// build and are not needed for tests. If the builder rejects one of those three option names, drop
+/// that option; it only affects speed.
 fn build_wasm(manifest_relative_to_workspace: &str) -> Result<Vec<u8>> {
     let manifest = format!(
         "{}/../../{}",
@@ -616,30 +653,54 @@ fn build_wasm(manifest_relative_to_workspace: &str) -> Result<Vec<u8>> {
     let path = cargo_near_build::build_with_cli(
         cargo_near_build::BuildOpts::builder()
             .manifest_path(manifest)
+            .no_abi(true)
+            .no_embed_abi(true)
+            .no_locked(true)
             .build(),
-    )?;
+    )
+    .map_err(|error| anyhow!("building {manifest_relative_to_workspace}: {error:?}"))?;
     Ok(std::fs::read(path)?)
 }
 
+/// Tests in one binary run on parallel threads and every one deploys the wasm. Building once, under
+/// a lock, keeps them from rebuilding (and from reading a file another build is writing).
+static BUILD_LOCK: Mutex<()> = Mutex::new(());
+static TOKEN_WASM: OnceLock<Vec<u8>> = OnceLock::new();
+static POOLS_WASM: OnceLock<Vec<u8>> = OnceLock::new();
+
+fn build_once(cell: &'static OnceLock<Vec<u8>>, manifest: &str) -> Result<Vec<u8>> {
+    let _guard = BUILD_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(wasm) = cell.get() {
+        return Ok(wasm.clone());
+    }
+    let wasm = build_wasm(manifest)?;
+    let _ = cell.set(wasm.clone());
+    Ok(wasm)
+}
+
 pub fn token_wasm() -> Result<Vec<u8>> {
-    build_wasm("contracts/mock-usd/Cargo.toml")
+    build_once(&TOKEN_WASM, "contracts/mock-usd/Cargo.toml")
 }
 
 pub fn pools_wasm() -> Result<Vec<u8>> {
-    build_wasm("contracts/pools/Cargo.toml")
+    build_once(&POOLS_WASM, "contracts/pools/Cargo.toml")
 }
 ```
 
 - [ ] **Step 3: Compile the helper**
 
 Run: `cargo check -p quorum-sandbox-support`
-Expected: no errors. Fix import paths and builder method names to match the compiler (`Gas`,
-`NearToken`, `.deposit(...)`, `with_init_call` are the likeliest to differ). Do not change the
-function signatures listed under Interfaces.
+Expected: no errors. Fix import paths and builder method names to match the compiler (`NearGas`,
+`NearToken`, `.deposit(...)`, `with_init_call`, `read_only::<Value>()` and the `BuildOpts` option names
+are the likeliest to differ). If `create_account` reports an `AccountId` type mismatch, the two
+crates disagree on the account-id version: convert with `id.as_str().parse()?` at that call. Do not
+change the function signatures listed under Interfaces.
 
-- [ ] **Step 4: Write the failing token test**
+- [ ] **Step 4: Write the token's sandbox tests**
 
-Add the dev-dependencies, then write the test:
+These tests exercise the token from Task 1, which already exists, so they should pass on their first
+run: they characterise the token and prove the helper works. Add the dev-dependencies, then write
+the tests:
 
 ```bash
 cargo add -p mock-usd --dev --path crates/sandbox-support
@@ -751,12 +812,19 @@ async fn registered_accounts_can_transfer() -> anyhow::Result<()> {
 Run: `cargo test -p mock-usd --test token -- --nocapture`
 Expected: the first run builds the token wasm and starts a sandbox per test; all three tests PASS. If
 a test fails because of a helper detail (for example `Outcome.ok` is true for a call that should have
-failed), fix the helper, not the test.
+failed), fix the helper, not the test. A failure in a token behaviour (for example the mint cap) means
+Task 1's token is wrong.
 
 - [ ] **Step 6: Commit**
 
+In `CLAUDE.md`, add this row to the Layout table:
+
+| Path | Content |
+|---|---|
+| `crates/sandbox-support/` | Test helper: starts a local NEAR sandbox and wraps calls and views |
+
 ```bash
-git add Cargo.toml crates/sandbox-support contracts/mock-usd
+git add Cargo.toml crates/sandbox-support contracts/mock-usd CLAUDE.md
 git commit -m "add the sandbox helper and sandbox tests for the token"
 ```
 
@@ -801,7 +869,7 @@ Add `"contracts/pools"` to `members` in the root `Cargo.toml`.
 mkdir -p contracts/pools/src
 ```
 
-`contracts/pools/Cargo.toml` (keep any generated build settings as in Task 1 step 4):
+`contracts/pools/Cargo.toml`:
 
 ```toml
 [package]
@@ -894,6 +962,36 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "seat price overflows")]
+    fn a_price_that_overflows_panics() {
+        price_of(2, u128::MAX);
+    }
+
+    #[test]
+    #[should_panic(expected = "refund overflows")]
+    fn a_refund_that_overflows_panics() {
+        refund_amount(2, u128::MAX / 2 + 1, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "refund overflows")]
+    fn a_price_plus_share_that_overflows_panics() {
+        refund_amount(1, u128::MAX, 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "bonus shares exceed the bonus")]
+    fn shares_larger_than_the_bonus_panic() {
+        dust(1, 2, 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "payout overflows")]
+    fn a_payout_that_overflows_panics() {
+        payout(1, u128::MAX, 1);
     }
 }
 ```
@@ -1429,12 +1527,14 @@ Create `receive.rs`, `settle.rs`, `refund.rs` and `views.rs` as empty files, so 
 
 - [ ] **Step 4: Run the tests**
 
-To see the red state first, write only `math.rs`'s test module (step 2) and run
-`cargo test -p quorum-pools --lib`: it fails to compile with `cannot find function bonus_per_seat`.
-Then add the functions and the other modules (step 3) and run it again.
+To see the red state first, build the crate up in two stages. Write `lib.rs` with only `mod math;` and
+the `math.rs` test module of step 2, and run `cargo test -p quorum-pools --lib`: it fails to compile
+with `cannot find function bonus_per_seat`. Then add the functions, the other modules and the full
+`lib.rs` (step 3) and run it again.
 
 Run: `cargo test -p quorum-pools --lib`
-Expected: all `math`, `types`, `events` and `gas` tests PASS (about 15 tests).
+Expected: all `math`, `types`, `events` and `gas` tests PASS (17 tests: 12 in `math`, 3 in `types`, 1
+in `events`, 1 in `gas`).
 
 - [ ] **Step 5: Confirm the wasm builds**
 
@@ -1444,8 +1544,14 @@ tasks use them.
 
 - [ ] **Step 6: Commit**
 
+In `CLAUDE.md`, add this row to the Layout table:
+
+| Path | Content |
+|---|---|
+| `contracts/pools/` | The pools escrow contract |
+
 ```bash
-git add Cargo.toml contracts/pools
+git add Cargo.toml contracts/pools CLAUDE.md
 git commit -m "add the pools crate skeleton with amount maths, events and gas helpers"
 ```
 
@@ -1590,7 +1696,7 @@ mod tests {
     fn another_token_is_refused() {
         let mut c = new_contract();
         set_context("other.test", 1_000);
-        c.ft_on_transfer(acct("seller.test"), U128(1), r#"{"open":{}}"#.to_string());
+        let _ = c.ft_on_transfer(acct("seller.test"), U128(1), r#"{"open":{}}"#.to_string());
     }
 
     #[test]
@@ -1598,7 +1704,7 @@ mod tests {
     fn a_garbled_message_is_refused() {
         let mut c = new_contract();
         set_context("token.test", 1_000);
-        c.ft_on_transfer(acct("seller.test"), U128(1), "not json".to_string());
+        let _ = c.ft_on_transfer(acct("seller.test"), U128(1), "not json".to_string());
     }
 }
 ```
@@ -1670,7 +1776,7 @@ impl Contract {
     ) -> u64 {
         require!(p.seat_price > 0, "seat_price must be positive");
         require!(
-            p.target >= 1 && p.target <= MAX_TARGET,
+            (1..=MAX_TARGET).contains(&p.target),
             "target must be between 1 and 1000"
         );
         require!(p.deadline_ms > now_ms, "deadline must be in the future");
@@ -1956,7 +2062,7 @@ Add inside the plain `impl Contract` block (the one holding `open_pool`):
         let held = self.buyers.get(&key).map_or(0, |b| b.seats);
         if let Some(cap) = pool.max_seats_per_buyer {
             require!(
-                held.checked_add(seats).map_or(false, |total| total <= cap),
+                held.checked_add(seats).is_some_and(|total| total <= cap),
                 "commit exceeds max_seats_per_buyer"
             );
         }
@@ -2173,9 +2279,6 @@ impl Contract {
 }
 ```
 
-`PoolStatus` and `BuyerState` are used by the tests through `use super::*`; if the compiler reports
-them unused in the non-test build, move them into the test module's imports.
-
 - [ ] **Step 4: Run the tests**
 
 Run: `cargo test -p quorum-pools --lib`
@@ -2198,8 +2301,8 @@ git commit -m "add the pool and seat views with a status derived from block time
 **Interfaces:**
 - Consumes: `quorum_sandbox_support::{Chain, Outcome, token_wasm, pools_wasm}`; the contract's methods
   from Tasks 3 to 6.
-- Produces (`World`, used by Tasks 8 to 11): constants `MUSD: u128 = 1_000_000`, `LONG_MS: u64 =
-  600_000`, `SHORT_MS: u64 = 90_000`;
+- Produces (`World`, used by Tasks 8 to 11): constants `MUSD: u128 = 1_000_000` and `DEADLINE_MS: u64 =
+  600_000`;
   `World { chain: Chain, token: AccountId, pools: AccountId }`;
   `World::new() -> Result<World>`;
   `user(&self, name: &str, musd: u128) -> Result<AccountId>` (creates, registers on the token, mints
@@ -2236,10 +2339,10 @@ pub const MUSD: u128 = 1_000_000;
 const MINT_CAP: u128 = 1_000 * MUSD;
 const STORAGE_DEPOSIT: u128 = 10_000_000_000_000_000_000_000; // 0.01 NEAR; the excess is refunded
 
-/// A deadline offset for pools that should still be open when a scenario ends.
-pub const LONG_MS: u64 = 600_000;
-/// A deadline offset for pools a scenario lets expire; the clock is moved forward to pass it.
-pub const SHORT_MS: u64 = 90_000;
+/// The deadline offset for every pool. It is long enough to cover a scenario's slow setup, so no
+/// pool expires by accident; a scenario that wants a pool to expire moves the sandbox clock past
+/// the deadline with `World::expire`.
+pub const DEADLINE_MS: u64 = 600_000;
 
 pub struct World {
     pub chain: Chain,
@@ -2479,10 +2582,15 @@ impl World {
         self.chain.wait_past(deadline).await
     }
 
-    /// The escrow invariants of the spec, section 5.5, over every pool:
+    /// Checks invariants 1, 2 and 4 of the spec's section 5.5 over every pool:
     /// 1. the contract's token balance covers everything it still owes;
     /// 2. no pool has more seats taken than its target;
     /// 4. for a pool that expired, buyer refunds plus the dust equal what the pool took in.
+    ///
+    /// Invariants 3 (a pool's money leaves in exactly one way) and 5 (a buyer is paid at most once)
+    /// are covered by the balance assertions in the scenarios, which compare every buyer's and the
+    /// seller's balance after each payout. The rule that a pool only fills before its deadline is
+    /// covered by the commit unit tests and by the settle-after-deadline scenario.
     pub async fn check_invariants(&self) -> Result<()> {
         let pools = self
             .chain
@@ -2535,7 +2643,10 @@ impl World {
 }
 ```
 
-- [ ] **Step 2: Write the failing scenarios**
+- [ ] **Step 2: Write the open and commit scenarios**
+
+The contract methods these scenarios call exist already (Tasks 4 to 6), so they should pass on their
+first run: they check the contract end to end against a real token, and prove the world helper.
 
 `contracts/pools/tests/open_commit.rs`:
 
@@ -2562,7 +2673,7 @@ async fn a_pool_fills_with_exact_commits() -> anyhow::Result<()> {
     let w = World::new().await?;
     let seller = w.user("seller", 10).await?;
     let (a, b, c) = (w.user("a", 10).await?, w.user("b", 10).await?, w.user("c", 10).await?);
-    let deadline = w.deadline_in(LONG_MS).await?;
+    let deadline = w.deadline_in(DEADLINE_MS).await?;
 
     let id = w.open(&seller, 10 * MUSD, 2 * MUSD, 4, deadline, None).await?;
     w.check_invariants().await?;
@@ -2588,7 +2699,7 @@ async fn a_partial_last_commit_takes_the_seats_left_and_returns_the_rest() -> an
     let w = World::new().await?;
     let seller = w.user("seller", 10).await?;
     let (a, b) = (w.user("a", 10).await?, w.user("b", 10).await?);
-    let deadline = w.deadline_in(LONG_MS).await?;
+    let deadline = w.deadline_in(DEADLINE_MS).await?;
     let id = w.open(&seller, 10 * MUSD, 2 * MUSD, 3, deadline, None).await?;
 
     assert!(w.commit(&a, id, 2, 2 * MUSD).await?.ok);
@@ -2607,7 +2718,7 @@ async fn refused_commits_return_the_money() -> anyhow::Result<()> {
     let w = World::new().await?;
     let seller = w.user("seller", 10).await?;
     let (a, b) = (w.user("a", 10).await?, w.user("b", 10).await?);
-    let deadline = w.deadline_in(LONG_MS).await?;
+    let deadline = w.deadline_in(DEADLINE_MS).await?;
     let id = w.open(&seller, 10 * MUSD, 2 * MUSD, 8, deadline, Some(2)).await?;
     w.mint(&seller, 4).await?;
 
@@ -2650,7 +2761,7 @@ async fn a_payment_in_another_token_is_refused() -> anyhow::Result<()> {
     w.chain
         .call(&seller, &fake, "mint", json!({ "account_id": seller, "amount": "10000000" }), 30, 0)
         .await?;
-    let deadline = w.deadline_in(LONG_MS).await?;
+    let deadline = w.deadline_in(DEADLINE_MS).await?;
     let msg = json!({ "open": {
         "seat_price": "2000000", "target": 4, "deadline_ms": deadline,
         "max_seats_per_buyer": null, "terms": "x",
@@ -2677,7 +2788,7 @@ async fn a_commit_after_the_deadline_is_refused() -> anyhow::Result<()> {
     let w = World::new().await?;
     let seller = w.user("seller", 10).await?;
     let a = w.user("a", 10).await?;
-    let deadline = w.deadline_in(SHORT_MS).await?;
+    let deadline = w.deadline_in(DEADLINE_MS).await?;
     let id = w.open(&seller, 10 * MUSD, 2 * MUSD, 4, deadline, None).await?;
 
     w.expire(id).await?;
@@ -2689,16 +2800,41 @@ async fn a_commit_after_the_deadline_is_refused() -> anyhow::Result<()> {
     w.check_invariants().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn the_contract_cannot_be_initialised_again_or_by_another_account() -> anyhow::Result<()> {
+    let w = World::new().await?;
+    let stranger = w.chain.create_account("stranger", 10).await?;
+
+    // another account cannot choose the token
+    let by_stranger = w
+        .chain
+        .call(&stranger, &w.pools, "new", json!({ "token": stranger }), 30, 0)
+        .await?;
+    assert!(!by_stranger.ok);
+
+    // the contract account itself cannot run `new` a second time
+    let again = w
+        .chain
+        .call(&w.pools, &w.pools, "new", json!({ "token": stranger }), 30, 0)
+        .await?;
+    assert!(!again.ok);
+
+    // the token is still the one set at deployment: a payment in it still opens a pool
+    let seller = w.user("seller", 10).await?;
+    let deadline = w.deadline_in(DEADLINE_MS).await?;
+    w.open(&seller, 10 * MUSD, 2 * MUSD, 4, deadline, None).await?;
+    Ok(())
+}
 ```
 
 - [ ] **Step 3: Run the scenarios**
 
 Run: `cargo test -p quorum-pools --test open_commit -- --nocapture`
-Expected: the first run builds both wasm files and starts a sandbox per test; all six tests PASS. The
-first test prints how far block time moved. **Decision rule for that probe:** if it fails because
-block time did not advance, `wait_past` cannot be trusted; change `SHORT_MS` to `20_000`, make
-`Chain::wait_past` sleep in real time (`tokio::time::sleep`) between checks instead of fast-forwarding,
-and re-run.
+Expected: the first run builds both wasm files and starts a sandbox per test; all seven tests PASS. The
+first test prints how far block time moved. If it fails because block time did not advance,
+`World::expire` cannot work: stop and report it, because every scenario that lets a pool expire
+depends on moving the clock with `fast_forward`.
 
 If a scenario fails because the helper's `Outcome.ok` or a view shape differs from what the test
 assumes, correct the helper or the assertion. If `refused_commits_return_the_money` fails on the
@@ -2726,9 +2862,114 @@ git commit -m "add the sandbox world and the open and commit scenarios"
 - Produces: `settle(pool_id: u64) -> Promise` and the private callback
   `on_settled(pool_id: u64, seller: AccountId, amount: U128, result)`.
 
-- [ ] **Step 1: Write the failing scenarios**
+- [ ] **Step 1: Write the failing tests**
 
-`contracts/pools/tests/settle.rs`:
+First the unit tests. `contracts/pools/src/settle.rs` holds only this module until step 3 adds the
+implementation above it. They call the callback directly with a successful or a failed result, which
+covers the state transitions without a sandbox.
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testutil::*;
+    use crate::OpenParams;
+    use near_sdk::test_utils::get_logs;
+
+    /// A pool of 2 seats at a price of 2 with a bonus of 10, not yet filled.
+    fn open(c: &mut Contract) -> u64 {
+        c.open_pool(
+            acct("seller.test"),
+            10,
+            OpenParams {
+                seat_price: 2,
+                target: 2,
+                deadline_ms: 10_000,
+                max_seats_per_buyer: None,
+                terms: String::new(),
+            },
+            1_000,
+        )
+    }
+
+    fn filled(c: &mut Contract) -> u64 {
+        let id = open(c);
+        c.commit_seats(acct("a.test"), 2, id, 1, 2_000);
+        c.commit_seats(acct("b.test"), 2, id, 1, 2_000);
+        id
+    }
+
+    #[test]
+    fn settle_marks_the_pool_settled_before_the_payout_is_known() {
+        let mut c = new_contract();
+        let id = filled(&mut c);
+        set_context("anyone.test", 3_000);
+        let _ = c.settle(id);
+        assert_eq!(c.pools.get(&id).unwrap().status, PoolStatus::Settled);
+    }
+
+    #[test]
+    #[should_panic(expected = "pool is not filled")]
+    fn settle_refuses_a_pool_that_is_not_filled() {
+        let mut c = new_contract();
+        let id = open(&mut c);
+        set_context("anyone.test", 3_000);
+        let _ = c.settle(id);
+    }
+
+    #[test]
+    #[should_panic(expected = "pool is not filled")]
+    fn settle_refuses_a_pool_that_is_already_settled() {
+        let mut c = new_contract();
+        let id = filled(&mut c);
+        set_context("anyone.test", 3_000);
+        let _ = c.settle(id);
+        let _ = c.settle(id);
+    }
+
+    #[test]
+    #[should_panic(expected = "pool not found")]
+    fn settle_refuses_an_unknown_pool() {
+        let mut c = new_contract();
+        set_context("anyone.test", 3_000);
+        let _ = c.settle(9);
+    }
+
+    #[test]
+    fn a_failed_payout_puts_the_pool_back_to_filled() {
+        let mut c = new_contract();
+        let id = filled(&mut c);
+        set_context("anyone.test", 3_000);
+        let _ = c.settle(id);
+        c.on_settled(id, acct("seller.test"), U128(14), Err(PromiseError::Failed));
+        assert_eq!(c.pools.get(&id).unwrap().status, PoolStatus::Filled);
+    }
+
+    #[test]
+    fn a_successful_payout_leaves_the_pool_settled_and_logs_the_event() {
+        let mut c = new_contract();
+        let id = filled(&mut c);
+        set_context("anyone.test", 3_000);
+        let _ = c.settle(id);
+        c.on_settled(id, acct("seller.test"), U128(14), Ok(()));
+        assert_eq!(c.pools.get(&id).unwrap().status, PoolStatus::Settled);
+        assert!(get_logs().iter().any(|line| line.contains("pool_settled")));
+    }
+
+    #[test]
+    fn a_failure_callback_changes_nothing_unless_the_pool_is_settled() {
+        let mut c = new_contract();
+        let id = filled(&mut c);
+        c.on_settled(id, acct("seller.test"), U128(14), Err(PromiseError::Failed));
+        assert_eq!(c.pools.get(&id).unwrap().status, PoolStatus::Filled);
+        let open_id = open(&mut c);
+        c.on_settled(open_id, acct("seller.test"), U128(14), Err(PromiseError::Failed));
+        assert_eq!(c.pools.get(&open_id).unwrap().status, PoolStatus::Open);
+    }
+}
+```
+
+Then the sandbox scenarios, `contracts/pools/tests/settle.rs`:
 
 ```rust
 mod common;
@@ -2738,7 +2979,7 @@ use common::*;
 async fn filled_pool(w: &World) -> anyhow::Result<(u64, AccountId, AccountId)> {
     let seller = w.user("seller", 10).await?;
     let a = w.user("a", 10).await?;
-    let deadline = w.deadline_in(LONG_MS).await?;
+    let deadline = w.deadline_in(DEADLINE_MS).await?;
     let id = w.open(&seller, 10 * MUSD, 2 * MUSD, 2, deadline, None).await?;
     assert!(w.commit(&a, id, 2, 2 * MUSD).await?.ok);
     assert_eq!(w.pool(id).await?["status"], "filled");
@@ -2769,7 +3010,7 @@ async fn anyone_can_settle_a_filled_pool_and_the_seller_is_paid() -> anyhow::Res
 async fn a_pool_that_is_not_filled_cannot_be_settled() -> anyhow::Result<()> {
     let w = World::new().await?;
     let seller = w.user("seller", 10).await?;
-    let deadline = w.deadline_in(LONG_MS).await?;
+    let deadline = w.deadline_in(DEADLINE_MS).await?;
     let id = w.open(&seller, 10 * MUSD, 2 * MUSD, 2, deadline, None).await?;
     assert!(!w.settle(&seller, id).await?.ok);
     assert_eq!(w.pool(id).await?["status"], "open");
@@ -2781,7 +3022,7 @@ async fn a_filled_pool_settles_even_after_its_deadline() -> anyhow::Result<()> {
     let w = World::new().await?;
     let seller = w.user("seller", 10).await?;
     let a = w.user("a", 10).await?;
-    let deadline = w.deadline_in(SHORT_MS).await?;
+    let deadline = w.deadline_in(DEADLINE_MS).await?;
     let id = w.open(&seller, 10 * MUSD, 2 * MUSD, 1, deadline, None).await?;
     assert!(w.commit(&a, id, 1, 2 * MUSD).await?.ok);
 
@@ -2817,13 +3058,12 @@ async fn a_failed_payout_puts_the_pool_back_and_settle_can_be_retried() -> anyho
 
 - [ ] **Step 2: Run to see them fail**
 
-Run: `cargo test -p quorum-pools --test settle`
-Expected: the tests FAIL, because `settle` is not a method of the contract yet (the first call
-returns `ok == false` with a "method not found" style message in the debug text).
+Run: `cargo test -p quorum-pools --lib settle`
+Expected: a compile error, `no method named settle` (the unit tests need the implementation).
 
 - [ ] **Step 3: Write the implementation**
 
-`contracts/pools/src/settle.rs`:
+Put this at the top of `contracts/pools/src/settle.rs`, above the tests module:
 
 ```rust
 use near_sdk::json_types::U128;
@@ -2879,9 +3119,11 @@ impl Contract {
 
 - [ ] **Step 4: Run the scenarios**
 
+Run: `cargo test -p quorum-pools --lib settle`
+Expected: the 7 settle unit tests PASS.
+
 Run: `cargo test -p quorum-pools --test settle -- --nocapture`
-Expected: all four PASS. Also run `cargo test -p quorum-pools --lib` to confirm the unit tests still
-pass.
+Expected: all four sandbox scenarios PASS.
 
 - [ ] **Step 5: Commit**
 
@@ -2906,9 +3148,199 @@ git commit -m "settle a filled pool and restore it if the payout fails"
   `on_refund_sent(pool_id, buyer, seats, amount, bonus_share, result)` and
   `on_dust_sent(pool_id, dust, result)`. Task 10 adds `claim_refund` to the same file.
 
-- [ ] **Step 1: Write the failing scenarios**
+- [ ] **Step 1: Write the failing tests**
 
-`contracts/pools/tests/refund.rs`:
+First the unit tests. `contracts/pools/src/refund.rs` holds only this module until step 3 adds the
+implementation above it (Task 10 adds more tests to it). They drive `refund` at a block time past the
+deadline and call the callbacks directly with a successful or a failed result, which covers every
+state transition without a sandbox, including a pool whose bonus is zero (which cannot be opened
+through the standard token).
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testutil::*;
+    use crate::OpenParams;
+    use near_sdk::test_utils::get_logs;
+
+    /// A pool of 6 seats at a price of 2 with the given bonus and a deadline of 10_000, holding one
+    /// seat for each named buyer.
+    fn pool_with(c: &mut Contract, bonus: u128, buyers: &[&str]) -> u64 {
+        let id = c.open_pool(
+            acct("seller.test"),
+            bonus,
+            OpenParams {
+                seat_price: 2,
+                target: 6,
+                deadline_ms: 10_000,
+                max_seats_per_buyer: None,
+                terms: String::new(),
+            },
+            1_000,
+        );
+        for name in buyers {
+            c.commit_seats(acct(name), 2, id, 1, 2_000);
+        }
+        id
+    }
+
+    fn state(c: &Contract, id: u64, name: &str) -> BuyerState {
+        c.buyers.get(&(id, acct(name))).unwrap().state
+    }
+
+    fn logged(fragment: &str) -> bool {
+        get_logs().iter().any(|line| line.contains(fragment))
+    }
+
+    #[test]
+    #[should_panic(expected = "pool is not open past its deadline or expired")]
+    fn refund_is_refused_before_the_deadline() {
+        let mut c = new_contract();
+        let id = pool_with(&mut c, 10, &["a.test"]);
+        set_context("anyone.test", 9_999);
+        c.refund(id, 5);
+    }
+
+    #[test]
+    #[should_panic(expected = "limit must be between 1 and 10")]
+    fn a_limit_of_zero_is_refused() {
+        let mut c = new_contract();
+        let id = pool_with(&mut c, 10, &["a.test"]);
+        set_context("anyone.test", 10_000);
+        c.refund(id, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "limit must be between 1 and 10")]
+    fn a_limit_above_ten_is_refused() {
+        let mut c = new_contract();
+        let id = pool_with(&mut c, 10, &["a.test"]);
+        set_context("anyone.test", 10_000);
+        c.refund(id, 11);
+    }
+
+    #[test]
+    fn the_first_call_expires_the_pool_and_fixes_the_share() {
+        let mut c = new_contract();
+        let id = pool_with(&mut c, 10, &["a.test", "b.test", "c.test"]);
+        set_context("anyone.test", 10_000);
+        c.refund(id, 1);
+        let pool = c.pools.get(&id).unwrap();
+        assert_eq!(pool.status, PoolStatus::Expired);
+        assert_eq!(pool.bonus_per_seat, 3);
+        assert_eq!(pool.refund_cursor, 1);
+        assert_eq!(state(&c, id, "a.test"), BuyerState::Refunded);
+        assert_eq!(state(&c, id, "b.test"), BuyerState::Committed);
+    }
+
+    #[test]
+    fn a_batch_skips_buyers_that_are_no_longer_committed() {
+        let mut c = new_contract();
+        let id = pool_with(&mut c, 10, &["a.test", "b.test", "c.test"]);
+        c.buyers.get_mut(&(id, acct("b.test"))).unwrap().state = BuyerState::Claimable;
+        set_context("anyone.test", 10_000);
+        c.refund(id, 10);
+        assert_eq!(state(&c, id, "a.test"), BuyerState::Refunded);
+        assert_eq!(state(&c, id, "b.test"), BuyerState::Claimable);
+        assert_eq!(state(&c, id, "c.test"), BuyerState::Refunded);
+        // every buyer was visited, so the dust (10 - 3 * 3 = 1) is on its way
+        let pool = c.pools.get(&id).unwrap();
+        assert!(pool.dust_sent);
+        assert_eq!(pool.status, PoolStatus::Expired);
+    }
+
+    #[test]
+    fn a_dust_of_zero_finishes_the_pool_without_a_transfer() {
+        let mut c = new_contract();
+        // 9 over 3 seats divides exactly
+        let id = pool_with(&mut c, 9, &["a.test", "b.test", "c.test"]);
+        set_context("anyone.test", 10_000);
+        c.refund(id, 10);
+        let pool = c.pools.get(&id).unwrap();
+        assert_eq!(pool.status, PoolStatus::Refunded);
+        assert!(pool.dust_sent);
+        assert!(logged("pool_refunded") && logged(r#""dust":"0""#));
+    }
+
+    #[test]
+    fn a_pool_with_a_bonus_of_zero_refunds_the_prices_and_finishes() {
+        let mut c = new_contract();
+        let id = pool_with(&mut c, 0, &["a.test", "b.test"]);
+        set_context("anyone.test", 10_000);
+        c.refund(id, 10);
+        let pool = c.pools.get(&id).unwrap();
+        assert_eq!(pool.bonus_per_seat, 0);
+        assert_eq!(pool.status, PoolStatus::Refunded);
+        assert_eq!(state(&c, id, "a.test"), BuyerState::Refunded);
+        assert_eq!(state(&c, id, "b.test"), BuyerState::Refunded);
+        assert!(logged("pool_refunded"));
+    }
+
+    #[test]
+    fn a_pool_with_no_seats_sends_the_whole_bonus_as_dust() {
+        let mut c = new_contract();
+        let id = pool_with(&mut c, 10, &[]);
+        set_context("anyone.test", 10_000);
+        c.refund(id, 1);
+        let pool = c.pools.get(&id).unwrap();
+        assert!(pool.dust_sent);
+        assert_eq!(pool.status, PoolStatus::Expired, "the pool finishes when the dust arrives");
+    }
+
+    #[test]
+    fn a_failed_refund_makes_the_buyer_claimable_and_logs_it() {
+        let mut c = new_contract();
+        let id = pool_with(&mut c, 10, &["a.test"]);
+        set_context("anyone.test", 10_000);
+        c.refund(id, 1);
+        c.on_refund_sent(id, acct("a.test"), 1, U128(5), U128(3), Err(PromiseError::Failed));
+        assert_eq!(state(&c, id, "a.test"), BuyerState::Claimable);
+        assert!(logged("refund_failed"));
+    }
+
+    #[test]
+    fn a_paid_refund_logs_the_event_and_keeps_the_state() {
+        let mut c = new_contract();
+        let id = pool_with(&mut c, 10, &["a.test"]);
+        set_context("anyone.test", 10_000);
+        c.refund(id, 1);
+        c.on_refund_sent(id, acct("a.test"), 1, U128(5), U128(3), Ok(()));
+        assert_eq!(state(&c, id, "a.test"), BuyerState::Refunded);
+        assert!(logged("seat_refunded"));
+    }
+
+    #[test]
+    fn a_failed_dust_transfer_lets_the_next_call_retry_only_the_dust() {
+        let mut c = new_contract();
+        let id = pool_with(&mut c, 10, &["a.test", "b.test", "c.test"]);
+        set_context("anyone.test", 10_000);
+        c.refund(id, 10);
+        c.on_dust_sent(id, U128(1), Err(PromiseError::Failed));
+        let pool = c.pools.get(&id).unwrap();
+        assert!(!pool.dust_sent);
+        assert_eq!(pool.status, PoolStatus::Expired);
+
+        c.refund(id, 1);
+        let pool = c.pools.get(&id).unwrap();
+        assert!(pool.dust_sent, "the retry sent the dust again");
+        assert_eq!(pool.refund_cursor, 3, "and visited no buyer a second time");
+    }
+
+    #[test]
+    fn a_paid_dust_transfer_finishes_the_pool() {
+        let mut c = new_contract();
+        let id = pool_with(&mut c, 10, &["a.test", "b.test", "c.test"]);
+        set_context("anyone.test", 10_000);
+        c.refund(id, 10);
+        c.on_dust_sent(id, U128(1), Ok(()));
+        assert_eq!(c.pools.get(&id).unwrap().status, PoolStatus::Refunded);
+        assert!(logged("pool_refunded"));
+    }
+}
+```
+
+Then the sandbox scenarios, `contracts/pools/tests/refund.rs`:
 
 ```rust
 mod common;
@@ -2919,7 +3351,7 @@ use common::*;
 async fn expired_pool(w: &World) -> anyhow::Result<(u64, AccountId, Vec<AccountId>)> {
     let seller = w.user("seller", 10).await?;
     let buyers = vec![w.user("a", 10).await?, w.user("b", 10).await?, w.user("c", 10).await?];
-    let deadline = w.deadline_in(SHORT_MS).await?;
+    let deadline = w.deadline_in(DEADLINE_MS).await?;
     let id = w.open(&seller, 10 * MUSD, 2 * MUSD, 6, deadline, None).await?;
     for buyer in &buyers {
         assert!(w.commit(buyer, id, 1, 2 * MUSD).await?.ok);
@@ -2965,7 +3397,7 @@ async fn a_dust_of_zero_finishes_without_a_transfer() -> anyhow::Result<()> {
     let w = World::new().await?;
     let seller = w.user("seller", 9).await?;
     let buyers = vec![w.user("a", 10).await?, w.user("b", 10).await?, w.user("c", 10).await?];
-    let deadline = w.deadline_in(SHORT_MS).await?;
+    let deadline = w.deadline_in(DEADLINE_MS).await?;
     // 9 mUSD of bonus over 3 seats divides exactly: 3 mUSD each, nothing left over
     let id = w.open(&seller, 9 * MUSD, 2 * MUSD, 6, deadline, None).await?;
     for buyer in &buyers {
@@ -2986,7 +3418,7 @@ async fn a_dust_of_zero_finishes_without_a_transfer() -> anyhow::Result<()> {
 async fn a_pool_with_no_seats_returns_the_whole_bonus_to_the_seller() -> anyhow::Result<()> {
     let w = World::new().await?;
     let seller = w.user("seller", 10).await?;
-    let deadline = w.deadline_in(SHORT_MS).await?;
+    let deadline = w.deadline_in(DEADLINE_MS).await?;
     let id = w.open(&seller, 10 * MUSD, 2 * MUSD, 4, deadline, None).await?;
     w.expire(id).await?;
 
@@ -3001,7 +3433,7 @@ async fn a_pool_with_no_seats_returns_the_whole_bonus_to_the_seller() -> anyhow:
 async fn refund_is_refused_before_the_deadline() -> anyhow::Result<()> {
     let w = World::new().await?;
     let seller = w.user("seller", 10).await?;
-    let deadline = w.deadline_in(LONG_MS).await?;
+    let deadline = w.deadline_in(DEADLINE_MS).await?;
     let id = w.open(&seller, 10 * MUSD, 2 * MUSD, 4, deadline, None).await?;
     assert!(!w.refund(&seller, id, 5, 300).await?.ok);
     assert_eq!(w.pool(id).await?["status"], "open");
@@ -3036,16 +3468,49 @@ async fn refund_needs_enough_gas_and_changes_nothing_without_it() -> anyhow::Res
     w.check_invariants().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn a_failed_dust_transfer_is_retried_by_the_next_refund_call() -> anyhow::Result<()> {
+    let w = World::new().await?;
+    let (id, seller, buyers) = expired_pool(&w).await?;
+    let share = 10 * MUSD / 3;
+
+    // the seller leaves the token, so the dust (1 base unit) cannot be sent
+    w.unregister(&seller).await?;
+    assert!(w.refund(&buyers[0], id, 10, 300).await?.ok);
+    let pool = w.pool(id).await?;
+    assert_eq!(pool["status"], "expired", "the dust is still owed, so the pool is not finished");
+    assert_eq!(pool["dust_sent"], false);
+    for buyer in &buyers {
+        assert_eq!(w.balance(buyer).await?, 10 * MUSD + share);
+    }
+    w.check_invariants().await?;
+
+    // the seller registers again; the next call sends only the dust
+    w.register(&seller).await?;
+    assert!(w.refund(&buyers[0], id, 1, 300).await?.ok);
+    let pool = w.pool(id).await?;
+    assert_eq!(pool["status"], "refunded");
+    assert_eq!(pool["dust_sent"], true);
+    assert_eq!(w.balance(&seller).await?, 1);
+    for buyer in &buyers {
+        assert_eq!(w.balance(buyer).await?, 10 * MUSD + share, "no buyer was paid twice");
+    }
+    w.check_invariants().await?;
+    Ok(())
+}
 ```
 
 - [ ] **Step 2: Run to see them fail**
 
-Run: `cargo test -p quorum-pools --test refund`
-Expected: FAIL (`refund` is not a method yet).
+Run: `cargo test -p quorum-pools --lib refund`
+Expected: a compile error, `no method named refund` (the unit tests need the implementation).
 
 - [ ] **Step 3: Write the implementation**
 
-`contracts/pools/src/refund.rs` (Task 10 adds `claim_refund` to the same `impl`):
+Put this at the top of `contracts/pools/src/refund.rs`, above the tests module (Task 10 adds
+`claim_refund` to the same `impl`). `Promise` is `#[must_use]` in current `near-sdk`: `.detach()`
+marks a promise as deliberately not returned, and it is still scheduled.
 
 ```rust
 use near_sdk::json_types::U128;
@@ -3070,7 +3535,7 @@ impl Contract {
     /// that is past its deadline into Expired and fixes each seat's share of the bonus.
     pub fn refund(&mut self, pool_id: u64, limit: u32) {
         require!(
-            limit >= 1 && limit <= MAX_REFUND_LIMIT,
+            (1..=MAX_REFUND_LIMIT).contains(&limit),
             "limit must be between 1 and 10"
         );
         // one transfer per buyer visited, plus the dust transfer
@@ -3139,14 +3604,17 @@ impl Contract {
                         U128(push.amount),
                         U128(push.bonus_share),
                     ),
-            );
+            )
+            .detach();
         }
         if let Some((seller, dust)) = dust_to_send {
-            Self::transfer(&self.token, seller, dust).then(
-                Self::ext(env::current_account_id())
-                    .with_static_gas(CALLBACK_GAS)
-                    .on_dust_sent(pool_id, U128(dust)),
-            );
+            Self::transfer(&self.token, seller, dust)
+                .then(
+                    Self::ext(env::current_account_id())
+                        .with_static_gas(CALLBACK_GAS)
+                        .on_dust_sent(pool_id, U128(dust)),
+                )
+                .detach();
         }
         if finished_with_no_dust {
             events::pool_refunded(pool_id, 0);
@@ -3197,10 +3665,13 @@ impl Contract {
 }
 ```
 
-- [ ] **Step 4: Run the scenarios**
+- [ ] **Step 4: Run the tests**
+
+Run: `cargo test -p quorum-pools --lib refund`
+Expected: the 12 refund unit tests PASS.
 
 Run: `cargo test -p quorum-pools --test refund -- --nocapture`
-Expected: all PASS. Then `cargo test -p quorum-pools --lib`.
+Expected: all 7 sandbox scenarios PASS.
 
 If `a_failed_pool_refunds_every_buyer...` reports balances off by the refund share, recheck that the
 test's `share` matches the contract's: the bonus is split over the seats taken (3), floored, so
@@ -3226,9 +3697,100 @@ git commit -m "refund buyers in batches, send the dust to the seller and assert 
 - Produces: `claim_refund(pool_id: u64)` (caller is the buyer) and the private callback
   `on_claim_sent(pool_id, buyer, amount, result)`.
 
-- [ ] **Step 1: Write the failing scenarios**
+- [ ] **Step 1: Write the failing tests**
 
-`contracts/pools/tests/claim.rs`:
+First the unit tests. Add these inside the `tests` module of `contracts/pools/src/refund.rs`, after
+the tests from Task 9 (they use the same `pool_with`, `state` and `logged` helpers).
+
+```rust
+    #[test]
+    fn a_buyer_can_claim_after_the_deadline_without_any_refund_call() {
+        let mut c = new_contract();
+        let id = pool_with(&mut c, 10, &["a.test", "b.test", "c.test"]);
+        set_context("a.test", 10_000);
+        c.claim_refund(id);
+        assert_eq!(state(&c, id, "a.test"), BuyerState::Refunded);
+        let pool = c.pools.get(&id).unwrap();
+        assert_eq!(pool.status, PoolStatus::Expired, "the claim stored the expiry");
+        assert_eq!(pool.bonus_per_seat, 3);
+        assert_eq!(state(&c, id, "b.test"), BuyerState::Committed);
+    }
+
+    #[test]
+    #[should_panic(expected = "pool is not open past its deadline, expired or refunded")]
+    fn a_claim_before_the_deadline_is_refused() {
+        let mut c = new_contract();
+        let id = pool_with(&mut c, 10, &["a.test"]);
+        set_context("a.test", 9_999);
+        c.claim_refund(id);
+    }
+
+    #[test]
+    #[should_panic(expected = "the caller holds no seats in this pool")]
+    fn a_claim_by_an_account_without_seats_is_refused() {
+        let mut c = new_contract();
+        let id = pool_with(&mut c, 10, &["a.test"]);
+        set_context("stranger.test", 10_000);
+        c.claim_refund(id);
+    }
+
+    #[test]
+    #[should_panic(expected = "the refund was already paid or is on its way")]
+    fn a_second_claim_is_refused() {
+        let mut c = new_contract();
+        let id = pool_with(&mut c, 10, &["a.test"]);
+        set_context("a.test", 10_000);
+        c.claim_refund(id);
+        c.claim_refund(id);
+    }
+
+    #[test]
+    fn a_claim_whose_transfer_fails_can_be_claimed_again() {
+        let mut c = new_contract();
+        let id = pool_with(&mut c, 10, &["a.test"]);
+        set_context("a.test", 10_000);
+        c.claim_refund(id);
+        c.on_claim_sent(id, acct("a.test"), U128(5), Err(PromiseError::Failed));
+        assert_eq!(state(&c, id, "a.test"), BuyerState::Claimable);
+        c.claim_refund(id);
+        assert_eq!(state(&c, id, "a.test"), BuyerState::Refunded);
+    }
+
+    #[test]
+    fn a_paid_claim_logs_the_event_and_keeps_the_state() {
+        let mut c = new_contract();
+        let id = pool_with(&mut c, 10, &["a.test"]);
+        set_context("a.test", 10_000);
+        c.claim_refund(id);
+        c.on_claim_sent(id, acct("a.test"), U128(5), Ok(()));
+        assert_eq!(state(&c, id, "a.test"), BuyerState::Refunded);
+        assert!(logged("refund_claimed"));
+    }
+
+    #[test]
+    fn a_claim_failure_callback_changes_nothing_unless_the_state_is_refunded() {
+        let mut c = new_contract();
+        let id = pool_with(&mut c, 10, &["a.test"]);
+        c.on_claim_sent(id, acct("a.test"), U128(5), Err(PromiseError::Failed));
+        assert_eq!(state(&c, id, "a.test"), BuyerState::Committed);
+    }
+
+    #[test]
+    fn refund_leaves_a_buyer_that_has_already_claimed_alone() {
+        let mut c = new_contract();
+        let id = pool_with(&mut c, 10, &["a.test", "b.test", "c.test"]);
+        set_context("a.test", 10_000);
+        c.claim_refund(id);
+        set_context("anyone.test", 10_000);
+        c.refund(id, 10);
+        assert_eq!(state(&c, id, "a.test"), BuyerState::Refunded);
+        assert_eq!(state(&c, id, "b.test"), BuyerState::Refunded);
+        assert_eq!(state(&c, id, "c.test"), BuyerState::Refunded);
+        assert_eq!(c.pools.get(&id).unwrap().refund_cursor, 3);
+    }
+```
+
+Then the sandbox scenarios, `contracts/pools/tests/claim.rs`:
 
 ```rust
 mod common;
@@ -3242,7 +3804,7 @@ const SHARE: u128 = 10 * MUSD / 3; // the 10 mUSD bonus over 3 seats, floored
 async fn expired_pool(w: &World) -> anyhow::Result<(u64, AccountId, Vec<AccountId>)> {
     let seller = w.user("seller", 10).await?;
     let buyers = vec![w.user("a", 10).await?, w.user("b", 10).await?, w.user("c", 10).await?];
-    let deadline = w.deadline_in(SHORT_MS).await?;
+    let deadline = w.deadline_in(DEADLINE_MS).await?;
     let id = w.open(&seller, 10 * MUSD, 2 * MUSD, 6, deadline, None).await?;
     for buyer in &buyers {
         assert!(w.commit(buyer, id, 1, 2 * MUSD).await?.ok);
@@ -3328,7 +3890,7 @@ async fn a_claim_needs_an_expired_pool_and_held_seats() -> anyhow::Result<()> {
     let w = World::new().await?;
     let seller = w.user("seller", 20).await?;
     let a = w.user("a", 10).await?;
-    let deadline = w.deadline_in(LONG_MS).await?;
+    let deadline = w.deadline_in(DEADLINE_MS).await?;
     let id = w.open(&seller, 10 * MUSD, 2 * MUSD, 4, deadline, None).await?;
     assert!(w.commit(&a, id, 1, 2 * MUSD).await?.ok);
 
@@ -3337,7 +3899,7 @@ async fn a_claim_needs_an_expired_pool_and_held_seats() -> anyhow::Result<()> {
     assert_eq!(w.balance(&a).await?, 8 * MUSD);
 
     // an expired pool where the caller holds no seats: a second pool in the same world
-    let deadline2 = w.deadline_in(SHORT_MS).await?;
+    let deadline2 = w.deadline_in(DEADLINE_MS).await?;
     let id2 = w.open(&seller, 10 * MUSD, 2 * MUSD, 4, deadline2, None).await?;
     w.expire(id2).await?;
     assert!(!w.claim(&a, id2).await?.ok, "a holds no seats in the second pool");
@@ -3348,8 +3910,9 @@ async fn a_claim_needs_an_expired_pool_and_held_seats() -> anyhow::Result<()> {
 
 - [ ] **Step 2: Run to see them fail**
 
-Run: `cargo test -p quorum-pools --test claim`
-Expected: FAIL (`claim_refund` is not a method yet).
+Run: `cargo test -p quorum-pools --lib refund`
+Expected: a compile error, `no method named claim_refund` (the new unit tests need the
+implementation).
 
 - [ ] **Step 3: Write the implementation**
 
@@ -3383,11 +3946,13 @@ In `refund.rs`, inside the existing `#[near] impl Contract` block, add:
         );
         record.state = BuyerState::Refunded;
         let amount = math::refund_amount(record.seats, pool.seat_price, pool.bonus_per_seat);
-        Self::transfer(&self.token, buyer.clone(), amount).then(
-            Self::ext(env::current_account_id())
-                .with_static_gas(CALLBACK_GAS)
-                .on_claim_sent(pool_id, buyer, U128(amount)),
-        );
+        Self::transfer(&self.token, buyer.clone(), amount)
+            .then(
+                Self::ext(env::current_account_id())
+                    .with_static_gas(CALLBACK_GAS)
+                    .on_claim_sent(pool_id, buyer, U128(amount)),
+            )
+            .detach();
     }
 
     #[private]
@@ -3413,8 +3978,11 @@ In `refund.rs`, inside the existing `#[near] impl Contract` block, add:
 
 - [ ] **Step 4: Run the scenarios**
 
+Run: `cargo test -p quorum-pools --lib refund`
+Expected: all 20 refund unit tests PASS (12 from Task 9, 8 from this task).
+
 Run: `cargo test -p quorum-pools --test claim -- --nocapture`
-Expected: all four PASS. Then `cargo test -p quorum-pools --test refund --test settle --test open_commit`
+Expected: all four sandbox scenarios PASS. Then `cargo test -p quorum-pools --test refund --test settle --test open_commit`
 to confirm nothing regressed.
 
 - [ ] **Step 5: Commit**
@@ -3456,7 +4024,7 @@ async fn a_full_refund_batch_completes_with_the_least_gas_refund_accepts() -> an
     // each with a dust of 7, so the dust transfer is exercised as well as the ten refunds.
     let seller = w.user("seller", 11).await?;
     let bonus = 10 * MUSD + 7;
-    let deadline = w.deadline_in(SHORT_MS).await?;
+    let deadline = w.deadline_in(DEADLINE_MS).await?;
     let id = w.open(&seller, bonus, 2 * MUSD, 20, deadline, None).await?;
 
     let mut buyers = Vec::new();
@@ -3493,12 +4061,12 @@ async fn a_full_refund_batch_completes_with_the_least_gas_refund_accepts() -> an
 Run: `cargo test -p quorum-pools --test gas -- --nocapture`
 Expected: PASS. If `refund` is refused with "not enough gas", the entry check counts gas already
 used: raise the attached gas in this test from 240 to 250 and re-run (the point of the test is that
-nothing runs out of gas after the check). If it fails because a buyer is `claimable` or unpaid, the transfer or callback
-allowance is too small: raise `TRANSFER_GAS` or `CALLBACK_GAS` in `gas.rs` by 5 Tgas, keep
-`gas_needed(11)` at or below 300 Tgas (lower `MAX_REFUND_LIMIT` in `types.rs` and the limit in this
-test together if it would exceed that), update the expected numbers in the `gas.rs` unit test, and
-re-run. If it passes with room to spare, leave the allowances alone: unused attached gas is
-refunded.
+nothing runs out of gas after the check). If it fails because a buyer is `claimable` or unpaid, the
+transfer or callback allowance is too small: raise `TRANSFER_GAS` or `CALLBACK_GAS` in `gas.rs` by 5
+Tgas, keep `gas_needed(11)` within the per-transaction gas limit of the sandbox's protocol version
+(lower `MAX_REFUND_LIMIT` in `types.rs` and the limit in this test together if it would exceed it),
+update the expected numbers in the `gas.rs` unit test, and re-run. If it passes with room to spare,
+leave the allowances alone: unused attached gas is refunded.
 
 - [ ] **Step 3: Run the whole suite**
 
@@ -3525,15 +4093,15 @@ git commit -m "verify the gas allowances with a full refund batch"
 
 | Spec requirement | Where |
 |---|---|
-| 5.1 state, no admin methods | Task 3 (`Contract`), Task 3 `new` is `#[private]`, no other privileged method exists |
+| 5.1 state, no admin methods, `new` guarded | Task 3 (`Contract`, `#[private]` `new`); Task 7 (`new` rejected from another account and a second time) |
 | 5.2 lifecycle, Filled is final, derived Expired | Tasks 3 (`Pool::expire_if_due`), 6 (view), 8 (settle after deadline) |
 | 5.3 open and commit messages and every refusal | Tasks 4, 5 (unit), 7 (sandbox) |
-| 5.4 `settle`, `refund`, `claim_refund`, views | Tasks 8, 9, 10, 6 |
-| Gas and deposits paragraph of 5.4 | Tasks 3 (`gas.rs`, `Contract::transfer`), 9, 10, 11 |
-| 5.5 invariants after every sandbox step | Task 7 (`check_invariants`), used in Tasks 7 to 11 |
-| 5.6 events | Task 3 (`events.rs`), emitted in Tasks 4, 5, 8, 9, 10 |
+| 5.4 `settle`, `refund`, `claim_refund`, views | Tasks 8, 9, 10 (implementation, unit tests for every state transition and callback, sandbox scenarios), 6 (views) |
+| Gas and deposits paragraph of 5.4 | Tasks 3 (`gas.rs`, `Contract::transfer`), 9 (gas refusal), 11 (a full batch at about the least gas `refund` accepts) |
+| 5.5 invariants | Task 7 (`check_invariants` covers 1, 2 and 4 after each step); 3 and 5 through the balance assertions in Tasks 8 to 10 |
+| 5.6 events | Task 3 (`events.rs`), emitted in Tasks 4, 5, 8, 9, 10 and asserted in the unit tests of Tasks 8 to 10 |
 | 5.7 mock token | Tasks 1, 2 |
-| 10 contract unit tests | Tasks 3 to 6 |
-| 10 sandbox cases: fills, fails, partial last commit, wrong token, commit after deadline, seller commit, failed pushed refund then claim, failed payout then retried settle, claim before any refund, no seats at expiry, dust 0, least gas | Tasks 7 to 11 |
-| 10 case: bonus 0 | Task 4 unit test only (the standard token rejects a zero-amount `ft_transfer_call`); the spec is corrected in Task 1 |
+| 10 contract unit tests: bonus split and dust, every state transition, every refusal in 5.3, checked arithmetic at the limits | Tasks 3 (maths, overflow panics), 4 and 5 (refusals), 8 to 10 (transitions) |
+| 10 sandbox cases: fills, fails, partial last commit, wrong token, commit after deadline, seller commit, failed pushed refund then claim, failed payout then retried settle, failed dust then retried refund, claim before any refund, no seats at expiry, dust 0, `refund` with less gas and with enough | Tasks 7 to 11 |
+| 10 case: bonus 0 | Task 9 unit test (a zero-bonus pool refunded to completion) and Task 4 (opening one); the standard token rejects a zero-amount `ft_transfer_call`, so no sandbox path exists, and Task 1 corrects the spec |
 | 10 case: relayed payment's 1 yoctoNEAR deposit | Not here: needs the relayer, built with the gateway |
