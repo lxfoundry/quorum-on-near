@@ -90,7 +90,7 @@ down 10,000 times, so that no pool holds, and no run moves, as much as 0.1 USDC 
 
 **Toolchain.**
 - The contracts are written in Rust with near-sdk 5 and built with `cargo near`, with sandbox tests
-  in `near-workspaces`.
+  in `near-sandbox` and `near-api`.
 - The TypeScript packages run on Node 22 in a pnpm workspace, use `near-api-js` v7, and are tested
   with vitest.
 - The live page has no build step and no dependencies.
@@ -172,7 +172,9 @@ stateDiagram-v2
 `ft_on_transfer(sender_id, amount, msg)` panics unless the caller is `token`. Any refusal is a
 panic, and the token then returns the whole amount to the sender (NEP-141's `ft_resolve_transfer`).
 
-**Open a pool.** The amount sent is the bonus (0 is allowed), and `sender_id` becomes the seller:
+**Open a pool.** The amount sent is the bonus (0 is allowed by the contract, though the standard
+NEP-141 token rejects a zero-amount `ft_transfer_call`, so a pool with no bonus needs a token that
+accepts one), and `sender_id` becomes the seller:
 
 ```json
 { "open": { "seat_price": "180", "target": 192, "deadline_ms": 1800000000000,
@@ -655,7 +657,7 @@ step, and the gateway serves the folder at `/`. The page never signs anything an
 | Level | What it covers |
 |---|---|
 | Contract unit tests (near-sdk test environment) | The bonus split and the dust; every state transition; every refusal in section 5.3; checked arithmetic at the limits |
-| Sandbox integration (`near-workspaces`, with the real mock token) | **Fills:** open, commits, fill, settle. **Fails:** expiry, refund in batches, dust to the seller. Also: a partial last commit; a payment from the wrong token; a commit after the deadline; a seller committing to its own pool; a failed pushed refund, then a claim; a failed payout, then a retried `settle`; a claim before any `refund` call; a pool with no seats at expiry; a pool whose dust is 0, and one whose bonus is 0; `refund` called with the least gas it accepts, and with less; a relayed payment that records which account is debited its 1 yoctoNEAR deposit. The invariants of section 5.5 are checked after every step, against `ft_balance_of` |
+| Sandbox integration (`near-sandbox` and `near-api`, with the real mock token) | **Fills:** open, commits, fill, settle. **Fails:** expiry, refund in batches, dust to the seller. Also: a partial last commit; a payment from the wrong token; a commit after the deadline; a seller committing to its own pool; a failed pushed refund, then a claim; a failed payout, then a retried `settle`; a claim before any `refund` call; a pool with no seats at expiry; a pool whose dust is 0 (a bonus of 0 is covered by unit tests only, because the standard token rejects a zero-amount `ft_transfer_call`); `refund` called with the least gas it accepts, and with less; a relayed payment that records which account is debited its 1 yoctoNEAR deposit. The invariants of section 5.5 are checked after every step, against `ft_balance_of` |
 | `packages/protocol` unit tests | Offer and payload encoding and decoding; the static checks, one test per rejection code, with fixture keys |
 | Gateway tests against a stubbed chain | Every row of the response tables in sections 6.4 and 6.5; payments in flight; the RPC timeout path; the keeper's calls |
 | MCP unit tests | Each tool against a stubbed gateway; the spend cap |
