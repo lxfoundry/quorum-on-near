@@ -60,14 +60,19 @@ NEAR rules the design relies on (from NEAR's documentation):
 | `docs/specs/` | Design specs: what the system is and how it behaves |
 | `docs/plans/` | Implementation plans written from the specs |
 | `.claude/` | Vendored skills and a SessionStart hook (see Skills) |
+| `contracts/mock-usd/` | The Mock USD token (NEP-141), for the sandbox tests only |
 
-The code layout is set by the first implementation plan.
+The TypeScript packages and apps are added by later plans.
 
 ## Toolchain
 
-Set by the first implementation plan in `docs/plans/`, and recorded here when it lands: languages,
-versions, and how to build, test and run locally. NEAR **testnet** only until the test circuit
-passes (rule 4).
+Rust stable with the wasm32-unknown-unknown target; near-sdk 5 and near-contract-standards 5;
+cargo-near for builds (cargo near build non-reproducible-wasm). Unit tests: cargo test --lib.
+Sandbox tests use near-sandbox and near-api and build the contracts themselves: cargo test
+--workspace (Linux or macOS on Apple silicon, or WSL2). A bare `cargo check` stops at near-sdk's
+native-build guard, because it leaves out the dev-dependency that turns on `unit-testing`: use
+`cargo check --tests`, or `cargo check --target wasm32-unknown-unknown`. NEAR testnet only until
+the test circuit passes (rule 4).
 
 ## Rules
 
