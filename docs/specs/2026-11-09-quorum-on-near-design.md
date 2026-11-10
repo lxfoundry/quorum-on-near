@@ -240,7 +240,7 @@ prepaid gas covers every transfer and callback they are about to schedule, with 
 |---|---|---|
 | `settle` | 1 | 33 Tgas |
 | `claim_refund` | 1 | 33 Tgas |
-| `refund(pool_id, limit)` | up to `limit` refunds, plus the dust | 10 + 23 × (`limit` + 1) Tgas, so 263 Tgas at `limit` = 10 |
+| `refund(pool_id, limit)` | up to `limit` refunds, plus the dust | 10 + 23 Ã— (`limit` + 1) Tgas, so 263 Tgas at `limit` = 10 |
 
 A caller attaches that much plus the few Tgas the call uses before its check: a full `refund`
 batch of 10 completes with 280 Tgas, under the 300 Tgas per-transaction cap. The gas for each
