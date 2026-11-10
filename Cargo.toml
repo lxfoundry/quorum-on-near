@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "contracts/mock-usd",
+    "contracts/pools",
     "crates/sandbox-support",
 ]
 

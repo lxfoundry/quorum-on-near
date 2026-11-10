@@ -61,6 +61,7 @@ NEAR rules the design relies on (from NEAR's documentation):
 | `docs/plans/` | Implementation plans written from the specs |
 | `.claude/` | Vendored skills and a SessionStart hook (see Skills) |
 | `contracts/mock-usd/` | The Mock USD token (NEP-141), for the sandbox tests only |
+| `contracts/pools/` | The pools escrow contract |
 | `crates/sandbox-support/` | Test helper: starts a local NEAR sandbox and wraps calls and views |
 
 The TypeScript packages and apps are added by later plans.
