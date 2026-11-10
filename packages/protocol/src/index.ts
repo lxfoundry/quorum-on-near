@@ -4,3 +4,4 @@ export * from './contract.ts';
 export * from './amounts.ts';
 export * from './codec.ts';
 export * from './offer.ts';
+export * from './delegate.ts';
