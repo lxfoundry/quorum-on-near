@@ -1,3 +1,4 @@
+import { createPrivateKey, createPublicKey } from 'node:crypto';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isAccountId, type Network } from '@quorum-on-near/protocol';
@@ -132,6 +133,9 @@ function asInteger(min: number, max: number, expected = `an integer from ${min} 
 
 const asPositiveInteger = asInteger(1, Number.MAX_SAFE_INTEGER, 'a positive integer');
 
+/** The longest delay a Node timer honours: it turns any longer one into 1 ms. */
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
 /** Gas from `min`, which `why` explains, to the most the gateway attaches to one call. */
 function asGas(min = 1n, why?: string): Rule<bigint> {
   const from = why === undefined ? `${min}` : `${min} (${why})`;
@@ -172,13 +176,25 @@ const asRelayerKeys: Rule<string[]> = {
   },
 };
 
+/**
+ * Whether `x` is the public key of the Ed25519 private key `d` in `jwk`. Node derives the public key
+ * from `d` and fails on a `d` that is not a key. Nothing it throws is repeated: the error may quote the key.
+ */
+function holdsKeyPair(jwk: JWK & { x: string; d: string }): boolean {
+  try {
+    return createPublicKey(createPrivateKey({ key: jwk, format: 'jwk' })).export({ format: 'jwk' }).x === jwk.x;
+  } catch {
+    return false;
+  }
+}
+
 const asCredentialJwk: Rule<JWK> = {
   expected: 'a private Ed25519 JWK (JSON with kty "OKP", crv "Ed25519", x and d)',
   secret: true,
   parse(raw) {
     try {
       const jwk: unknown = JSON.parse(raw);
-      return isPrivateEd25519Jwk(jwk) ? jwk : undefined;
+      return isPrivateEd25519Jwk(jwk) && holdsKeyPair(jwk) ? jwk : undefined;
     } catch {
       return undefined;
     }
@@ -279,7 +295,16 @@ export function loadConfig(env: Record<string, string | undefined>): GatewayConf
   }
   const maxTimeoutSeconds = optional('QUORUM_MAX_TIMEOUT_SECONDS', '120', asPositiveInteger);
   const blockTimeMs = optional('QUORUM_BLOCK_TIME_MS', '1000', asPositiveInteger);
-  const keeperIntervalMs = optional('QUORUM_KEEPER_INTERVAL_MS', '5000', asPositiveInteger);
+  // The keeper waits this long between runs with a timer, which a longer delay would turn into 1 ms.
+  const keeperIntervalMs = optional(
+    'QUORUM_KEEPER_INTERVAL_MS',
+    '5000',
+    asInteger(
+      1,
+      MAX_TIMER_DELAY_MS,
+      `an integer from 1 to ${MAX_TIMER_DELAY_MS} (the longest delay a Node timer honours)`,
+    ),
+  );
   const refundLimit = optional('QUORUM_REFUND_LIMIT', '10', asInteger(1, 10));
   // With less gas than the contract asserts at entry, plus what the call uses before that check, every
   // call would panic.

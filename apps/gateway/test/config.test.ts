@@ -12,6 +12,7 @@ const EXAMPLE = fileURLToPath(new URL('../.env.example', import.meta.url));
 const PARENT = 'parent.testnet';
 const RELAYER_KEY = KeyPair.fromRandom('ed25519').toString();
 const CREDENTIAL_JWK = await generateCredentialJwk();
+const OTHER_JWK = await generateCredentialJwk();
 
 /** The three required variables, plus `overrides` (`undefined` unsets one). */
 function env(overrides: Record<string, string | undefined> = {}): Record<string, string | undefined> {
@@ -223,10 +224,24 @@ describe('loadConfig', () => {
     ['a public key', JSON.stringify({ ...CREDENTIAL_JWK, d: undefined })],
     ['an X25519 key', JSON.stringify({ ...CREDENTIAL_JWK, crv: 'X25519' })],
     ['an EC key', JSON.stringify({ ...CREDENTIAL_JWK, kty: 'EC' })],
+    ['a key whose x belongs to another key', JSON.stringify({ ...CREDENTIAL_JWK, x: OTHER_JWK.x })],
+    ['a key whose d is not a valid key', JSON.stringify({ ...CREDENTIAL_JWK, d: 'AAAA' })],
   ])('reports QUORUM_CREDENTIAL_JWK holding %s as invalid', (_label, value) => {
     expect(problems(env({ QUORUM_CREDENTIAL_JWK: value }))).toEqual([
       'QUORUM_CREDENTIAL_JWK must be a private Ed25519 JWK (JSON with kty "OKP", crv "Ed25519", x and d)',
     ]);
+  });
+
+  it('accepts any key that generateCredentialJwk makes', () => {
+    expect(loadConfig(env({ QUORUM_CREDENTIAL_JWK: JSON.stringify(OTHER_JWK) })).credentialJwk).toEqual(OTHER_JWK);
+  });
+
+  it('lists a credential key whose x does not belong to its d with the other problems, without either key', () => {
+    const jwk = JSON.stringify({ ...CREDENTIAL_JWK, x: OTHER_JWK.x });
+    const message = problems(env({ QUORUM_CREDENTIAL_JWK: jwk, QUORUM_RPC_PASSTHROUGH: 'yes' })).join('\n');
+    expect(message).toContain('QUORUM_CREDENTIAL_JWK must be a private Ed25519 JWK');
+    expect(message).toContain('QUORUM_RPC_PASSTHROUGH must be true or false, got "yes"');
+    for (const part of [CREDENTIAL_JWK.d, CREDENTIAL_JWK.x, OTHER_JWK.x]) expect(message).not.toContain(part);
   });
 
   it('reports a maximum commit gas below the minimum', () => {
@@ -398,6 +413,22 @@ describe('loadConfig gas', () => {
   it('checks the refund gas only against the range when the refund limit is invalid', () => {
     expect(problems(env({ QUORUM_REFUND_LIMIT: '11', QUORUM_REFUND_GAS: '1' }))).toEqual([
       'QUORUM_REFUND_LIMIT must be an integer from 1 to 10, got "11"',
+    ]);
+  });
+});
+
+describe('loadConfig keeper interval', () => {
+  // Node turns any timer delay above this into 1 ms, so the keeper would tick back to back.
+  const LONGEST = 2_147_483_647;
+
+  it('accepts 1 ms and the longest delay a Node timer honours', () => {
+    expect(loadConfig(env({ QUORUM_KEEPER_INTERVAL_MS: '1' })).keeperIntervalMs).toBe(1);
+    expect(loadConfig(env({ QUORUM_KEEPER_INTERVAL_MS: `${LONGEST}` })).keeperIntervalMs).toBe(LONGEST);
+  });
+
+  it.each(['0', `${LONGEST + 1}`, '9007199254740991'])('refuses QUORUM_KEEPER_INTERVAL_MS = %s', (value) => {
+    expect(problems(env({ QUORUM_KEEPER_INTERVAL_MS: value }))).toEqual([
+      `QUORUM_KEEPER_INTERVAL_MS must be an integer from 1 to 2147483647 (the longest delay a Node timer honours), got "${value}"`,
     ]);
   });
 });
