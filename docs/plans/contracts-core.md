@@ -4,15 +4,17 @@
 > executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for
 > tracking.
 
-**Goal:** Build the on-chain half of Quorum on NEAR: the Mock USD token and the pools escrow
-contract, tested at unit level and in a local NEAR sandbox, with the escrow invariants checked after
-every step.
+**Goal:** Build the on-chain half of Quorum on NEAR: the pools escrow contract, and the Mock USD
+token its sandbox tests run against, tested at unit level and in a local NEAR sandbox, with the
+escrow invariants checked after every step. On testnet the pools contract runs against Circle's
+USDC instead (spec section 5.7), which this plan does not deploy.
 
 **Architecture:** A Cargo workspace with two contracts. `contracts/mock-usd` is a NEP-141 token with
-storage management and a capped open `mint`. `contracts/pools` holds pools, seats and bonuses in
-flat `LookupMap` storage, takes seats and bonuses through `ft_on_transfer`, and pays out through
-`ft_transfer` promises with `#[private]` callbacks. A small helper crate, `crates/sandbox-support`,
-wraps `near-sandbox` and `near-api` so that every sandbox test talks to one thin interface.
+storage management and a capped open `mint`, for the sandbox tests only. `contracts/pools` holds
+pools, seats and bonuses in flat `LookupMap` storage, takes seats and bonuses through
+`ft_on_transfer`, and pays out through `ft_transfer` promises with `#[private]` callbacks. A small
+helper crate, `crates/sandbox-support`, wraps `near-sandbox` and `near-api` so that every sandbox
+test talks to one thin interface.
 
 **Tech Stack:** Rust (stable, `wasm32-unknown-unknown`), `near-sdk` 5, `near-contract-standards` 5,
 `cargo near` for builds; `near-sandbox` and `near-api` for sandbox tests; `tokio`, `serde_json`,
@@ -38,11 +40,19 @@ rules.
 - Contracts are Rust with `near-sdk` 5, built with `cargo near`; sandbox tests run in a local NEAR
   sandbox. NEAR **testnet** only until the test circuit passes.
 - **Mock token:** NEP-141 from `near-contract-standards` with storage management; name `Mock USD`,
-  symbol `mUSD`, 6 decimals; one extra method `mint(account_id, amount)`, open to anyone, capped at
-  1,000 mUSD per call; for testnet only.
+  symbol `mUSD`, 6 decimals (as USDC); one extra method `mint(account_id, amount)`, open to anyone,
+  capped at 1,000 mUSD per call. It is used by the sandbox tests only and is never deployed to
+  testnet.
 - **Pools contract:** there are **no owner or admin methods**. One token per contract, set by
   `new(token)`, which is `#[private]` and runs in the same transaction as the deployment. The
   contract accepts `ft_on_transfer` only from that token.
+- **Any compliant token:** the pools contract calls nothing on the token beyond NEP-141
+  (`ft_transfer`) and never relies on the mock's `mint` or metadata, so its logic needs no change
+  for Circle's testnet USDC. Its gas allowances (`TRANSFER_GAS`, `CALLBACK_GAS`) are calibrated
+  here against the mock; the swarm plan checks them again against USDC (spec sections 5.7 and 10).
+  It has no minimum amount beyond `seat_price > 0`: the testnet scenarios use seat prices of 180
+  and 320 base units (spec section 7.3). `get_token` reports the token, so that setup can check an
+  existing deployment (spec section 7.2).
 - **Limits:** `1 ≤ target ≤ 1000`; `terms` at most 280 bytes; `refund` `limit` 1 to 10;
   `seat_price > 0`; `deadline_ms` in the future when a pool opens.
 - **Time:** every deadline is judged by block time (`env::block_timestamp_ms()`). A pool is past its
@@ -78,14 +88,17 @@ rules.
 | `contracts/pools/src/receive.rs` | `ft_on_transfer`: opening a pool and committing seats |
 | `contracts/pools/src/settle.rs` | `settle` and its callback |
 | `contracts/pools/src/refund.rs` | `refund`, `claim_refund` and their callbacks |
-| `contracts/pools/src/views.rs` | `get_pool`, `list_pools`, `get_seats`, `get_buyer` |
+| `contracts/pools/src/views.rs` | `get_pool`, `list_pools`, `get_seats`, `get_buyer`, `get_token` |
 | `contracts/pools/tests/common/mod.rs` | `World`: the two contracts deployed in a sandbox, plus the invariant check |
 | `contracts/pools/tests/*.rs` | Sandbox scenarios (one file per theme) |
 
 **Out of scope for this plan** (each depends on this plan's contracts): the `packages/protocol`
 TypeScript package, the gateway, the swarm, the MCP server and the live page. The spec's sandbox test
 that records which account is debited the 1 yoctoNEAR of a relayed payment needs the relayer, so it
-belongs with the gateway.
+belongs with the gateway. Everything on testnet belongs with the swarm too: deploying the pools
+contract against Circle's USDC, the funding account, `swarm setup`'s top-ups and `swarm reset`
+(spec section 7.2), and measuring gas against USDC, both a commit's and that of the pools
+contract's own transfers (spec section 10).
 
 ---
 
@@ -185,7 +198,7 @@ name = "mock-usd"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "Mock USD (mUSD): a NEP-141 test token with storage management and a capped open mint"
+description = "Mock USD (mUSD): a NEP-141 token for sandbox tests, with a capped open mint"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -207,8 +220,8 @@ does not touch the wasm build.
 `contracts/mock-usd/src/lib.rs`:
 
 ```rust
-//! Mock USD (mUSD): a NEP-141 token for testnet. Anyone can mint a small amount to a registered
-//! account; the token has no owner.
+//! Mock USD (mUSD): a NEP-141 token for the sandbox tests; it is never deployed to testnet. Anyone
+//! can mint a small amount to a registered account; the token has no owner.
 
 use near_contract_standards::fungible_token::events::FtMint;
 use near_contract_standards::fungible_token::metadata::{
@@ -385,7 +398,7 @@ Add this row to the Layout table:
 
 | Path | Content |
 |---|---|
-| `contracts/mock-usd/` | The Mock USD token (NEP-141) |
+| `contracts/mock-usd/` | The Mock USD token (NEP-141), for the sandbox tests only |
 
 Replace the sentence `The code layout is set by the first implementation plan.` with `The
 TypeScript packages and apps are added by later plans.` (Tasks 2 and 3 add the rows for the folders
@@ -408,7 +421,9 @@ NEAR's documentation now recommends `near-sandbox` with `near-api` for sandbox t
 token rejects a zero-amount `ft_transfer_call`. In
 `docs/specs/2026-11-09-quorum-on-near-design.md` make four edits:
 1. Section 4, "Toolchain": replace ``with sandbox tests in `near-workspaces` `` with ``with sandbox
-   tests in `near-sandbox` and `near-api` ``.
+   tests in `near-sandbox` and `near-api` ``. In the spec this text wraps after `tests`, so match
+   across the line break (`with sandbox tests` at the end of one line, ``in `near-workspaces`.`` at
+   the start of the next) and re-wrap the bullet.
 2. Section 10, the "Sandbox integration" row: replace ``(`near-workspaces`, with the real mock
    token)`` with ``(`near-sandbox` and `near-api`, with the real mock token)``.
 3. Section 10, the same row: replace `a pool whose dust is 0, and one whose bonus is 0;` with `a pool
@@ -938,9 +953,23 @@ mod tests {
         assert_eq!(payout(192, 1_800_000, 17_280_000), 192 * 1_800_000 + 17_280_000);
     }
 
+    /// The testnet scenarios (spec section 7.3) price seats at a few hundred base units of USDC.
+    #[test]
+    fn the_testnet_scenario_amounts_add_up() {
+        // fills: 192 seats at 180, a bonus of 1,728
+        assert_eq!(payout(192, 180, 1_728), 36_288);
+        assert_eq!(min_bonus_per_seat(1_728, 192), 9);
+        // fails: 192 seats at 320, a bonus of 3,072, expiring with 100 seats taken
+        let share = bonus_per_seat(3_072, 100);
+        assert_eq!(share, 30);
+        assert_eq!(dust(3_072, share, 100), 72);
+        assert_eq!(refund_amount(1, 320, share), 350);
+        assert_eq!(min_bonus_per_seat(3_072, 192), 16);
+    }
+
     #[test]
     fn refunds_and_dust_always_add_up_to_what_the_pool_holds() {
-        for bonus in [0u128, 1, 7, 100, 17_280_000] {
+        for bonus in [0u128, 1, 7, 100, 1_728, 3_072, 17_280_000] {
             for taken in 1u32..=12 {
                 let share = bonus_per_seat(bonus, taken);
                 let total_refunds: u128 = (0..taken).map(|_| refund_amount(1, 3, share)).sum();
@@ -951,7 +980,7 @@ mod tests {
 
     #[test]
     fn a_failed_pool_never_pays_less_than_the_minimum_share() {
-        for bonus in [0u128, 1, 7, 100, 17_280_000] {
+        for bonus in [0u128, 1, 7, 100, 1_728, 3_072, 17_280_000] {
             for target in 1u32..=12 {
                 // a failed pool has fewer seats taken than its target
                 for taken in 1..target {
@@ -1533,7 +1562,7 @@ with `cannot find function bonus_per_seat`. Then add the functions, the other mo
 `lib.rs` (step 3) and run it again.
 
 Run: `cargo test -p quorum-pools --lib`
-Expected: all `math`, `types`, `events` and `gas` tests PASS (17 tests: 12 in `math`, 3 in `types`, 1
+Expected: all `math`, `types`, `events` and `gas` tests PASS (18 tests: 13 in `math`, 3 in `types`, 1
 in `events`, 1 in `gas`).
 
 - [ ] **Step 5: Confirm the wasm builds**
@@ -2126,8 +2155,8 @@ git commit -m "take seats through ft_on_transfer and fill a pool at its target"
 - Consumes: `PoolView::new`, `SeatView`, `BuyerView`, `MAX_PAGE`, `Contract.pools/slots/buyers`.
 - Produces: `get_pool(pool_id: u64) -> Option<PoolView>`, `list_pools(from: u64, limit: u64) ->
   Vec<PoolView>`, `get_seats(pool_id: u64, from: u32, limit: u32) -> Vec<SeatView>`,
-  `get_buyer(pool_id: u64, account_id: AccountId) -> Option<BuyerView>`. Page size is clamped to
-  `MAX_PAGE`.
+  `get_buyer(pool_id: u64, account_id: AccountId) -> Option<BuyerView>`, `get_token() -> AccountId`.
+  Page size is clamped to `MAX_PAGE`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2207,6 +2236,12 @@ mod tests {
         assert!(c.get_seats(7, 0, 10).is_empty());
         assert!(c.get_buyer(7, acct("a.test")).is_none());
     }
+
+    #[test]
+    fn get_token_names_the_token_set_by_new() {
+        let c = new_contract();
+        assert_eq!(c.get_token(), acct("token.test"));
+    }
 }
 ```
 
@@ -2276,6 +2311,11 @@ impl Contract {
                 state: record.state,
             })
     }
+
+    /// The one token this contract accepts, as set by `new`.
+    pub fn get_token(&self) -> AccountId {
+        self.token.clone()
+    }
 }
 ```
 
@@ -2288,7 +2328,7 @@ Expected: all PASS.
 
 ```bash
 git add contracts/pools/src/views.rs
-git commit -m "add the pool and seat views with a status derived from block time"
+git commit -m "add the pool, seat and token views, with a status derived from block time"
 ```
 
 ---
@@ -4096,11 +4136,13 @@ git commit -m "verify the gas allowances with a full refund batch"
 | 5.1 state, no admin methods, `new` guarded | Task 3 (`Contract`, `#[private]` `new`); Task 7 (`new` rejected from another account and a second time) |
 | 5.2 lifecycle, Filled is final, derived Expired | Tasks 3 (`Pool::expire_if_due`), 6 (view), 8 (settle after deadline) |
 | 5.3 open and commit messages and every refusal | Tasks 4, 5 (unit), 7 (sandbox) |
-| 5.4 `settle`, `refund`, `claim_refund`, views | Tasks 8, 9, 10 (implementation, unit tests for every state transition and callback, sandbox scenarios), 6 (views) |
+| 5.4 `settle`, `refund`, `claim_refund`, views | Tasks 8, 9, 10 (implementation, unit tests for every state transition and callback, sandbox scenarios), 6 (views, `get_token` included) |
 | Gas and deposits paragraph of 5.4 | Tasks 3 (`gas.rs`, `Contract::transfer`), 9 (gas refusal), 11 (a full batch at about the least gas `refund` accepts) |
 | 5.5 invariants | Task 7 (`check_invariants` covers 1, 2 and 4 after each step); 3 and 5 through the balance assertions in Tasks 8 to 10 |
 | 5.6 events | Task 3 (`events.rs`), emitted in Tasks 4, 5, 8, 9, 10 and asserted in the unit tests of Tasks 8 to 10 |
-| 5.7 mock token | Tasks 1, 2 |
+| 5.7 tokens: the mock token | Tasks 1, 2 |
+| 5.7 tokens: Circle's USDC on testnet, and the gas measured against it (a commit's, and the transfer and callback allowances calibrated in Task 11 against the mock) | Not here: the swarm plan (deployment, setup, the end-to-end runs) |
+| 7.3 scenario amounts of a few hundred base units | Task 3 (`the_testnet_scenario_amounts_add_up`, and the two loop tests over those bonuses) |
 | 10 contract unit tests: bonus split and dust, every state transition, every refusal in 5.3, checked arithmetic at the limits | Tasks 3 (maths, overflow panics), 4 and 5 (refusals), 8 to 10 (transitions) |
 | 10 sandbox cases: fills, fails, partial last commit, wrong token, commit after deadline, seller commit, failed pushed refund then claim, failed payout then retried settle, failed dust then retried refund, claim before any refund, no seats at expiry, dust 0, `refund` with less gas and with enough | Tasks 7 to 11 |
 | 10 case: bonus 0 | Task 9 unit test (a zero-bonus pool refunded to completion) and Task 4 (opening one); the standard token rejects a zero-amount `ft_transfer_call`, so no sandbox path exists, and Task 1 corrects the spec |
