@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { InFlight, NonceCache } from '../src/guards.ts';
+import { InFlight, NonceCache, proofNonceCache } from '../src/guards.ts';
 
 describe('InFlight', () => {
   it('marks a buyer busy on begin', () => {
@@ -120,5 +120,22 @@ describe('NonceCache', () => {
     } finally {
       deleted.mockRestore();
     }
+  });
+});
+
+describe('proofNonceCache', () => {
+  // Spec section 6.5: a proof stays fresh up to 5 minutes after a signing time up to 1 minute ahead.
+  const SIX_MINUTES = 360_000;
+
+  it('remembers a redemption nonce for six minutes, and forgets it at six minutes', () => {
+    const cache = proofNonceCache();
+    cache.seen('ed25519:key:nonce', 1_000);
+    expect(cache.seen('ed25519:key:nonce', 1_000 + SIX_MINUTES - 1)).toBe(true);
+    expect(cache.seen('ed25519:key:nonce', 1_000 + SIX_MINUTES)).toBe(false);
+  });
+
+  it('gives a new, empty cache each time', () => {
+    proofNonceCache().seen('ed25519:key:nonce', 1_000);
+    expect(proofNonceCache().seen('ed25519:key:nonce', 1_000)).toBe(false);
   });
 });

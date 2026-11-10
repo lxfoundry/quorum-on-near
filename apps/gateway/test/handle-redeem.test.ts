@@ -37,9 +37,13 @@ async function setup(
     holding?: BuyerView | null;
     key?: AccessKeyInfo | null;
     config?: GatewayConfig;
+    now?: () => number;
   } = {},
 ) {
-  const deps = await testDeps(opts.config ? { config: opts.config } : {});
+  const deps = await testDeps({
+    ...(opts.config ? { config: opts.config } : {}),
+    ...(opts.now ? { now: opts.now } : {}),
+  });
   const keyPair = KeyPair.fromRandom('ed25519');
   deps.fake.setPool(poolView({ id: POOL_ID, ...opts.pool }));
   const key = opts.key === undefined ? FULL_ACCESS : opts.key;
@@ -182,6 +186,19 @@ describe('handleRedeem', () => {
       expect((await handleRedeem(deps, POOL_ID, header)).status).toBe(401);
       deps.fake.setKey(BUYER, (decodeHeader(header) as { publicKey: string }).publicKey, FULL_ACCESS);
       expect((await handleRedeem(deps, POOL_ID, header)).status).toBe(202);
+    });
+  });
+
+  describe('nonce lifetime', () => {
+    it('refuses a proof signed a minute ahead as replayed until its last fresh moment, then as stale', async () => {
+      let clock = NOW_MS;
+      const { deps, proof } = await setup({ now: () => clock });
+      const header = await proof({ nowMs: NOW_MS + REDEEM_MAX_SKEW_MS });
+      expect((await handleRedeem(deps, POOL_ID, header)).status).toBe(202);
+      clock = NOW_MS + REDEEM_MAX_SKEW_MS + REDEEM_MAX_AGE_MS - 1;
+      expect(await handleRedeem(deps, POOL_ID, header)).toEqual({ status: 401, body: { error: 'replayed_proof' } });
+      clock = NOW_MS + REDEEM_MAX_SKEW_MS + REDEEM_MAX_AGE_MS;
+      expect(await handleRedeem(deps, POOL_ID, header)).toEqual({ status: 401, body: { error: 'stale_proof' } });
     });
   });
 

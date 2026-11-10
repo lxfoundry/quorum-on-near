@@ -1,3 +1,5 @@
+import { REDEEM_MAX_AGE_MS, REDEEM_MAX_SKEW_MS } from '@quorum-on-near/protocol';
+
 /**
  * Buyers with a payment in flight: at most one each (spec section 6.4). A buyer is busy from `begin`
  * to `end`, and held after `end` while a payment whose result is unknown may still execute.
@@ -59,4 +61,12 @@ export class NonceCache {
     this.#seenAt.set(key, nowMs);
     return false;
   }
+}
+
+/**
+ * The cache of redemption nonces (spec section 6.5). A proof signed up to REDEEM_MAX_SKEW_MS ahead
+ * stays fresh until REDEEM_MAX_AGE_MS after its signing time, so a nonce is kept for their sum.
+ */
+export function proofNonceCache(): NonceCache {
+  return new NonceCache(REDEEM_MAX_AGE_MS + REDEEM_MAX_SKEW_MS);
 }

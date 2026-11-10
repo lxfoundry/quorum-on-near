@@ -2,14 +2,13 @@
 import { statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { serve } from '@hono/node-server';
-import { REDEEM_MAX_AGE_MS, REDEEM_MAX_SKEW_MS } from '@quorum-on-near/protocol';
 import { JsonRpcProvider, KeyPair, type KeyPairString } from 'near-api-js';
 import { ActivityLog } from './activity.ts';
 import { createApp } from './app.ts';
 import { checkChainId, ConfigError, loadConfig, type GatewayConfig } from './config.ts';
 import { createCredentialIssuer } from './credential.ts';
 import type { Deps } from './deps.ts';
-import { InFlight, NonceCache } from './guards.ts';
+import { InFlight, proofNonceCache } from './guards.ts';
 import { Keeper } from './keeper.ts';
 import { KeyPool, RpcRelayer } from './relayer.ts';
 import { RpcChain } from './rpc-chain.ts';
@@ -87,8 +86,7 @@ const deps: Deps = {
   credentials: await createCredentialIssuer({ jwk: config.credentialJwk, issuer: config.publicUrl }),
   activity,
   inFlight: new InFlight(),
-  // A proof signed up to REDEEM_MAX_SKEW_MS ahead stays valid REDEEM_MAX_AGE_MS after its signing time.
-  proofNonces: new NonceCache(REDEEM_MAX_AGE_MS + REDEEM_MAX_SKEW_MS),
+  proofNonces: proofNonceCache(),
   now: Date.now,
 };
 
