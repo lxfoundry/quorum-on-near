@@ -480,14 +480,14 @@ describe('createApp', () => {
       expect(fetch).not.toHaveBeenCalled();
     });
 
-    it('answers 413 body_too_large for a longer declared Content-Length', async () => {
+    it('answers 413 body_too_large for a longer declared Content-Length, without counting the body', async () => {
       const fetch = upstream();
       const { app } = await passthrough(fetch);
-      const body = padded(MAX_BODY + 1);
+      // A short body under a longer declared length: only the declared length can refuse it.
       const res = app.request('/rpc', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Content-Length': String(body.length) },
-        body,
+        headers: { 'Content-Type': 'application/json', 'Content-Length': String(MAX_BODY + 1) },
+        body: JSON.stringify(viewCall()),
       });
       expect(await answer(res)).toEqual({ status: 413, body: { error: 'body_too_large' } });
       expect(fetch).not.toHaveBeenCalled();
