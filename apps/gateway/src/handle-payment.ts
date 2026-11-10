@@ -7,7 +7,7 @@ import type {
   PoolView,
 } from '@quorum-on-near/protocol';
 import type { ActivityRecord } from './activity.ts';
-import { DelegateExpiredError, EXPIRY_MARGIN_BLOCKS, type RelayResult, type TxOutcome } from './chain.ts';
+import { DelegateExpiredError, EXPIRY_MARGIN_BLOCKS, type BlockInfo, type RelayResult, type TxOutcome } from './chain.ts';
 import type { Deps } from './deps.ts';
 import { currentAccepts, parseSeats } from './handle-offer.ts';
 import { readCommit } from './outcome.ts';
@@ -24,6 +24,9 @@ const NONCE_RANGE_MULTIPLIER = 1_000_000n;
 /** A refusal carries the buyer's seats once they are known, so that its offer can respect the buyer's limit. */
 type ChainCheck = { ok: true; held: number } | { ok: false; code: GatewayErrorCode; held?: number };
 
+/** Checks 4 and 5 passed, with the final block they were judged against. */
+type FreshCheck = { ok: true; block: BlockInfo } | { ok: false; code: GatewayErrorCode };
+
 /**
  * `GET /pools/:id/access?seats=N` with an `X-PAYMENT` header (spec sections 6.3 and 6.4): the
  * checks in order, then the relay, then the response table. The payment may commit to fewer seats
@@ -32,8 +35,10 @@ type ChainCheck = { ok: true; held: number } | { ok: false; code: GatewayErrorCo
  * - 402 paymentRequired(current offer, code) for a failed check, a payment already in flight for
  *   the buyer, or a delegate the relayer finds too close to its expiry to send (`expired`). Nothing
  *   is relayed. The `over_buyer_cap` offer is for the seats the buyer may still take, if any.
- *   A payment takes its buyer's in-flight slot only once its key is found on the buyer's account as
- *   a full-access key, so a payment signed with another key cannot hold the slot.
+ *   A payment takes its buyer's in-flight slot only once it has passed checks 4 and 5 (its key is a
+ *   full-access key of the buyer's account, its nonce is above that key's, and its max_block_height
+ *   is within the accepted window), so neither a payment signed with another key nor a replay of a
+ *   used or expired payment can hold the slot.
  *   A payment whose result is unknown keeps its buyer in flight, while its delegate may still land,
  *   until a final block above its `max_block_height` is read.
  * - 202 `{status: "pending", receipt, pool}` or, when the commit filled the pool, 200 `{status:
@@ -88,16 +93,11 @@ async function checkAndRelay(deps: Deps, poolId: number, seats: number, header: 
   if (!checked.ok) return refuse(checked.code);
   const { payment } = checked;
 
-  // A held buyer is freed once the final height passes its earlier payment's max_block_height.
-  if (inFlight.held(payment.senderId)) inFlight.passed((await chain.finalBlock()).height);
-  // The checks so far verify the signature only against the delegate's own key. Check 4 is the one
-  // that ties that key to sender_id, so the buyer's slot is taken only once it holds: otherwise a
-  // payment signed with any key, naming a victim as sender_id, would hold the victim's slot.
-  const key = await chain.accessKey(payment.senderId, payment.publicKey);
-  if (key === null || !key.fullAccess) return refuse('not_full_access');
+  const fresh = await checkFresh(deps, payment);
+  if (!fresh.ok) return refuse(fresh.code);
   if (!inFlight.begin(payment.senderId)) return refuse('payment_in_flight');
   try {
-    const check = await checkOnChain(deps, pool, payment);
+    const check = await checkOnChain(deps, pool, payment, fresh.block);
     if (!check.ok) return refuse(check.code, check.held);
     let result: RelayResult;
     try {
@@ -114,25 +114,49 @@ async function checkAndRelay(deps: Deps, poolId: number, seats: number, header: 
 }
 
 /**
- * Checks 4 to 8: the buyer's key, its nonce and expiry, the pool, the balance and the buyer's seats.
- * The key is read again, now that the buyer's slot is taken, so that its nonce is current: an earlier
- * payment of the buyer may have finished since `checkAndRelay` first read it.
+ * Checks 4 and 5, before the buyer's in-flight slot is taken: the key is a full-access key of the
+ * buyer's account, the nonce is above the key's and below the final height × 10^6, and
+ * `max_block_height` is within the accepted window. The checks before these verify the signature only
+ * against the delegate's own key; these are the ones that only the buyer's own fresh payment passes.
+ * Check 4 ties that key to sender_id, and a used or expired payment, which anyone can copy from the
+ * chain, fails check 5. So neither a payment signed with another key nor a replay holds the buyer's
+ * slot. The later checks use the final block read here.
  */
-async function checkOnChain(deps: Deps, pool: PoolView, payment: CheckedPayment): Promise<ChainCheck> {
-  const { chain, config } = deps;
+async function checkFresh(deps: Deps, payment: CheckedPayment): Promise<FreshCheck> {
+  const { chain, config, inFlight } = deps;
+  const refused = (code: GatewayErrorCode): FreshCheck => ({ ok: false, code });
+
+  const key = await chain.accessKey(payment.senderId, payment.publicKey);
+  if (key === null || !key.fullAccess) return refused('not_full_access');
+  if (payment.nonce <= key.nonce) return refused('stale_nonce');
+  const block = await chain.finalBlock();
+  // Frees each held buyer whose payment can no longer execute (this one too), so holds do not pile up.
+  inFlight.passed(block.height);
+  if (payment.nonce >= block.height * NONCE_RANGE_MULTIPLIER) return refused('nonce_too_large');
+  const maxAhead = BigInt(Math.ceil((config.maxTimeoutSeconds * 1000) / config.blockTimeMs));
+  const ahead = payment.maxBlockHeight - block.height;
+  if (ahead <= EXPIRY_MARGIN_BLOCKS || ahead > maxAhead + EXPIRY_MARGIN_BLOCKS) return refused('expired');
+  return { ok: true, block };
+}
+
+/**
+ * Checks 6 to 8 once the buyer's slot is taken: the pool, judged against `block` (the final block
+ * checkFresh read), the balance and the buyer's seats. The key and its nonce are checked again first:
+ * an earlier payment of the buyer may have finished since checkFresh read the key.
+ */
+async function checkOnChain(
+  deps: Deps,
+  pool: PoolView,
+  payment: CheckedPayment,
+  block: BlockInfo,
+): Promise<ChainCheck> {
+  const { chain } = deps;
   const buyer = payment.senderId;
   const refused = (code: GatewayErrorCode): ChainCheck => ({ ok: false, code });
 
   const key = await chain.accessKey(buyer, payment.publicKey);
   if (key === null || !key.fullAccess) return refused('not_full_access');
   if (payment.nonce <= key.nonce) return refused('stale_nonce');
-  const block = await chain.finalBlock();
-  // Frees every held buyer whose payment can no longer execute, so holds do not pile up.
-  deps.inFlight.passed(block.height);
-  if (payment.nonce >= block.height * NONCE_RANGE_MULTIPLIER) return refused('nonce_too_large');
-  const maxAhead = BigInt(Math.ceil((config.maxTimeoutSeconds * 1000) / config.blockTimeMs));
-  const ahead = payment.maxBlockHeight - block.height;
-  if (ahead <= EXPIRY_MARGIN_BLOCKS || ahead > maxAhead + EXPIRY_MARGIN_BLOCKS) return refused('expired');
   if (pool.status !== 'open' || pool.taken >= pool.target || block.timestampMs >= pool.deadline_ms) {
     return refused('pool_closed');
   }

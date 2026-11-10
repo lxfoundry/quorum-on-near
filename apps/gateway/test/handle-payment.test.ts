@@ -146,6 +146,38 @@ function throwawayHeader(s: Scenario, nonce: bigint = KEY_NONCE + 1n): Promise<s
   });
 }
 
+/**
+ * Starts the payment `header`, as a replay sent by anyone, with slow reads: once it has read the
+ * buyer's key, each read of the key or of the final block it makes waits until `release` is called.
+ * Resolves once the payment has been answered or is waiting on such a read (`waiting`); reads made
+ * after that, by any payment, are not delayed.
+ */
+async function startWithSlowReads(s: Scenario, header: string) {
+  const released = deferred<void>();
+  const waiting = deferred<void>();
+  let phase: 'key not read' | 'slow' | 'over' = 'key not read';
+  let waitedOn = false;
+  const slow = async <T>(read: () => Promise<T>): Promise<T> => {
+    if (phase !== 'slow') return read();
+    waitedOn = true;
+    waiting.resolve();
+    await released.promise;
+    return read();
+  };
+  const readKey = s.fake.accessKey.bind(s.fake);
+  const readBlock = s.fake.finalBlock.bind(s.fake);
+  vi.spyOn(s.fake, 'accessKey').mockImplementation(async (account, key) => {
+    const info = await slow(() => readKey(account, key));
+    if (phase === 'key not read') phase = 'slow';
+    return info;
+  });
+  vi.spyOn(s.fake, 'finalBlock').mockImplementation(() => slow(readBlock));
+  const result = handlePayment(s.deps, POOL_ID, '2', header);
+  await Promise.race([result, waiting.promise]);
+  phase = 'over';
+  return { result, waiting: waitedOn, release: () => released.resolve() };
+}
+
 /** The view calls made since `before`, a copy of `fake.reads`, by method name. */
 function readsSince(fake: FakeChain, before: Map<string, number>): Record<string, number> {
   const made: Record<string, number> = {};
@@ -424,8 +456,8 @@ describe('handlePayment: gateway checks', () => {
       body: { x402Version: 1, error: 'payment_in_flight', accepts: [offerFor(currentPool(s.fake), 2)] },
     });
     expect(s.fake.relayed).toHaveLength(1);
-    // The refusal reads the pool and the buyer's access key, and nothing else.
-    expect(readsSince(s.fake, readsBefore)).toEqual({ get_pool: 1, view_access_key: 1 });
+    // The refusal reads the pool, the buyer's access key and the final block, and nothing else.
+    expect(readsSince(s.fake, readsBefore)).toEqual({ get_pool: 1, view_access_key: 1, block: 1 });
 
     relayed.resolve(committed(2, 150));
     expect((await first).status).toBe(202);
@@ -480,6 +512,83 @@ describe('handlePayment: gateway checks', () => {
       body: { x402Version: 1, error: 'not_full_access', accepts: [offerFor(currentPool(s.fake), 2)] },
     });
     expect(s.fake.relayed).toHaveLength(1);
+  });
+
+  it.each<[string, (s: Scenario) => Promise<string>]>([
+    ['stale_nonce', (s) => s.header({ nonce: KEY_NONCE })],
+    ['nonce_too_large', (s) => s.header({ nonce: s.fake.block.height * 1_000_000n })],
+    ['expired', (s) => s.header({ maxBlockHeight: s.fake.block.height })],
+  ])("does not take the buyer's in-flight slot for a payment refused %s", async (code, header) => {
+    const s = await scenario();
+    const begin = vi.spyOn(s.deps.inFlight, 'begin');
+    const result = await handlePayment(s.deps, POOL_ID, '2', await header(s));
+    expectRefused(s, result, code, [offerFor(currentPool(s.fake), 2)]);
+    expect(begin).not.toHaveBeenCalled();
+  });
+
+  it("does not let a replay of the buyer's used payment hold the buyer's slot while its reads are slow", async () => {
+    const s = await scenario();
+    // The buyer's payment with nonce 11 has landed, and its delegate can be copied from the chain.
+    const used = await s.header({ nonce: KEY_NONCE + 1n });
+    s.fake.setKey(BUYER, s.publicKey, { nonce: KEY_NONCE + 1n, fullAccess: true });
+    const begin = vi.spyOn(s.deps.inFlight, 'begin');
+    const replay = await startWithSlowReads(s, used);
+
+    s.fake.relayResults.push(committed(2, 150));
+    expect(await handlePayment(s.deps, POOL_ID, '2', await s.header({ nonce: KEY_NONCE + 2n }))).toMatchObject({
+      status: 202,
+      body: { status: 'pending' },
+    });
+
+    replay.release();
+    expect(await replay.result).toEqual({
+      status: 402,
+      body: { x402Version: 1, error: 'stale_nonce', accepts: [offerFor(currentPool(s.fake), 2)] },
+    });
+    expect(s.fake.relayed).toHaveLength(1);
+    expect(begin).toHaveBeenCalledOnce();
+  });
+
+  it("does not let a replay of the buyer's expired payment hold the buyer's slot while its reads are slow", async () => {
+    const s = await scenario();
+    // A payment of the buyer that expired at block 1100 without being used; the chain is now at 5000.
+    const expired = await s.header({ maxBlockHeight: 1_100n });
+    s.fake.block = { ...s.fake.block, height: 5_000n };
+    const begin = vi.spyOn(s.deps.inFlight, 'begin');
+    const replay = await startWithSlowReads(s, expired);
+    expect(replay.waiting).toBe(true);
+
+    s.fake.relayResults.push(committed(2, 150));
+    expect(await handlePayment(s.deps, POOL_ID, '2', await s.header())).toMatchObject({
+      status: 202,
+      body: { status: 'pending' },
+    });
+
+    replay.release();
+    expect(await replay.result).toEqual({
+      status: 402,
+      body: { x402Version: 1, error: 'expired', accepts: [offerFor(currentPool(s.fake), 2)] },
+    });
+    expect(s.fake.relayed).toHaveLength(1);
+    expect(begin).toHaveBeenCalledOnce();
+  });
+
+  it.each<[string, (s: Scenario) => void]>([
+    ['a buyer with no payment in flight', () => {}],
+    ['a buyer held after an unknown result that can no longer land', (s) => s.deps.inFlight.hold(BUYER, 999n)],
+  ])('reads the key twice and every other view once, the final block included, to relay a payment from %s', async (_, arrange) => {
+    const s = await scenario();
+    arrange(s);
+    s.fake.relayResults.push(committed(2, 150));
+    const result = await handlePayment(s.deps, POOL_ID, '2', await s.header());
+    expect(result.status).toBe(202);
+    expect(Object.fromEntries(s.fake.reads)).toEqual({
+      get_pool: 1,
+      view_access_key: 2,
+      block: 1,
+      ft_balance_of: 1,
+      get_buyer: 1,
+    });
   });
 
   it('accepts a payment from another buyer while one is being relayed', async () => {

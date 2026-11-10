@@ -437,8 +437,10 @@ expired while it waited with `expired`. If the chain cannot be read while the ch
 gateway answers `503` and relays nothing.
 
 Each buyer has at most one payment in flight; a second one is refused with `payment_in_flight`. A
-payment is in flight from the moment its key has been found on the buyer's account as a full-access
-key (check 4) until its result is known or a final block above its `max_block_height` has been seen.
+payment is in flight from the moment it has passed the checks that only the buyer's own fresh
+payment can pass (its key on the buyer's account with full access, a nonce above the key's, and a
+`max_block_height` within the accepted window: checks 4 and 5) until its result is known or a final
+block above its `max_block_height` has been seen.
 If the relay ends with the result unknown while the delegate may still land, the buyer stays in
 flight after the `502`: the gateway releases it once a final height it reads for a later payment
 (the buyer's own or any other buyer's) is above that `max_block_height`, never by its own clock.
