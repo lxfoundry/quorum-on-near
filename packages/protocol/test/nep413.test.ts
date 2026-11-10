@@ -196,7 +196,7 @@ describe('checkRedeemProof', () => {
     },
   );
 
-  it.each<[string, (proof: RedeemProof) => unknown]>([
+  it.each<[string, (proof: RedeemProof) => unknown | Promise<unknown>]>([
     ['a nonce that is not a string', (p) => ({ ...p, nonce: [...Buffer.from(p.nonce, 'base64')] })],
     ['a 31-byte nonce', (p) => ({ ...p, nonce: base64(Buffer.from(p.nonce, 'base64').subarray(0, 31)) })],
     ['a 33-byte nonce', (p) => ({ ...p, nonce: base64(Buffer.concat([Buffer.from(p.nonce, 'base64'), Buffer.of(0)])) })],
@@ -211,10 +211,12 @@ describe('checkRedeemProof', () => {
       'an ed25519 prefix on a 64-byte key, which near-api-js reads as secp256k1',
       (p) => ({ ...p, publicKey: KeyPair.fromRandom('secp256k1').getPublicKey().toString().replace('secp256k1:', 'ed25519:') }),
     ],
+    // near-api-js parses and verifies ML-DSA-65 keys too, but a proof is signed by an ed25519 or a secp256k1 key.
+    ['a proof signed with an ml-dsa-65 key', () => signProof({ keyPair: KeyPair.fromRandom('ml-dsa-65') })],
     ['an account id that NEAR does not allow', (p) => ({ ...p, accountId: 'Buyer.testnet' })],
     ['a one-character account id', (p) => ({ ...p, accountId: 'b' })],
   ])('rejects %s as invalid_proof', async (_name, mutate) => {
-    expect(check(mutate(await signProof()))).toEqual({ ok: false, code: 'invalid_proof' });
+    expect(check(await mutate(await signProof()))).toEqual({ ok: false, code: 'invalid_proof' });
   });
 
   it('rejects a proof for another pool as wrong_message', async () => {

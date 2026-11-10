@@ -1,7 +1,7 @@
 import { sha256 } from '@noble/hashes/sha2.js';
 import { serialize } from 'borsh';
 import type { Schema } from 'borsh';
-import { PublicKey } from 'near-api-js';
+import { KeyType, PublicKey } from 'near-api-js';
 import { isAccountId } from './account.ts';
 import { decodeHeader } from './codec.ts';
 import { NEP413_TAG, REDEEM_MAX_AGE_MS, REDEEM_MAX_SKEW_MS } from './constants.ts';
@@ -96,9 +96,10 @@ interface ParsedProof {
 }
 
 /**
- * Decodes the header into a proof whose fields are all well formed: a valid account id, a public
- * key in its canonical `<type>:<base58>` form, and canonical standard base64 for the signature and
- * the 32-byte nonce. Canonical forms make `publicKey` and `nonceKey` unique per key and per nonce.
+ * Decodes the header into a proof whose fields are all well formed: a valid account id, an ed25519 or
+ * secp256k1 public key in its canonical `<type>:<base58>` form, and canonical standard base64 for the
+ * signature and the 32-byte nonce. Canonical forms make `publicKey` and `nonceKey` unique per key and
+ * per nonce.
  */
 function parseProof(header: string): ParsedProof | null {
   let value: unknown;
@@ -132,10 +133,13 @@ function parseProof(header: string): ParsedProof | null {
   };
 }
 
+/** The key types a proof may be signed with (spec section 6.5). near-api-js also parses ML-DSA-65 keys. */
+const PROOF_KEY_TYPES: readonly KeyType[] = [KeyType.ED25519, KeyType.SECP256K1];
+
 function parsePublicKey(text: string): PublicKey | null {
   try {
     const key = PublicKey.fromString(text);
-    return key.toString() === text ? key : null;
+    return key.toString() === text && PROOF_KEY_TYPES.includes(key.keyType) ? key : null;
   } catch {
     return null;
   }
