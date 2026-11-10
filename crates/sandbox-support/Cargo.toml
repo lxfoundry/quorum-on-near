@@ -1,0 +1,15 @@
+[package]
+name = "quorum-sandbox-support"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Test helper: a local NEAR sandbox with thin call and view wrappers"
+
+[dependencies]
+anyhow = "1.0.104"
+cargo-near-build = "0.11.5"
+near-api = "0.8.7"
+near-sandbox = "0.3"
+reqwest = { version = "0.13.5", features = ["json"] }
+serde_json = "1.0.154"
+tokio = { version = "1.54.1", features = ["full"] }
