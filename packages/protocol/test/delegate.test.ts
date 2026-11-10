@@ -1,7 +1,11 @@
-import { sha256 } from '@noble/hashes/sha2.js';
+import { ed25519 } from '@noble/curves/ed25519.js';
+import { bytesToNumberLE, concatBytes } from '@noble/curves/utils.js';
+import { sha256, sha512 } from '@noble/hashes/sha2.js';
 import {
   type Action,
   KeyPair,
+  KeyType,
+  PublicKey,
   KeyPairSigner,
   actions,
   buildDelegateAction,
@@ -111,6 +115,66 @@ function withArgs(signed: DecodedSignedDelegate, args: Uint8Array): DecodedSigne
     ...signed,
     delegateAction: { ...signed.delegateAction, actions: [{ functionCall: { ...call, args } }] },
   };
+}
+
+/** The same delegate with byte `index` of its signature set to `value`, after a decode round trip. */
+function withSignatureByte(signed: DecodedSignedDelegate, index: number, value: number): DecodedSignedDelegate {
+  if (!('secp256k1Signature' in signed.signature)) throw new Error('expected a secp256k1 signature');
+  const data = Uint8Array.from(signed.signature.secp256k1Signature.data);
+  data[index] = value;
+  // The round trip is what the gateway does with a buyer's bytes: it decodes them before verifying.
+  return decodeSignedDelegate(
+    encodeSignedDelegate({ ...signed, signature: { secp256k1Signature: { data } } }),
+  );
+}
+
+/** The order of the ed25519 base point's prime-order subgroup (called L in RFC 8032). */
+const ED25519_ORDER = ed25519.Point.Fn.ORDER;
+/** The prime 2^255 - 19 that the ed25519 coordinates are taken modulo. */
+const ED25519_FIELD = 2n ** 255n - 19n;
+/** A fixed ed25519 key and nonce for the signatures crafted below. */
+const CRAFT_SEED = new Uint8Array(32).fill(7);
+const CRAFT_NONCE = 0x1234_5678_9abc_def0_1234_5678_9abc_def0n;
+
+function littleEndian32(value: bigint): Uint8Array {
+  return Uint8Array.from({ length: 32 }, (_, i) => Number((value >> BigInt(8 * i)) & 0xffn));
+}
+
+/**
+ * A delegate by the key behind CRAFT_SEED whose signature starts with exactly `rBytes`, followed by
+ * the scalar s = r + k * a (k is the challenge hash and a the secret scalar), so that
+ * [s]B - [k]A = [r]B. The signature is the textbook one when `rBytes` encodes [r]B, and is off by
+ * whatever else `rBytes` encodes.
+ */
+function craftEd25519(rBytes: Uint8Array, r: bigint): DecodedSignedDelegate {
+  const { scalar, pointBytes } = ed25519.utils.getExtendedPublicKey(CRAFT_SEED);
+  const delegateAction = {
+    ...SIGNED_DELEGATE.delegateAction,
+    publicKey: { ed25519Key: { data: pointBytes } },
+  };
+  const k =
+    bytesToNumberLE(sha512(concatBytes(rBytes, pointBytes, delegateHash(delegateAction)))) % ED25519_ORDER;
+  const data = concatBytes(rBytes, littleEndian32((r + k * scalar) % ED25519_ORDER));
+  // The round trip is what the gateway does with a buyer's bytes: it decodes them before verifying.
+  return decodeSignedDelegate(
+    encodeSignedDelegate({ delegateAction, signature: { ed25519Signature: { data } } }),
+  );
+}
+
+/**
+ * Whether near-api-js's PublicKey.verify takes the signature. The gateway relied on that alone,
+ * which is looser than nearcore's own check for the signatures crafted in these tests.
+ */
+function nearApiJsAccepts(signed: DecodedSignedDelegate): boolean {
+  const { publicKey } = signed.delegateAction;
+  const { signature } = signed;
+  const key =
+    'ed25519Key' in publicKey
+      ? new PublicKey({ keyType: KeyType.ED25519, data: Uint8Array.from(publicKey.ed25519Key.data) })
+      : new PublicKey({ keyType: KeyType.SECP256K1, data: Uint8Array.from(publicKey.secp256k1Key.data) });
+  const data =
+    'ed25519Signature' in signature ? signature.ed25519Signature.data : signature.secp256k1Signature.data;
+  return key.verify(delegateHash(signed.delegateAction), Uint8Array.from(data));
 }
 
 describe('decodeSignedDelegate', () => {
@@ -272,6 +336,72 @@ describe('verifyDelegateSignature', () => {
     const malformed = { ...signed, signature: { ed25519Signature: { data: [1, 2, 3] } } };
 
     expect(verifyDelegateSignature(malformed)).toBe(false);
+  });
+
+  // nearcore verifies a delegate with its own rules, and signatures that near-api-js takes but
+  // nearcore refuses would pass the gateway's checks and then fail on chain, after the relayer paid
+  // for the transaction and without using up the nonce.
+  describe('where nearcore is stricter than near-api-js', () => {
+    it('accepts a secp256k1 signature with each recovery byte from 0 to 3, as nearcore parses it', async () => {
+      const { bytes } = await signWithNear(KeyPair.fromRandom('secp256k1'));
+      const signed = decodeSignedDelegate(bytes);
+
+      for (const recoveryByte of [0, 1, 2, 3]) {
+        expect(verifyDelegateSignature(withSignatureByte(signed, 64, recoveryByte))).toBe(true);
+      }
+    });
+
+    it.each([4, 27, 255])('rejects a secp256k1 signature with recovery byte %i', async (recoveryByte) => {
+      const { bytes } = await signWithNear(KeyPair.fromRandom('secp256k1'));
+      const tampered = withSignatureByte(decodeSignedDelegate(bytes), 64, recoveryByte);
+
+      expect(nearApiJsAccepts(tampered)).toBe(true);
+      expect(verifyDelegateSignature(tampered)).toBe(false);
+    });
+
+    it('rejects a secp256k1 signature of 64 bytes, which has no recovery byte', async () => {
+      const { bytes } = await signWithNear(KeyPair.fromRandom('secp256k1'));
+      const signed = decodeSignedDelegate(bytes);
+      if (!('secp256k1Signature' in signed.signature)) throw new Error('expected a secp256k1 signature');
+      const short = Uint8Array.from(signed.signature.secp256k1Signature.data).subarray(0, 64);
+      const truncated = { ...signed, signature: { secp256k1Signature: { data: short } } };
+
+      expect(verifyDelegateSignature(truncated)).toBe(false);
+    });
+
+    it('accepts an ed25519 signature built by the textbook equation, as a control for the next two', () => {
+      const r = CRAFT_NONCE;
+
+      const control = craftEd25519(ed25519.Point.BASE.multiply(r).toBytes(), r);
+
+      expect(nearApiJsAccepts(control)).toBe(true);
+      expect(verifyDelegateSignature(control)).toBe(true);
+    });
+
+    it('rejects an ed25519 signature whose R carries a point of order 4', () => {
+      const r = CRAFT_NONCE;
+      // y = 0 is a point of order 4, encoded as 32 zero bytes. R = [r]B + it passes the cofactored
+      // check, which multiplies the difference by 8, and fails ed25519-dalek's cofactorless one.
+      const order4 = ed25519.Point.fromBytes(new Uint8Array(32), false);
+      expect(order4.isSmallOrder()).toBe(true);
+      expect(order4.isTorsionFree()).toBe(false);
+
+      const crafted = craftEd25519(ed25519.Point.BASE.multiply(r).add(order4).toBytes(), r);
+
+      expect(nearApiJsAccepts(crafted)).toBe(true);
+      expect(verifyDelegateSignature(crafted)).toBe(false);
+    });
+
+    it('rejects an ed25519 signature whose R is a non-canonical encoding of the identity', () => {
+      // y = 2^255 - 18 is the identity's y = 1 plus the field prime, below 2^255 so it still fits
+      // the 255 bits. ZIP-215 reduces it, and ed25519-dalek compares the bytes of R as written.
+      const rBytes = littleEndian32(ED25519_FIELD + 1n);
+
+      const crafted = craftEd25519(rBytes, 0n);
+
+      expect(nearApiJsAccepts(crafted)).toBe(true);
+      expect(verifyDelegateSignature(crafted)).toBe(false);
+    });
   });
 });
 
