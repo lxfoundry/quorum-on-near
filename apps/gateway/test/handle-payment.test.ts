@@ -795,11 +795,14 @@ describe('handlePayment: responses', () => {
     expect(result).toEqual({ status: 502, body: { error: 'relay_failed', txHash: TX_HASH } });
   });
 
-  it('answers 502 relay_failed with the transaction hash when the delegate action fails', async () => {
+  it('answers 502 relay_failed with the transaction hash, and records the commit as not ok, when the delegate action fails', async () => {
     const s = await scenario();
     s.fake.relayResults.push({ kind: 'executed', outcome: outcome(TX_HASH, [{ executorId: BUYER, failed: true }]) });
     const result = await handlePayment(s.deps, POOL_ID, '2', await s.header());
     expect(result).toEqual({ status: 502, body: { error: 'relay_failed', txHash: TX_HASH } });
+    expect(s.deps.activity.list()).toEqual([
+      { at: NOW_MS, poolId: POOL_ID, kind: 'commit', account: BUYER, seats: 0, amount: '0', txHash: TX_HASH, ok: false },
+    ]);
   });
 
   it('answers 502 result_unknown with the transaction hash when the result is not known in time', async () => {
@@ -923,7 +926,6 @@ describe('handlePayment: activity feed', () => {
   it.each<[string, RelayResult]>([
     ['the relay is rejected', { kind: 'rejected', txHash: TX_HASH, error: 'InvalidNonceError' }],
     ['the result is unknown', { kind: 'unknown', txHash: TX_HASH, expired: false }],
-    ['the delegate action fails', { kind: 'executed', outcome: outcome(TX_HASH, [{ executorId: BUYER, failed: true }]) }],
   ])('records nothing when %s', async (_, relayResult) => {
     const s = await scenario();
     s.fake.relayResults.push(relayResult);

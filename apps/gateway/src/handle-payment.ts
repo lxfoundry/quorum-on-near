@@ -205,8 +205,8 @@ async function answerCommit(
   const buyer = payment.senderId;
   const { txHash } = outcome;
   const commit = readCommit(outcome, { poolsContract: config.poolsContract, buyer, poolId: pool.id });
-  if (commit.delegateFailed) return reply(502, { error: 'relay_failed', txHash });
 
+  // A failed delegate is recorded too (0 seats, not ok): its transaction ran and has a link.
   await appendActivity(deps, {
     at: deps.now(),
     poolId: pool.id,
@@ -217,6 +217,7 @@ async function answerCommit(
     txHash,
     ok: commit.seats > 0,
   });
+  if (commit.delegateFailed) return reply(502, { error: 'relay_failed', txHash });
   if (commit.seats === 0) return await answerNoSeats(deps, pool.id, outcome);
 
   const response: PaymentResponse = { success: true, transaction: txHash, network: config.network, payer: buyer };
