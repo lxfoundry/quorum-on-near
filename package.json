@@ -1,0 +1,11 @@
+{
+  "name": "quorum-on-near",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.23.0",
+  "engines": { "node": ">=22.22.2" },
+  "scripts": {
+    "test": "pnpm -r --if-present test",
+    "typecheck": "pnpm -r --if-present typecheck"
+  }
+}
