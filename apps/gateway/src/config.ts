@@ -111,6 +111,12 @@ const asHttpUrl: Rule<string> = {
   parse: (raw) => (URL.canParse(raw) && ['http:', 'https:'].includes(new URL(raw).protocol) ? raw : undefined),
 };
 
+/** Whether `url` has a user name, a password, a query or a fragment: where an endpoint's key would go. */
+function mayHoldKey(url: string): boolean {
+  const { username, password, search, hash } = new URL(url);
+  return username !== '' || password !== '' || search !== '' || hash !== '';
+}
+
 const asBaseUrl: Rule<string> = {
   expected: asHttpUrl.expected,
   parse: (raw) => asHttpUrl.parse(raw)?.replace(/\/+$/, ''),
@@ -329,6 +335,18 @@ export function loadConfig(env: Record<string, string | undefined>): GatewayConf
           `what refund requires at entry with QUORUM_REFUND_LIMIT ${refundLimit}, plus what it uses before that check`,
         );
   const refundGas = optional('QUORUM_REFUND_GAS', '300000000000000', refundGasRule);
+  const dataDir = optional('QUORUM_DATA_DIR', 'data', asPath);
+  const webDir = optional('QUORUM_WEB_DIR', '../web', asWebDir);
+  const rpcPassthrough = optional('QUORUM_RPC_PASSTHROUGH', 'false', asBoolean);
+  // Without the pass-through, /config.json gives the RPC URL to the live page. The URL is not repeated:
+  // it may hold a key.
+  if (rpcPassthrough === false && rpcUrl !== undefined && mayHoldKey(rpcUrl)) {
+    problems.push(
+      'QUORUM_RPC_URL must have no user name, password, query or fragment while QUORUM_RPC_PASSTHROUGH is false, ' +
+        'since /config.json gives it to the live page; ' +
+        'for an endpoint with a key in its URL, set QUORUM_RPC_PASSTHROUGH=true',
+    );
+  }
 
   const draft: Draft = {
     network,
@@ -350,9 +368,9 @@ export function loadConfig(env: Record<string, string | undefined>): GatewayConf
     refundLimit,
     settleGas,
     refundGas,
-    dataDir: optional('QUORUM_DATA_DIR', 'data', asPath),
-    webDir: optional('QUORUM_WEB_DIR', '../web', asWebDir),
-    rpcPassthrough: optional('QUORUM_RPC_PASSTHROUGH', 'false', asBoolean),
+    dataDir,
+    webDir,
+    rpcPassthrough,
     explorerTxUrl: optional('QUORUM_EXPLORER_TX_URL', 'https://testnet.nearblocks.io/txns/', asHttpUrl),
   };
   if (problems.length > 0) throw new ConfigError(problems.join('\n'));

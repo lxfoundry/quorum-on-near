@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -449,6 +450,48 @@ describe('loadConfig relayer keys', () => {
     const secondKey = KeyPair.fromRandom('ed25519').toString();
     const message = problems(env({ QUORUM_RELAYER_KEYS: `${RELAYER_KEY}, ${secondKey},,${RELAYER_KEY}` }));
     expect(message).toEqual(['QUORUM_RELAYER_KEYS must list each key once: keys 1 and 3 are the same']);
+  });
+});
+
+describe('loadConfig RPC URL', () => {
+  // /config.json gives the live page the RPC URL unless the pass-through is on.
+  const KEYED_URL =
+    'QUORUM_RPC_URL must have no user name, password, query or fragment while QUORUM_RPC_PASSTHROUGH is false, ' +
+    'since /config.json gives it to the live page; ' +
+    'for an endpoint with a key in its URL, set QUORUM_RPC_PASSTHROUGH=true';
+  const API_KEY = randomBytes(12).toString('hex');
+  const QUERY_URL = `https://rpc.testnet.example/?apiKey=${API_KEY}`;
+  const keyed = [
+    ['a user name', `https://${API_KEY}@rpc.testnet.example`],
+    ['a user name and a password', `https://user:${API_KEY}@rpc.testnet.example`],
+    ['a query', QUERY_URL],
+    ['a fragment', `https://rpc.testnet.example/#${API_KEY}`],
+  ];
+
+  it.each(keyed)('refuses a URL with %s while the pass-through is off, without repeating the URL', (_label, url) => {
+    const message = problems(env({ QUORUM_RPC_URL: url }));
+    expect(message).toEqual([KEYED_URL]);
+    expect(message.join('\n')).not.toContain(API_KEY);
+  });
+
+  it.each(keyed)(
+    'accepts a URL with %s while the pass-through is on, which keeps the URL on the server',
+    (_label, url) => {
+      expect(loadConfig(env({ QUORUM_RPC_URL: url, QUORUM_RPC_PASSTHROUGH: 'true' })).rpcUrl).toBe(url);
+    },
+  );
+
+  it.each(['https://rpc.testnet.near.org', 'http://127.0.0.1:3030', 'https://rpc.testnet.example/v1/near/'])(
+    'accepts %s, which has no user name, password, query or fragment, while the pass-through is off',
+    (url) => {
+      expect(loadConfig(env({ QUORUM_RPC_URL: url })).rpcUrl).toBe(url);
+    },
+  );
+
+  it('checks the URL only once QUORUM_RPC_PASSTHROUGH is valid', () => {
+    expect(problems(env({ QUORUM_RPC_URL: QUERY_URL, QUORUM_RPC_PASSTHROUGH: 'yes' }))).toEqual([
+      'QUORUM_RPC_PASSTHROUGH must be true or false, got "yes"',
+    ]);
   });
 });
 
