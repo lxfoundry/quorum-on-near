@@ -367,7 +367,7 @@ describe('createApp', () => {
 
     it.each([
       ['another account', viewCall({}, { account_id: 'other.testnet' })],
-      ['another request type', viewCall({}, { request_type: 'view_state', prefix_base64: '' })],
+      ['another request type', viewCall({}, { request_type: 'view_account' })],
       ['another RPC method', viewCall({ method: 'send_tx' })],
       ['a JSON-RPC version other than 2.0', viewCall({ jsonrpc: '1.0' })],
       ['both finality and block_id', viewCall({}, { block_id: 1000 })],
