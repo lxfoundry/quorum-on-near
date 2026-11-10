@@ -26,7 +26,12 @@ async fn mint_needs_registration_and_respects_the_cap() -> anyhow::Result<()> {
     let mint = |amount: &str| json!({ "account_id": alice, "amount": amount });
 
     // An unregistered account cannot be minted to.
-    assert!(!chain.call(&alice, &token, "mint", mint("1000000"), 30, 0).await?.ok);
+    assert!(
+        !chain
+            .call(&alice, &token, "mint", mint("1000000"), 30, 0)
+            .await?
+            .ok
+    );
 
     chain
         .call(
@@ -39,16 +44,36 @@ async fn mint_needs_registration_and_respects_the_cap() -> anyhow::Result<()> {
         )
         .await?;
 
-    assert!(chain.call(&alice, &token, "mint", mint("1000000"), 30, 0).await?.ok);
+    assert!(
+        chain
+            .call(&alice, &token, "mint", mint("1000000"), 30, 0)
+            .await?
+            .ok
+    );
     let balance = chain
         .view(&token, "ft_balance_of", json!({ "account_id": alice }))
         .await?;
     assert_eq!(balance, "1000000");
 
     // 1,000 mUSD is the most one call can mint; one base unit more is refused.
-    assert!(!chain.call(&alice, &token, "mint", mint("1000000001"), 30, 0).await?.ok);
-    assert!(chain.call(&alice, &token, "mint", mint("1000000000"), 30, 0).await?.ok);
-    assert!(!chain.call(&alice, &token, "mint", mint("0"), 30, 0).await?.ok);
+    assert!(
+        !chain
+            .call(&alice, &token, "mint", mint("1000000001"), 30, 0)
+            .await?
+            .ok
+    );
+    assert!(
+        chain
+            .call(&alice, &token, "mint", mint("1000000000"), 30, 0)
+            .await?
+            .ok
+    );
+    assert!(
+        !chain
+            .call(&alice, &token, "mint", mint("0"), 30, 0)
+            .await?
+            .ok
+    );
     Ok(())
 }
 
@@ -73,7 +98,14 @@ async fn registered_accounts_can_transfer() -> anyhow::Result<()> {
             .await?;
     }
     chain
-        .call(&alice, &token, "mint", json!({ "account_id": alice, "amount": "5000000" }), 30, 0)
+        .call(
+            &alice,
+            &token,
+            "mint",
+            json!({ "account_id": alice, "amount": "5000000" }),
+            30,
+            0,
+        )
         .await?;
     let sent = chain
         .call(

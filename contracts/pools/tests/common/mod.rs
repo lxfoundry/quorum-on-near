@@ -134,7 +134,12 @@ impl World {
     }
 
     /// `ft_transfer_call` of `amount` base units from `from` to the pools contract.
-    pub async fn transfer_call(&self, from: &AccountId, amount: u128, msg: Value) -> Result<Outcome> {
+    pub async fn transfer_call(
+        &self,
+        from: &AccountId,
+        amount: u128,
+        msg: Value,
+    ) -> Result<Outcome> {
         self.chain
             .call(
                 from,
@@ -154,9 +159,16 @@ impl World {
     pub async fn pool_count(&self) -> Result<usize> {
         let pools = self
             .chain
-            .view(&self.pools, "list_pools", json!({ "from": 0, "limit": 100 }))
+            .view(
+                &self.pools,
+                "list_pools",
+                json!({ "from": 0, "limit": 100 }),
+            )
             .await?;
-        Ok(pools.as_array().ok_or_else(|| anyhow!("not an array"))?.len())
+        Ok(pools
+            .as_array()
+            .ok_or_else(|| anyhow!("not an array"))?
+            .len())
     }
 
     /// Opens a pool by sending `bonus` with an `open` message. Fails if the contract refused it.
@@ -201,7 +213,14 @@ impl World {
     pub async fn settle(&self, caller: &AccountId, pool_id: u64) -> Result<Outcome> {
         let out = self
             .chain
-            .call(caller, &self.pools, "settle", json!({ "pool_id": pool_id }), 100, 0)
+            .call(
+                caller,
+                &self.pools,
+                "settle",
+                json!({ "pool_id": pool_id }),
+                100,
+                0,
+            )
             .await?;
         self.check_invariants().await?;
         Ok(out)
@@ -232,7 +251,14 @@ impl World {
     pub async fn claim(&self, caller: &AccountId, pool_id: u64) -> Result<Outcome> {
         let out = self
             .chain
-            .call(caller, &self.pools, "claim_refund", json!({ "pool_id": pool_id }), 100, 0)
+            .call(
+                caller,
+                &self.pools,
+                "claim_refund",
+                json!({ "pool_id": pool_id }),
+                100,
+                0,
+            )
             .await?;
         self.check_invariants().await?;
         Ok(out)
@@ -279,7 +305,11 @@ impl World {
     pub async fn check_invariants(&self) -> Result<()> {
         let pools = self
             .chain
-            .view(&self.pools, "list_pools", json!({ "from": 0, "limit": 100 }))
+            .view(
+                &self.pools,
+                "list_pools",
+                json!({ "from": 0, "limit": 100 }),
+            )
             .await?;
         let mut owed: u128 = 0;
         for p in pools.as_array().ok_or_else(|| anyhow!("not an array"))? {
@@ -309,7 +339,10 @@ impl World {
                     }
                     let dust = bonus - per_seat * taken;
                     if all_refunds + dust != taken * price + bonus {
-                        bail!("pool {id}: refunds {all_refunds} + dust {dust} != {}", taken * price + bonus);
+                        bail!(
+                            "pool {id}: refunds {all_refunds} + dust {dust} != {}",
+                            taken * price + bonus
+                        );
                     }
                     owed += still_owed;
                     if !p["dust_sent"].as_bool().unwrap() {

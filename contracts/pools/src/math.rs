@@ -78,7 +78,10 @@ mod tests {
 
     #[test]
     fn payout_is_the_takings_plus_the_bonus() {
-        assert_eq!(payout(192, 1_800_000, 17_280_000), 192 * 1_800_000 + 17_280_000);
+        assert_eq!(
+            payout(192, 1_800_000, 17_280_000),
+            192 * 1_800_000 + 17_280_000
+        );
     }
 
     /// The testnet scenarios (spec section 7.3) price seats at a few hundred base units of USDC.
@@ -101,7 +104,10 @@ mod tests {
             for taken in 1u32..=12 {
                 let share = bonus_per_seat(bonus, taken);
                 let total_refunds: u128 = (0..taken).map(|_| refund_amount(1, 3, share)).sum();
-                assert_eq!(total_refunds + dust(bonus, share, taken), u128::from(taken) * 3 + bonus);
+                assert_eq!(
+                    total_refunds + dust(bonus, share, taken),
+                    u128::from(taken) * 3 + bonus
+                );
             }
         }
     }

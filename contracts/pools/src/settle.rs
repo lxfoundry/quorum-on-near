@@ -142,7 +142,12 @@ mod tests {
         c.on_settled(id, acct("seller.test"), U128(14), Err(PromiseError::Failed));
         assert_eq!(c.pools.get(&id).unwrap().status, PoolStatus::Filled);
         let open_id = open(&mut c);
-        c.on_settled(open_id, acct("seller.test"), U128(14), Err(PromiseError::Failed));
+        c.on_settled(
+            open_id,
+            acct("seller.test"),
+            U128(14),
+            Err(PromiseError::Failed),
+        );
         assert_eq!(c.pools.get(&open_id).unwrap().status, PoolStatus::Open);
     }
 }

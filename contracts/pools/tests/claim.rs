@@ -8,9 +8,15 @@ const SHARE: u128 = 10 * MUSD / 3; // the 10 mUSD bonus over 3 seats, floored
 /// 6 seats at 2 mUSD, a 10 mUSD bonus, three buyers with one seat each, expired.
 async fn expired_pool(w: &World) -> anyhow::Result<(u64, AccountId, Vec<AccountId>)> {
     let seller = w.user("seller", 10).await?;
-    let buyers = vec![w.user("a", 10).await?, w.user("b", 10).await?, w.user("c", 10).await?];
+    let buyers = vec![
+        w.user("a", 10).await?,
+        w.user("b", 10).await?,
+        w.user("c", 10).await?,
+    ];
     let deadline = w.deadline_in(DEADLINE_MS).await?;
-    let id = w.open(&seller, 10 * MUSD, 2 * MUSD, 6, deadline, None).await?;
+    let id = w
+        .open(&seller, 10 * MUSD, 2 * MUSD, 6, deadline, None)
+        .await?;
     for buyer in &buyers {
         assert!(w.commit(buyer, id, 1, 2 * MUSD).await?.ok);
     }
@@ -28,7 +34,14 @@ async fn a_buyer_can_claim_before_anyone_has_called_refund() -> anyhow::Result<(
     assert_eq!(w.balance(&buyers[1]).await?, 10 * MUSD + SHARE);
     let pool = w.pool(id).await?;
     assert_eq!(pool["status"], "expired", "the claim stored the expiry");
-    let row = w.chain.view(&w.pools, "get_buyer", json!({ "pool_id": id, "account_id": buyers[1] })).await?;
+    let row = w
+        .chain
+        .view(
+            &w.pools,
+            "get_buyer",
+            json!({ "pool_id": id, "account_id": buyers[1] }),
+        )
+        .await?;
     assert_eq!(row["state"], "refunded");
 
     // refund then skips the buyer that already claimed, and finishes the pool
@@ -36,7 +49,11 @@ async fn a_buyer_can_claim_before_anyone_has_called_refund() -> anyhow::Result<(
     w.check_invariants().await?;
     assert_eq!(w.pool(id).await?["status"], "refunded");
     assert_eq!(w.balance(&buyers[0]).await?, 10 * MUSD + SHARE);
-    assert_eq!(w.balance(&buyers[1]).await?, 10 * MUSD + SHARE, "paid once, not twice");
+    assert_eq!(
+        w.balance(&buyers[1]).await?,
+        10 * MUSD + SHARE,
+        "paid once, not twice"
+    );
     assert_eq!(w.balance(&buyers[2]).await?, 10 * MUSD + SHARE);
 
     // claiming again is refused
@@ -55,9 +72,20 @@ async fn a_refund_that_cannot_be_pushed_becomes_claimable() -> anyhow::Result<()
     assert!(w.refund(&seller, id, 10, 300).await?.ok);
     w.check_invariants().await?;
 
-    let row = w.chain.view(&w.pools, "get_buyer", json!({ "pool_id": id, "account_id": buyers[1] })).await?;
+    let row = w
+        .chain
+        .view(
+            &w.pools,
+            "get_buyer",
+            json!({ "pool_id": id, "account_id": buyers[1] }),
+        )
+        .await?;
     assert_eq!(row["state"], "claimable");
-    assert_eq!(w.pool(id).await?["status"], "refunded", "the pool is done; one refund is still owed");
+    assert_eq!(
+        w.pool(id).await?["status"],
+        "refunded",
+        "the pool is done; one refund is still owed"
+    );
     assert_eq!(w.balance(&buyers[0]).await?, 10 * MUSD + SHARE);
 
     // b registers again and claims
@@ -66,7 +94,14 @@ async fn a_refund_that_cannot_be_pushed_becomes_claimable() -> anyhow::Result<()
     w.check_invariants().await?;
     // leaving the token burned b's remaining 8 mUSD, so b now holds only the refund
     assert_eq!(w.balance(&buyers[1]).await?, 2 * MUSD + SHARE);
-    let row = w.chain.view(&w.pools, "get_buyer", json!({ "pool_id": id, "account_id": buyers[1] })).await?;
+    let row = w
+        .chain
+        .view(
+            &w.pools,
+            "get_buyer",
+            json!({ "pool_id": id, "account_id": buyers[1] }),
+        )
+        .await?;
     assert_eq!(row["state"], "refunded");
     Ok(())
 }
@@ -77,8 +112,18 @@ async fn a_failed_claim_leaves_the_refund_claimable() -> anyhow::Result<()> {
     let (id, _seller, buyers) = expired_pool(&w).await?;
 
     w.unregister(&buyers[0]).await?;
-    assert!(w.claim(&buyers[0], id).await?.ok, "the call succeeds; its callback restores the state");
-    let row = w.chain.view(&w.pools, "get_buyer", json!({ "pool_id": id, "account_id": buyers[0] })).await?;
+    assert!(
+        w.claim(&buyers[0], id).await?.ok,
+        "the call succeeds; its callback restores the state"
+    );
+    let row = w
+        .chain
+        .view(
+            &w.pools,
+            "get_buyer",
+            json!({ "pool_id": id, "account_id": buyers[0] }),
+        )
+        .await?;
     assert_eq!(row["state"], "claimable");
     w.check_invariants().await?;
 
@@ -96,7 +141,9 @@ async fn a_claim_needs_an_expired_pool_and_held_seats() -> anyhow::Result<()> {
     let seller = w.user("seller", 20).await?;
     let a = w.user("a", 10).await?;
     let deadline = w.deadline_in(DEADLINE_MS).await?;
-    let id = w.open(&seller, 10 * MUSD, 2 * MUSD, 4, deadline, None).await?;
+    let id = w
+        .open(&seller, 10 * MUSD, 2 * MUSD, 4, deadline, None)
+        .await?;
     assert!(w.commit(&a, id, 1, 2 * MUSD).await?.ok);
 
     // the pool is still open: no claim
@@ -105,9 +152,14 @@ async fn a_claim_needs_an_expired_pool_and_held_seats() -> anyhow::Result<()> {
 
     // an expired pool where the caller holds no seats: a second pool in the same world
     let deadline2 = w.deadline_in(DEADLINE_MS).await?;
-    let id2 = w.open(&seller, 10 * MUSD, 2 * MUSD, 4, deadline2, None).await?;
+    let id2 = w
+        .open(&seller, 10 * MUSD, 2 * MUSD, 4, deadline2, None)
+        .await?;
     w.expire(id2).await?;
-    assert!(!w.claim(&a, id2).await?.ok, "a holds no seats in the second pool");
+    assert!(
+        !w.claim(&a, id2).await?.ok,
+        "a holds no seats in the second pool"
+    );
     w.check_invariants().await?;
     Ok(())
 }

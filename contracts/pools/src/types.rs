@@ -117,7 +117,10 @@ impl PoolView {
     pub fn new(id: u64, pool: &Pool, now_ms: u64) -> Self {
         let expires_now = pool.status == PoolStatus::Open && now_ms >= pool.deadline_ms;
         let (status, bonus_per_seat) = if expires_now {
-            (PoolStatus::Expired, math::bonus_per_seat(pool.bonus, pool.taken))
+            (
+                PoolStatus::Expired,
+                math::bonus_per_seat(pool.bonus, pool.taken),
+            )
         } else {
             (pool.status, pool.bonus_per_seat)
         };

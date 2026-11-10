@@ -334,7 +334,11 @@ mod tests {
         c.refund(id, 1);
         let pool = c.pools.get(&id).unwrap();
         assert!(pool.dust_sent);
-        assert_eq!(pool.status, PoolStatus::Expired, "the pool finishes when the dust arrives");
+        assert_eq!(
+            pool.status,
+            PoolStatus::Expired,
+            "the pool finishes when the dust arrives"
+        );
     }
 
     #[test]
@@ -343,7 +347,14 @@ mod tests {
         let id = pool_with(&mut c, 10, &["a.test"]);
         set_context("anyone.test", 10_000);
         c.refund(id, 1);
-        c.on_refund_sent(id, acct("a.test"), 1, U128(5), U128(3), Err(PromiseError::Failed));
+        c.on_refund_sent(
+            id,
+            acct("a.test"),
+            1,
+            U128(5),
+            U128(3),
+            Err(PromiseError::Failed),
+        );
         assert_eq!(state(&c, id, "a.test"), BuyerState::Claimable);
         assert!(logged("refund_failed"));
     }
@@ -395,7 +406,11 @@ mod tests {
         c.claim_refund(id);
         assert_eq!(state(&c, id, "a.test"), BuyerState::Refunded);
         let pool = c.pools.get(&id).unwrap();
-        assert_eq!(pool.status, PoolStatus::Expired, "the claim stored the expiry");
+        assert_eq!(
+            pool.status,
+            PoolStatus::Expired,
+            "the claim stored the expiry"
+        );
         assert_eq!(pool.bonus_per_seat, 3);
         assert_eq!(state(&c, id, "b.test"), BuyerState::Committed);
     }

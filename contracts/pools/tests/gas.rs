@@ -36,10 +36,17 @@ async fn a_full_refund_batch_completes_with_just_over_the_gas_it_needs() -> anyh
 
     let share = bonus / 10;
     for buyer in &buyers {
-        assert_eq!(w.balance(buyer).await?, 4 * MUSD - 2 * MUSD + 2 * MUSD + share);
+        assert_eq!(
+            w.balance(buyer).await?,
+            4 * MUSD - 2 * MUSD + 2 * MUSD + share
+        );
         let row = w
             .chain
-            .view(&w.pools, "get_buyer", serde_json::json!({ "pool_id": id, "account_id": buyer }))
+            .view(
+                &w.pools,
+                "get_buyer",
+                serde_json::json!({ "pool_id": id, "account_id": buyer }),
+            )
             .await?;
         assert_eq!(row["state"], "refunded");
     }

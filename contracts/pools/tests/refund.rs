@@ -5,9 +5,15 @@ use common::*;
 /// A pool of 6 seats at 2 mUSD with a 10 mUSD bonus, three buyers with one seat each, then expired.
 async fn expired_pool(w: &World) -> anyhow::Result<(u64, AccountId, Vec<AccountId>)> {
     let seller = w.user("seller", 10).await?;
-    let buyers = vec![w.user("a", 10).await?, w.user("b", 10).await?, w.user("c", 10).await?];
+    let buyers = vec![
+        w.user("a", 10).await?,
+        w.user("b", 10).await?,
+        w.user("c", 10).await?,
+    ];
     let deadline = w.deadline_in(DEADLINE_MS).await?;
-    let id = w.open(&seller, 10 * MUSD, 2 * MUSD, 6, deadline, None).await?;
+    let id = w
+        .open(&seller, 10 * MUSD, 2 * MUSD, 6, deadline, None)
+        .await?;
     for buyer in &buyers {
         assert!(w.commit(buyer, id, 1, 2 * MUSD).await?.ok);
     }
@@ -16,7 +22,8 @@ async fn expired_pool(w: &World) -> anyhow::Result<(u64, AccountId, Vec<AccountI
 }
 
 #[tokio::test]
-async fn a_failed_pool_refunds_every_buyer_in_batches_and_the_dust_goes_to_the_seller() -> anyhow::Result<()> {
+async fn a_failed_pool_refunds_every_buyer_in_batches_and_the_dust_goes_to_the_seller(
+) -> anyhow::Result<()> {
     let w = World::new().await?;
     let (id, seller, buyers) = expired_pool(&w).await?;
     let share = 10 * MUSD / 3; // 3_333_333: the bonus split over 3 seats, floored
@@ -51,10 +58,16 @@ async fn a_failed_pool_refunds_every_buyer_in_batches_and_the_dust_goes_to_the_s
 async fn a_dust_of_zero_finishes_without_a_transfer() -> anyhow::Result<()> {
     let w = World::new().await?;
     let seller = w.user("seller", 9).await?;
-    let buyers = vec![w.user("a", 10).await?, w.user("b", 10).await?, w.user("c", 10).await?];
+    let buyers = vec![
+        w.user("a", 10).await?,
+        w.user("b", 10).await?,
+        w.user("c", 10).await?,
+    ];
     let deadline = w.deadline_in(DEADLINE_MS).await?;
     // 9 mUSD of bonus over 3 seats divides exactly: 3 mUSD each, nothing left over
-    let id = w.open(&seller, 9 * MUSD, 2 * MUSD, 6, deadline, None).await?;
+    let id = w
+        .open(&seller, 9 * MUSD, 2 * MUSD, 6, deadline, None)
+        .await?;
     for buyer in &buyers {
         assert!(w.commit(buyer, id, 1, 2 * MUSD).await?.ok);
     }
@@ -74,7 +87,9 @@ async fn a_pool_with_no_seats_returns_the_whole_bonus_to_the_seller() -> anyhow:
     let w = World::new().await?;
     let seller = w.user("seller", 10).await?;
     let deadline = w.deadline_in(DEADLINE_MS).await?;
-    let id = w.open(&seller, 10 * MUSD, 2 * MUSD, 4, deadline, None).await?;
+    let id = w
+        .open(&seller, 10 * MUSD, 2 * MUSD, 4, deadline, None)
+        .await?;
     w.expire(id).await?;
 
     assert!(w.refund(&seller, id, 1, 300).await?.ok);
@@ -89,7 +104,9 @@ async fn refund_is_refused_before_the_deadline() -> anyhow::Result<()> {
     let w = World::new().await?;
     let seller = w.user("seller", 10).await?;
     let deadline = w.deadline_in(DEADLINE_MS).await?;
-    let id = w.open(&seller, 10 * MUSD, 2 * MUSD, 4, deadline, None).await?;
+    let id = w
+        .open(&seller, 10 * MUSD, 2 * MUSD, 4, deadline, None)
+        .await?;
     assert!(!w.refund(&seller, id, 5, 300).await?.ok);
     assert_eq!(w.pool(id).await?["status"], "open");
     Ok(())
@@ -134,7 +151,10 @@ async fn a_failed_dust_transfer_is_retried_by_the_next_refund_call() -> anyhow::
     w.unregister(&seller).await?;
     assert!(w.refund(&buyers[0], id, 10, 300).await?.ok);
     let pool = w.pool(id).await?;
-    assert_eq!(pool["status"], "expired", "the dust is still owed, so the pool is not finished");
+    assert_eq!(
+        pool["status"], "expired",
+        "the dust is still owed, so the pool is not finished"
+    );
     assert_eq!(pool["dust_sent"], false);
     for buyer in &buyers {
         assert_eq!(w.balance(buyer).await?, 10 * MUSD + share);
@@ -149,7 +169,11 @@ async fn a_failed_dust_transfer_is_retried_by_the_next_refund_call() -> anyhow::
     assert_eq!(pool["dust_sent"], true);
     assert_eq!(w.balance(&seller).await?, 1);
     for buyer in &buyers {
-        assert_eq!(w.balance(buyer).await?, 10 * MUSD + share, "no buyer was paid twice");
+        assert_eq!(
+            w.balance(buyer).await?,
+            10 * MUSD + share,
+            "no buyer was paid twice"
+        );
     }
     w.check_invariants().await?;
     Ok(())

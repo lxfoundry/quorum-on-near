@@ -182,7 +182,9 @@ static TOKEN_WASM: OnceLock<Vec<u8>> = OnceLock::new();
 static POOLS_WASM: OnceLock<Vec<u8>> = OnceLock::new();
 
 fn build_once(cell: &'static OnceLock<Vec<u8>>, manifest: &str) -> Result<Vec<u8>> {
-    let _guard = BUILD_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _guard = BUILD_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(wasm) = cell.get() {
         return Ok(wasm.clone());
     }

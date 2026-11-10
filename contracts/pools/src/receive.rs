@@ -3,7 +3,9 @@ use near_sdk::{env, near, require, AccountId, PromiseOrValue};
 
 use crate::{events, math};
 use crate::{Buyer, BuyerState};
-use crate::{Contract, ContractExt, Msg, OpenParams, Pool, PoolStatus, MAX_TARGET, MAX_TERMS_BYTES};
+use crate::{
+    Contract, ContractExt, Msg, OpenParams, Pool, PoolStatus, MAX_TARGET, MAX_TERMS_BYTES,
+};
 
 #[near]
 impl Contract {
@@ -323,7 +325,10 @@ mod tests {
         let pool = c.pools.get(&id).unwrap();
         assert_eq!((pool.taken, pool.buyer_count), (2, 1));
         let buyer = c.buyers.get(&(id, acct("a.test"))).unwrap();
-        assert_eq!((buyer.slot, buyer.seats, buyer.state), (0, 2, BuyerState::Committed));
+        assert_eq!(
+            (buyer.slot, buyer.seats, buyer.state),
+            (0, 2, BuyerState::Committed)
+        );
         assert_eq!(c.slots.get(&(id, 0)).unwrap(), &acct("a.test"));
     }
 
