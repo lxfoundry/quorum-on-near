@@ -6,7 +6,7 @@ import { parseEnv, promisify } from 'node:util';
 import { KeyPair } from 'near-api-js';
 import { describe, expect, it } from 'vitest';
 import { checkChainId, ConfigError, loadConfig, TESTNET_USDC, type GatewayConfig } from '../src/config.ts';
-import { generateCredentialJwk } from '../src/credential.ts';
+import { createCredentialIssuer, generateCredentialJwk } from '../src/credential.ts';
 
 const EXAMPLE = fileURLToPath(new URL('../.env.example', import.meta.url));
 const PARENT = 'parent.testnet';
@@ -234,6 +234,17 @@ describe('loadConfig', () => {
 
   it('accepts any key that generateCredentialJwk makes', () => {
     expect(loadConfig(env({ QUORUM_CREDENTIAL_JWK: JSON.stringify(OTHER_JWK) })).credentialJwk).toEqual(OTHER_JWK);
+  });
+
+  // The issuer's JWK import passes key_ops on as the key's usages, and fails on any that cannot sign.
+  it.each([
+    ['key_ops that only verify', { key_ops: ['verify'] }],
+    ['key_ops that is not a list', { key_ops: 'sign' }],
+    ['ext, use and alg', { ext: false, use: 'sig', alg: 'EdDSA' }],
+  ])('keeps only kty, crv, x and d of a credential key with %s, so the issuer can use it', async (_label, extra) => {
+    const config = loadConfig(env({ QUORUM_CREDENTIAL_JWK: JSON.stringify({ ...CREDENTIAL_JWK, ...extra }) }));
+    expect(config.credentialJwk).toStrictEqual({ kty: 'OKP', crv: 'Ed25519', x: CREDENTIAL_JWK.x, d: CREDENTIAL_JWK.d });
+    await expect(createCredentialIssuer({ jwk: config.credentialJwk, issuer: config.publicUrl })).resolves.toBeDefined();
   });
 
   it('lists a credential key whose x does not belong to its d with the other problems, without either key', () => {

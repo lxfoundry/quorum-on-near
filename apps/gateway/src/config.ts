@@ -24,7 +24,7 @@ export interface GatewayConfig {
   provider: string;
   /** The relayer account's secret keys, `ed25519:<base58>`. */
   relayerKeys: string[];
-  /** The private Ed25519 JWK that signs credentials. */
+  /** The private Ed25519 JWK that signs credentials, with only its kty, crv, x and d. */
   credentialJwk: JWK;
   minGas: bigint;
   maxGas: bigint;
@@ -188,13 +188,20 @@ function holdsKeyPair(jwk: JWK & { x: string; d: string }): boolean {
   }
 }
 
+/**
+ * Keeps only `kty`, `crv`, `x` and `d`: the issuer's JWK import would pass any other member on, such
+ * as `key_ops`, which it takes as the key's usages and refuses unless they allow signing.
+ */
 const asCredentialJwk: Rule<JWK> = {
   expected: 'a private Ed25519 JWK (JSON with kty "OKP", crv "Ed25519", x and d)',
   secret: true,
   parse(raw) {
     try {
       const jwk: unknown = JSON.parse(raw);
-      return isPrivateEd25519Jwk(jwk) && holdsKeyPair(jwk) ? jwk : undefined;
+      if (!isPrivateEd25519Jwk(jwk)) return undefined;
+      const { kty, crv, x, d } = jwk;
+      const key = { kty, crv, x, d };
+      return holdsKeyPair(key) ? key : undefined;
     } catch {
       return undefined;
     }
