@@ -1,0 +1,16 @@
+[package]
+name = "mock-usd"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Mock USD (mUSD): a NEP-141 token for sandbox tests, with a capped open mint"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+near-contract-standards = "5"
+near-sdk = "5"
+
+[dev-dependencies]
+near-sdk = { version = "5", features = ["unit-testing"] }
