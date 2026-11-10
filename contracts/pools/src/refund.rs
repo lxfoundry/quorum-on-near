@@ -31,10 +31,7 @@ impl Contract {
             .get_mut(&pool_id)
             .unwrap_or_else(|| env::panic_str("pool not found"));
         pool.expire_if_due(now_ms);
-        require!(
-            pool.status == PoolStatus::Expired,
-            "pool is not open past its deadline or expired"
-        );
+        require!(pool.status == PoolStatus::Expired, "pool is not expired");
 
         let mut pushes: Vec<Push> = Vec::new();
         let mut visited = 0;
@@ -122,7 +119,7 @@ impl Contract {
         pool.expire_if_due(now_ms);
         require!(
             matches!(pool.status, PoolStatus::Expired | PoolStatus::Refunded),
-            "pool is not open past its deadline, expired or refunded"
+            "pool is neither expired nor refunded"
         );
         let record = self
             .buyers
@@ -153,13 +150,7 @@ impl Contract {
     ) {
         match result {
             Ok(()) => events::refund_claimed(pool_id, &buyer, amount.0),
-            Err(_) => {
-                if let Some(record) = self.buyers.get_mut(&(pool_id, buyer)) {
-                    if record.state == BuyerState::Refunded {
-                        record.state = BuyerState::Claimable;
-                    }
-                }
-            }
+            Err(_) => self.restore_claimable(pool_id, &buyer),
         }
     }
 
@@ -176,11 +167,7 @@ impl Contract {
         match result {
             Ok(()) => events::seat_refunded(pool_id, &buyer, seats, amount.0, bonus_share.0),
             Err(_) => {
-                if let Some(record) = self.buyers.get_mut(&(pool_id, buyer.clone())) {
-                    if record.state == BuyerState::Refunded {
-                        record.state = BuyerState::Claimable;
-                    }
-                }
+                self.restore_claimable(pool_id, &buyer);
                 events::refund_failed(pool_id, &buyer, amount.0);
             }
         }
@@ -194,6 +181,9 @@ impl Contract {
         #[callback_result] result: Result<(), PromiseError>,
     ) {
         if let Some(pool) = self.pools.get_mut(&pool_id) {
+            if pool.status != PoolStatus::Expired || !pool.dust_sent {
+                return;
+            }
             match result {
                 Ok(()) => {
                     pool.status = PoolStatus::Refunded;
@@ -201,6 +191,18 @@ impl Contract {
                 }
                 // The pool stays Expired and the next `refund` call retries only the dust.
                 Err(_) => pool.dust_sent = false,
+            }
+        }
+    }
+}
+
+impl Contract {
+    /// Makes a refund claimable again after its transfer failed. It changes nothing unless the
+    /// buyer's record exists and is marked Refunded, and it never panics.
+    fn restore_claimable(&mut self, pool_id: u64, buyer: &AccountId) {
+        if let Some(record) = self.buyers.get_mut(&(pool_id, buyer.clone())) {
+            if record.state == BuyerState::Refunded {
+                record.state = BuyerState::Claimable;
             }
         }
     }
@@ -262,7 +264,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "pool is not open past its deadline or expired")]
+    #[should_panic(expected = "pool is not expired")]
     fn refund_refuses_a_filled_pool_past_its_deadline() {
         let mut c = new_contract();
         let id = filled_pool(&mut c);
@@ -271,7 +273,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "pool is not open past its deadline or expired")]
+    #[should_panic(expected = "pool is not expired")]
     fn refund_refuses_a_settled_pool() {
         let mut c = new_contract();
         let id = filled_pool(&mut c);
@@ -282,7 +284,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "pool is not open past its deadline, expired or refunded")]
+    #[should_panic(expected = "pool is neither expired nor refunded")]
     fn claim_refund_refuses_a_filled_pool_past_its_deadline() {
         let mut c = new_contract();
         let id = filled_pool(&mut c);
@@ -291,7 +293,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "pool is not open past its deadline, expired or refunded")]
+    #[should_panic(expected = "pool is neither expired nor refunded")]
     fn claim_refund_refuses_a_settled_pool() {
         let mut c = new_contract();
         let id = filled_pool(&mut c);
@@ -302,7 +304,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "pool is not open past its deadline or expired")]
+    #[should_panic(expected = "pool is not expired")]
     fn refund_is_refused_before_the_deadline() {
         let mut c = new_contract();
         let id = pool_with(&mut c, 10, &["a.test"]);
@@ -475,7 +477,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "pool is not open past its deadline, expired or refunded")]
+    #[should_panic(expected = "pool is neither expired nor refunded")]
     fn a_claim_before_the_deadline_is_refused() {
         let mut c = new_contract();
         let id = pool_with(&mut c, 10, &["a.test"]);

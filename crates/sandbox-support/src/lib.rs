@@ -155,8 +155,7 @@ impl Chain {
 }
 
 /// Builds a contract to wasm. The ABI steps and the lockfile check are switched off: they slow the
-/// build and are not needed for tests. If the builder rejects one of those three option names, drop
-/// that option; it only affects speed.
+/// build and are not needed for tests.
 fn build_wasm(manifest_relative_to_workspace: &str) -> Result<Vec<u8>> {
     let manifest = format!(
         "{}/../../{}",
