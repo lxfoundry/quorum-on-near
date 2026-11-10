@@ -1018,7 +1018,7 @@ words, not its line breaks.
     | Pools account | gateway, swarm, MCP server | The pools contract buyers pay; default `pools.<parent>`. A buyer refuses an offer whose `payTo` is not this account (section 6.3) |
     | Commit gas bounds | gateway | The offer's `minGas` and `maxGas` (section 6.2): `minGas` at most `maxGas`, both at most 300 Tgas |
     | Average block time | gateway, swarm, MCP server | Converts `maxTimeoutSeconds` into blocks (section 6.4, check 5) |
-    | Keeper settings | gateway | The keeper's interval, the refund batch `limit` (1 to 10), and the gas attached to `settle` and `refund` (section 6.7): at least what the contract requires at entry (section 5.4), 33 Tgas for `settle` and 10 + 23 × (`limit` + 1) Tgas for `refund`, and at most 300 Tgas |
+    | Keeper settings | gateway | The keeper's interval, the refund batch `limit` (1 to 10), and the gas attached to `settle` and `refund` (section 6.7): at least what the contract requires at entry (section 5.4) plus 17 Tgas for what a call uses before that check, so 50 Tgas for `settle` and 27 + 23 × (`limit` + 1) Tgas for `refund` (280 Tgas at `limit` 10, the figure with which section 5.4 shows a full batch completing), and at most 300 Tgas. The gateway refuses less: a call that attaches only the entry figure always fails at entry |
     | RPC pass-through | gateway | Turns `POST /rpc` on (section 6.1) |
     | Live page folder | gateway | The folder served at `/` (section 8). The gateway refuses to start if it is, or contains, the gateway's own folder |
     ```
@@ -3984,7 +3984,7 @@ git commit -m "check quorum payments statically and build payments and proofs fo
 
 ### Task 6: Gateway package, configuration and credentials
 
-The gateway reads every setting from `QUORUM_*` variables (spec section 7.6) and refuses to start on any problem, listing them all; secret values never appear in the message. It runs on testnet only (`near:sandbox` is accepted for the local sandbox test), checks each keeper gas setting against what the contract requires at entry, bounds every gas setting at 300 Tgas, refuses a relayer key listed twice and a web folder that holds the gateway's own folder. `checkChainId` lets `main.ts` (Task 14) refuse an RPC that serves another chain than the configured network. The credential is an EdDSA compact JWS (spec section 6.6), signed with an Ed25519 key that is distinct from every NEAR key.
+The gateway reads every setting from `QUORUM_*` variables (spec section 7.6) and refuses to start on any problem, listing them all; secret values never appear in the message. It runs on testnet only (`near:sandbox` is accepted for the local sandbox test), checks each keeper gas setting against what the contract requires at entry plus what the call uses before that check, bounds every gas setting at 300 Tgas, refuses a relayer key listed twice and a web folder that holds the gateway's own folder. `checkChainId` lets `main.ts` (Task 14) refuse an RPC that serves another chain than the configured network. The credential is an EdDSA compact JWS (spec section 6.6), signed with an Ed25519 key that is distinct from every NEAR key.
 
 **Files:**
 - Create: `apps/gateway/package.json`, `apps/gateway/tsconfig.json`, `apps/gateway/.env.example`, `apps/gateway/src/credential.ts`, `apps/gateway/src/config.ts`, `apps/gateway/src/keygen.ts`
@@ -4387,14 +4387,15 @@ describe('checkChainId', () => {
 describe('loadConfig gas', () => {
   const MOST = '300000000000000';
 
-  it('accepts the gas the pools contract requires at entry, at the smallest and the largest refund limit', () => {
+  it('accepts the least gas the keeper may attach, at the smallest and the largest refund limit', () => {
     const atLimit = (limit: string, refundGas: string) =>
       loadConfig(
-        env({ QUORUM_REFUND_LIMIT: limit, QUORUM_SETTLE_GAS: '33000000000000', QUORUM_REFUND_GAS: refundGas }),
+        env({ QUORUM_REFUND_LIMIT: limit, QUORUM_SETTLE_GAS: '50000000000000', QUORUM_REFUND_GAS: refundGas }),
       );
-    // settle: 10 + 23 Tgas; refund: 10 + 23 × (limit + 1) Tgas.
-    expect(atLimit('1', '56000000000000')).toMatchObject({ settleGas: 33_000_000_000_000n, refundGas: 56_000_000_000_000n });
-    expect(atLimit('10', '263000000000000').refundGas).toBe(263_000_000_000_000n);
+    // What the contract requires at entry plus 17 Tgas for what the call uses before that check.
+    // settle: 10 + 23 + 17 Tgas; refund: 10 + 23 × (limit + 1) + 17 Tgas.
+    expect(atLimit('1', '73000000000000')).toMatchObject({ settleGas: 50_000_000_000_000n, refundGas: 73_000_000_000_000n });
+    expect(atLimit('10', '280000000000000').refundGas).toBe(280_000_000_000_000n);
   });
 
   it('accepts 300 Tgas, the most gas the gateway attaches to one call', () => {
@@ -4404,13 +4405,14 @@ describe('loadConfig gas', () => {
     expect([config.minGas, config.maxGas, config.settleGas, config.refundGas]).toEqual(Array(4).fill(BigInt(MOST)));
   });
 
-  const SETTLE_FROM = '33000000000000 (what settle requires at entry)';
-  const REFUND_FROM = '263000000000000 (what refund requires at entry with QUORUM_REFUND_LIMIT 10)';
+  const SETTLE_FROM = '50000000000000 (what settle requires at entry, plus what it uses before that check)';
+  const REFUND_FROM =
+    '280000000000000 (what refund requires at entry with QUORUM_REFUND_LIMIT 10, plus what it uses before that check)';
   it.each([
     ['QUORUM_COMMIT_MIN_GAS', '0', '1'],
     ['QUORUM_COMMIT_MIN_GAS', '300000000000001', '1'],
     ['QUORUM_COMMIT_MAX_GAS', '300000000000001', '1'],
-    ['QUORUM_SETTLE_GAS', '32999999999999', SETTLE_FROM],
+    ['QUORUM_SETTLE_GAS', '49999999999999', SETTLE_FROM],
     ['QUORUM_SETTLE_GAS', '300000000000001', SETTLE_FROM],
     ['QUORUM_REFUND_GAS', '300000000000001', REFUND_FROM],
   ])('reports %s = %s out of its range', (name, gas, from) => {
@@ -4419,13 +4421,26 @@ describe('loadConfig gas', () => {
     ]);
   });
 
+  // The contract panics at entry unless the gas it has left, after what the call has already used, covers
+  // its requirement. A call that attaches only the requirement always fails there, so it is refused.
+  it('refuses exactly the gas the contract requires at entry, which every call fails on', () => {
+    const range = (name: string, from: string, gas: string) =>
+      `${name} must be an amount of gas from ${from} to 300000000000000 (300 Tgas, the most the gateway attaches to one call), got "${gas}"`;
+    expect(problems(env({ QUORUM_SETTLE_GAS: '33000000000000' }))).toEqual([
+      range('QUORUM_SETTLE_GAS', SETTLE_FROM, '33000000000000'),
+    ]);
+    expect(problems(env({ QUORUM_REFUND_LIMIT: '10', QUORUM_REFUND_GAS: '263000000000000' }))).toEqual([
+      range('QUORUM_REFUND_GAS', REFUND_FROM, '263000000000000'),
+    ]);
+  });
+
   it.each([
-    ['10', '262999999999999', '263000000000000'],
-    ['3', '100000000000000', '102000000000000'],
-    ['1', '55999999999999', '56000000000000'],
-  ])('reports refund gas below what refund requires at entry with QUORUM_REFUND_LIMIT %s', (limit, gas, needed) => {
+    ['10', '279999999999999', '280000000000000'],
+    ['3', '118999999999999', '119000000000000'],
+    ['1', '72999999999999', '73000000000000'],
+  ])('reports refund gas below what refund needs with QUORUM_REFUND_LIMIT %s', (limit, gas, least) => {
     expect(problems(env({ QUORUM_REFUND_LIMIT: limit, QUORUM_REFUND_GAS: gas }))).toEqual([
-      `QUORUM_REFUND_GAS must be an amount of gas from ${needed} (what refund requires at entry with QUORUM_REFUND_LIMIT ${limit}) to 300000000000000 (300 Tgas, the most the gateway attaches to one call), got "${gas}"`,
+      `QUORUM_REFUND_GAS must be an amount of gas from ${least} (what refund requires at entry with QUORUM_REFUND_LIMIT ${limit}, plus what it uses before that check) to 300000000000000 (300 Tgas, the most the gateway attaches to one call), got "${gas}"`,
     ]);
   });
 
@@ -4659,11 +4674,12 @@ QUORUM_BLOCK_TIME_MS=1000
 QUORUM_KEEPER_INTERVAL_MS=5000
 # Buyers refunded per refund call, from 1 to 10.
 QUORUM_REFUND_LIMIT=10
-# Gas attached to a settle call. settle requires 33000000000000 left at entry and uses a few Tgas before
-# that check; a value below the requirement is refused.
+# Gas attached to a settle call. settle requires 33000000000000 left at entry, after the few Tgas it uses
+# before that check, so a value below 50000000000000 (the requirement plus 17 Tgas) is refused.
 QUORUM_SETTLE_GAS=100000000000000
 # Gas attached to a refund call. refund requires 10 + 23 x (QUORUM_REFUND_LIMIT + 1) Tgas left at entry
-# (263000000000000 at a limit of 10) and uses a few Tgas before that check; a value below it is refused.
+# (263000000000000 at a limit of 10), after the few Tgas it uses before that check, so a value below that
+# plus 17 Tgas (280000000000000 at a limit of 10) is refused.
 QUORUM_REFUND_GAS=300000000000000
 # Folder for the activity feed.
 QUORUM_DATA_DIR=data
@@ -4828,6 +4844,20 @@ const GATEWAY_DIR = resolve(fileURLToPath(new URL('..', import.meta.url)));
  */
 function gasRequiredAtEntry(transfers: number): bigint {
   return 10n * TGAS + BigInt(transfers) * 23n * TGAS;
+}
+
+/**
+ * A call uses some gas before the contract's entry check (loading the contract, reading its state,
+ * parsing its arguments), and the check only counts what is left. A call that attaches just
+ * `gasRequiredAtEntry` therefore always fails at entry. 17 Tgas is the margin with which the contract's
+ * sandbox gas test completes a full refund batch: 280 Tgas against the 263 Tgas it requires (spec
+ * section 5.4).
+ */
+const GAS_BEFORE_ENTRY_CHECK = 17n * TGAS;
+
+/** The least gas worth attaching to a call that schedules `transfers` transfers. */
+function leastKeeperGas(transfers: number): bigint {
+  return gasRequiredAtEntry(transfers) + GAS_BEFORE_ENTRY_CHECK;
 }
 
 /** Whether `dir` is `inner` or a folder above it. */
@@ -5017,17 +5047,21 @@ export function loadConfig(env: Record<string, string | undefined>): GatewayConf
   const blockTimeMs = optional('QUORUM_BLOCK_TIME_MS', '1000', asPositiveInteger);
   const keeperIntervalMs = optional('QUORUM_KEEPER_INTERVAL_MS', '5000', asPositiveInteger);
   const refundLimit = optional('QUORUM_REFUND_LIMIT', '10', asInteger(1, 10));
-  // With less gas than the contract asserts at entry, every call would panic.
+  // With less gas than the contract asserts at entry, plus what the call uses before that check, every
+  // call would panic.
   const settleGas = optional(
     'QUORUM_SETTLE_GAS',
     '100000000000000',
-    asGas(gasRequiredAtEntry(1), 'what settle requires at entry'),
+    asGas(leastKeeperGas(1), 'what settle requires at entry, plus what it uses before that check'),
   );
   // Without a valid limit there is no requirement to check, and the limit's problem is already listed.
   const refundGasRule =
     refundLimit === undefined
       ? asGas()
-      : asGas(gasRequiredAtEntry(refundLimit + 1), `what refund requires at entry with QUORUM_REFUND_LIMIT ${refundLimit}`);
+      : asGas(
+          leastKeeperGas(refundLimit + 1),
+          `what refund requires at entry with QUORUM_REFUND_LIMIT ${refundLimit}, plus what it uses before that check`,
+        );
   const refundGas = optional('QUORUM_REFUND_GAS', '300000000000000', refundGasRule);
 
   const draft: Draft = {
@@ -5075,7 +5109,7 @@ process.stdout.write(`QUORUM_CREDENTIAL_JWK=${JSON.stringify(jwk)}\n`);
 
 Run: `pnpm --filter @quorum-on-near/gateway exec vitest run test/config.test.ts test/credential.test.ts`
 
-Expected: PASS, 109 tests (`test/config.test.ts` 94, `test/credential.test.ts` 15).
+Expected: PASS, 110 tests (`test/config.test.ts` 95, `test/credential.test.ts` 15).
 
 Run: `pnpm --filter @quorum-on-near/gateway typecheck`
 
