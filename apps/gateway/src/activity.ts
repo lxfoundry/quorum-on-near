@@ -62,6 +62,8 @@ async function readIfExists(file: string): Promise<string> {
 export class ActivityLog {
   readonly #file: string;
   readonly #records: ActivityRecord[];
+  /** Whether the last append failed, and so may have left part of its line at the end of the file. */
+  #midLine = false;
 
   private constructor(file: string, records: ActivityRecord[]) {
     this.#file = file;
@@ -80,8 +82,20 @@ export class ActivityLog {
     return new ActivityLog(file, parseLines(text));
   }
 
+  /**
+   * Appends `record` to the file, then to the list. After a failed append, which may have written part
+   * of its line, the record starts with a newline: it gets a line of its own, and the blank line this
+   * leaves when nothing was written is skipped on load.
+   */
   async append(record: ActivityRecord): Promise<void> {
-    await appendFile(this.#file, `${JSON.stringify(record)}\n`);
+    const line = `${this.#midLine ? '\n' : ''}${JSON.stringify(record)}\n`;
+    try {
+      await appendFile(this.#file, line);
+    } catch (error) {
+      this.#midLine = true;
+      throw error;
+    }
+    this.#midLine = false;
     this.#records.push(record);
   }
 

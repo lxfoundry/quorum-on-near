@@ -1,10 +1,17 @@
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { PoolView, QuorumEvent } from '@quorum-on-near/protocol';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ActivityLog, keeperCallProgressed, keeperRecords, type ActivityRecord } from '../src/activity.ts';
 import { NOW_MS, POOLS, PROVIDER, TOKEN, eventLog, outcome, poolView, type ReceiptSpec } from './fake-chain.ts';
+
+// appendFile is the real one unless a test makes one call fail.
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return { ...actual, appendFile: vi.fn(actual.appendFile) };
+});
+const fs = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
 
 const ALICE = 'alice.testnet';
 const BOB = 'bob.testnet';
@@ -101,6 +108,29 @@ describe('ActivityLog', () => {
     await (await ActivityLog.open(file)).append(appended);
     const reopened = await ActivityLog.open(file);
     expect(reopened.list()).toEqual([kept, appended]);
+    expect(reopened.lastRefund(7, ALICE)?.txHash).toBe('Tx3');
+  });
+
+  it('starts the record after an append that failed mid-write on a line of its own', async () => {
+    const lost = record({ kind: 'settle', account: PROVIDER, txHash: 'Tx1' });
+    const kept = [record({ txHash: 'Tx2' }), record({ kind: 'refund', txHash: 'Tx3' })];
+    const log = await ActivityLog.open(file);
+    // The disk fills mid-write: part of the line reaches the file, then the write fails.
+    const partial = JSON.stringify(lost).slice(0, 20);
+    const failure = Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' });
+    vi.mocked(appendFile).mockImplementationOnce(async (path) => {
+      await fs.appendFile(path, partial);
+      throw failure;
+    });
+    await expect(log.append(lost)).rejects.toBe(failure);
+    for (const r of kept) await log.append(r);
+    expect(await readFile(file, 'utf8')).toBe(`${partial}
+${JSON.stringify(kept[0])}
+${JSON.stringify(kept[1])}
+`);
+    expect(log.list()).toEqual(kept);
+    const reopened = await ActivityLog.open(file);
+    expect(reopened.list()).toEqual(kept);
     expect(reopened.lastRefund(7, ALICE)?.txHash).toBe('Tx3');
   });
 
