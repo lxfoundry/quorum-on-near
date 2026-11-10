@@ -27,7 +27,9 @@ small team cannot commit to a whole block alone. Pooling makes that block sellab
 
 **What is simulated:** the provider, and the GPU access it sells. The access credential is a signed
 token, and no GPU stands behind it. **What is real:** the money flow. Seats, the bonus, the payout
-and the refunds are all transactions on NEAR testnet, in a mock stablecoin.
+and the refunds are all transactions on NEAR testnet, in Circle's testnet USDC. Prices are scaled
+down 10,000 times, so that no pool holds, and no run moves, as much as 0.1 USDC (sections 7.2 and
+7.3).
 
 ## 2. Scope
 
@@ -35,11 +37,13 @@ and the refunds are all transactions on NEAR testnet, in a mock stablecoin.
 
 - A NEAR contract that holds pools, seats and bonuses, and settles or refunds them with no owner or
   admin.
-- A mock NEP-141 stablecoin for testnet.
+- A mock NEP-141 token for the sandbox tests. On testnet the contract uses Circle's USDC, which
+  this system does not deploy.
 - An HTTP 402 binding for the contract: a new x402 scheme, `quorum`, on network `near:testnet`.
 - A gateway that serves offers, checks and relays payments, issues credentials, and triggers
   settlement and refunds.
-- A swarm of scripted buyer agents and a simulated provider agent.
+- A swarm of scripted buyer agents and a simulated provider agent, all funded from one funding
+  account.
 - An MCP server through which an LLM-driven agent can act as a buyer.
 - A read-only live page showing pools filling, settling and refunding.
 
@@ -47,6 +51,8 @@ and the refunds are all transactions on NEAR testnet, in a mock stablecoin.
 
 - Mainnet.
 - Cross-chain funding.
+- Automated faucet funding: Circle's web faucet has a human check, and its faucet API does not
+  serve NEAR testnet (section 7.2).
 - A wallet path for people (every buyer is an agent with its own account).
 - Sealed-bid or dynamic pricing.
 - Seller-prepaid storage (see section 12).
@@ -75,7 +81,7 @@ and the refunds are all transactions on NEAR testnet, in a mock stablecoin.
 | Unit | Path | Purpose | Depends on |
 |---|---|---|---|
 | Pools contract | `contracts/pools` | The escrow (section 5) | the token |
-| Mock token | `contracts/mock-usd` | NEP-141, name "Mock USD", symbol `mUSD`, 6 decimals, with a capped open `mint` | — |
+| Mock token | `contracts/mock-usd` | NEP-141, name "Mock USD", symbol `mUSD`, 6 decimals, with a capped open `mint`. Used by the sandbox tests only, never deployed to testnet (section 5.7) | — |
 | Protocol | `packages/protocol` | The `quorum` scheme types, encoding and decoding, and the static payment checks. No network access | — |
 | Gateway | `apps/gateway` | The provider's HTTP side: offers, payment checks, relay, credentials, redemption, the keeper, the activity feed and the static live page | protocol, NEAR RPC |
 | Swarm | `apps/swarm` | Account setup, the provider agent and the scripted buyers | protocol, gateway |
@@ -106,7 +112,7 @@ sequenceDiagram
     participant A as Buyer agent
     participant G as Gateway
     participant R as Relayer
-    participant T as Token (mUSD)
+    participant T as Token (USDC)
     participant P as Pools contract
     A->>G: GET /pools/7/access?seats=2
     G-->>A: 402 + offer (scheme quorum)
@@ -169,8 +175,9 @@ panic, and the token then returns the whole amount to the sender (NEP-141's `ft_
 **Open a pool.** The amount sent is the bonus (0 is allowed), and `sender_id` becomes the seller:
 
 ```json
-{ "open": { "seat_price": "1800000", "target": 192, "deadline_ms": 1800000000000,
-            "max_seats_per_buyer": 24, "terms": "8×GPU × 24 h; 1 seat = 1 GPU-hour" } }
+{ "open": { "seat_price": "180", "target": 192, "deadline_ms": 1800000000000,
+            "max_seats_per_buyer": 24,
+            "terms": "8×GPU × 24 h; 1 seat = 1 GPU-hour; prices at 1/10,000 scale" } }
 ```
 
 It is refused unless all of these hold:
@@ -214,6 +221,7 @@ an over-target payment comes back in the same call. It emits `seats_committed`, 
 | `list_pools(from, limit)` | view | Pools in id order |
 | `get_seats(pool_id, from, limit)` | view | `[{buyer, seats, state}]` in commit order |
 | `get_buyer(pool_id, account_id)` | view | That buyer's `{seats, state}` or `null` |
+| `get_token()` | view | The token the contract accepts, as set by `new` |
 
 Every cross-contract call is a promise with a `#[private]` callback. State is written before each
 transfer and restored by the callback if the transfer fails. **Callbacks never panic.** Every
@@ -262,11 +270,32 @@ strings.
 | `refund_claimed` | `pool_id, buyer, amount` |
 | `pool_refunded` | `pool_id, dust` |
 
-### 5.7 Mock token
+### 5.7 Tokens
 
-`contracts/mock-usd` is the standard NEP-141 implementation from `near-contract-standards`, with
-storage management. It has one extra method, `mint(account_id, amount)`, open to anyone and capped
-at 1,000 mUSD per call. It exists for testnet only.
+The contract accepts one token, fixed by `new(token)`. It relies only on standard NEP-141 and
+NEP-145 behaviour, and never calls a method outside those standards, so it treats any compliant
+token alike.
+
+- **On testnet** the token is **Circle's testnet USDC**, at account
+  `3e2210e1184b45b64c8a434c0a7e7b23cc04ea7eb7a6c3c32520d03d4afcb8af`. Its name and symbol are both
+  `USDC`, it has 6 decimals, and its `storage_balance_bounds` puts registration at 0.00125 NEAR
+  (`min` and `max` alike). This system does not deploy that token and cannot mint it. How accounts
+  get USDC is in section 7.2.
+- **In the sandbox tests** the token is `contracts/mock-usd`: the standard NEP-141 implementation
+  from `near-contract-standards`, with storage management. Its name is "Mock USD", its symbol is
+  `mUSD`, and it has 6 decimals, like USDC. It has one extra method, `mint(account_id, amount)`,
+  open to anyone and capped at 1,000 mUSD per call, so that tests can fund accounts freely. It is
+  never deployed to testnet.
+
+The standards do not fix two things in which the tokens can differ:
+- **Gas use.** Two sets of gas figures come from the sandbox, measured against the mock: a commit's
+  `minGas` and `maxGas` (section 6.2), and the allowance each of the contract's own transfers and
+  callbacks gets (section 5.4). Both are measured again against USDC on testnet (section 10). The
+  allowances are compiled into the contract, so if a USDC transfer needs more than its allowance,
+  the allowance is raised and the contract redeployed before any pool is opened.
+- **Refused transfers.** An issuer can refuse a transfer, for example by pausing the token or
+  blocking an account. A refused transfer takes the failure paths of section 5.4: a pushed refund
+  becomes `Claimable`, and a failed payout leaves the pool Filled for `settle` to retry.
 
 ## 6. The `quorum` x402 scheme
 
@@ -299,30 +328,32 @@ account. It never relays a payment, or issues a credential, for any other pool.
   "accepts": [{
     "scheme": "quorum",
     "network": "near:testnet",
-    "maxAmountRequired": "3600000",
+    "maxAmountRequired": "360",
     "resource": "https://<gateway>/pools/7/access?seats=2",
-    "description": "2 seats in pool 7: 8×GPU × 24 h; 1 seat = 1 GPU-hour",
+    "description": "2 seats in pool 7: 8×GPU × 24 h; 1 seat = 1 GPU-hour; prices at 1/10,000 scale",
     "mimeType": "application/json",
     "payTo": "pools.<parent>",
     "maxTimeoutSeconds": 120,
-    "asset": "musd.<parent>",
+    "asset": "3e2210e1184b45b64c8a434c0a7e7b23cc04ea7eb7a6c3c32520d03d4afcb8af",
     "extra": {
-      "poolId": 7, "seats": 2, "seatPrice": "1800000",
+      "poolId": 7, "seats": 2, "seatPrice": "180",
       "target": 192, "taken": 148, "deadlineMs": 1800000000000,
-      "bonus": "17280000", "minBonusPerSeat": "90471",
-      "terms": "8×GPU × 24 h; 1 seat = 1 GPU-hour",
+      "bonus": "1728", "minBonusPerSeat": "9",
+      "terms": "8×GPU × 24 h; 1 seat = 1 GPU-hour; prices at 1/10,000 scale",
       "relayer": "relay.<parent>", "minGas": "50000000000000", "maxGas": "100000000000000"
     }
   }]
 }
 ```
 
-`minBonusPerSeat` is the least each seat receives if the pool fails (section 3), whatever the other
-buyers do. The actual share is fixed when the pool expires and can only be higher. If fewer seats
-are left than requested, the offer is made for the seats left, and `extra.seats` says so. From
-here on, "the seats" of a payment means `extra.seats`. `minGas` and `maxGas` come from the gas
-profile of a commit in the sandbox tests; the figures above are placeholders. The relayer prepays
-whatever gas the delegate action carries, which is why there is an upper bound.
+`asset` is the token the pools contract was initialised with (section 5.7), and every amount is in
+its base units. `minBonusPerSeat` is the least each seat receives if the pool fails (section 3),
+whatever the other buyers do. The actual share is fixed when the pool expires and can only be
+higher. If fewer seats are left than requested, the offer is made for the seats left, and
+`extra.seats` says so. From here on, "the seats" of a payment means `extra.seats`. `minGas` and
+`maxGas` come from the gas profile of a commit in the sandbox tests, measured again against the
+token on testnet (section 5.7); the figures above are placeholders. The relayer prepays whatever
+gas the delegate action carries, which is why there is an upper bound.
 
 ### 6.3 Payment
 
@@ -437,42 +468,88 @@ links; the money state is always read from the contract.
 
 ### 7.1 Testnet accounts
 
-All are sub-accounts of one parent account set in the configuration, written `<parent>` here.
+The system's own accounts are sub-accounts of one parent account set in the configuration, written
+`<parent>` here. Two exceptions: the token, which is Circle's testnet USDC (section 5.7), and the
+funding account if it is configured as an account outside `<parent>`.
 
 | Account | Role |
 |---|---|
-| `musd.<parent>` | The mock token |
+| `funding.<parent>` | The funding account: the only source of USDC. It receives USDC from Circle's testnet faucet, and the buyers and the provider are topped up from it (section 7.2). This name is the default; any named or implicit account the operator holds a key for will do, including `<parent>` itself. NEAR for every account still comes from `<parent>` |
 | `pools.<parent>` | The pools contract. Its NEAR balance pays the contract's storage |
 | `relay.<parent>` | The relayer and the keeper. It pays gas and the 1 yoctoNEAR deposits, and holds several access keys |
-| `provider.<parent>` | The simulated seller. It holds the mUSD for its bonuses |
+| `provider.<parent>` | The simulated seller. It holds the USDC for its bonuses |
 | `buyer-01` … `buyer-20.<parent>` | The scripted buyers |
 | `buyer-llm.<parent>` | The buyer the MCP server acts for |
 
 Every buyer holds only its own budget, so a leaked buyer key can lose at most that budget. Keys live
 in `.near-credentials/`, which is gitignored, on the machine that runs the agent. The gateway only
-ever sees signed delegate actions.
+ever sees signed delegate actions. The funding account holds most of the USDC. Only `swarm setup`
+signs with its key: the gateway, the agents and the MCP server never use it, and `swarm reset` only
+sends to it.
 
 ### 7.2 Setup
 
-`swarm setup` is idempotent. It:
-1. creates any missing account, with a fresh key;
-2. deploys the two contracts if they are missing, initialising the pools contract with the token in
-   the same transaction as its deployment;
-3. gives each buyer a configured amount of NEAR (default 0.05 NEAR, for its account storage and as
-   a balance in case a relayed deposit is charged to it, see section 11), and gives the provider
-   enough NEAR for its own transactions;
-4. registers the pools contract, the provider and each buyer on the token (`storage_deposit`);
-5. mints each buyer's budget and the provider's bonus funds.
+`swarm setup` is idempotent, and is safe to run before every run. It:
+1. creates any missing sub-account of `<parent>`, with a fresh key. A funding account outside
+   `<parent>` is never created or given a new key: setup only checks that it exists;
+2. deploys the pools contract if it is missing, initialising it with the configured token in the
+   same transaction as its deployment. If the pools contract exists, setup checks that its
+   `get_token` is the configured token, and stops if not (section 7.6);
+3. tops each buyer up to a configured amount of NEAR (default 0.05 NEAR, for its account storage
+   and as a balance in case a relayed deposit is charged to it, see section 11), and the provider
+   and the funding account to enough NEAR for their own transactions;
+4. registers the funding account, the pools contract, the provider and each buyer on the token
+   (`storage_deposit`, paid by `<parent>`), with the deposit read from the token's
+   `storage_balance_bounds`. Accounts already registered are skipped;
+5. **tops up** each buyer to its configured budget, and the provider to its configured bonus funds,
+   with `ft_transfer` from the funding account. An account that already holds its amount or more
+   receives nothing.
+
+Steps 1 to 4 always run, so the first setup creates and registers the funding account, ready to
+receive USDC from the faucet. Before step 5, setup checks that the funding account covers every
+top-up. If it does not, setup makes none of them, prints the funding account's ID and the
+shortfall, and exits with an error, so `swarm demo` stops. A `swarm reset` may cover the shortfall
+by returning the provider's takings. Otherwise, filling the funding account is a manual step:
+Circle's web faucet has a human check, and Circle's faucet API does not serve NEAR testnet.
+
+**How far one grant goes.** The amounts are small, so one faucet grant to the funding account
+covers many runs:
+- the default budget is 10,000 base units (0.01 USDC) for each buyer, and the provider's default
+  bonus funds are the same, so the 22 accounts hold 0.22 USDC between them;
+- a `fills` pool holds at most 0.036288 USDC (192 seats and the bonus), and its run moves
+  0.03456 USDC net from the buyers to the provider;
+- a `fails` pool holds at most 0.064192 USDC (191 seats and the bonus), and its run moves at most
+  the 0.003072 USDC bonus, less the dust, from the provider to the buyers;
+- so no pool holds, and no run moves, as much as 0.1 USDC, and each `setup` refills from the
+  funding account what the last run moved out of an account.
+
+**Reset.** `swarm reset` returns to the funding account whatever a buyer or the provider holds
+above its configured amount: the provider's takings from settled pools, and the bonus shares buyers
+received from refunded pools. Each of those accounts signs its own `ft_transfer`. Reset moves
+balances only: it never calls `claim_refund`, and money still held by an unresolved pool is not
+counted. Once every pool is Settled or Refunded, and if the funding account covers the top-ups, a
+reset followed by a setup leaves each buyer and the provider at exactly its configured amount, and
+the funding account holds the rest. A second reset in a row transfers nothing. Repeat runs do not
+need a reset: without one, setup keeps refilling the buyers from the funding account while the
+provider's balance grows.
 
 ### 7.3 Provider agent
 
 `swarm open <scenario>` opens a pool by sending the bonus through `ft_transfer_call` with an
-`open` message. The two scenarios use illustrative numbers:
+`open` message. The two scenarios use illustrative numbers. Base units are in brackets, since USDC
+has 6 decimals:
 
 | Scenario | Block | Seats | Seat price | Bonus | Deadline | Expected end |
 |---|---|---|---|---|---|---|
-| `fills` | 8 GPUs × 24 h | 192 | 1.80 mUSD | 5% of the block (17.28 mUSD) | 10 min | Filled, then Settled |
-| `fails` | 8 GPUs × 24 h | 192 | 3.20 mUSD | 5% of the block (30.72 mUSD) | 3 min | Expired, then Refunded |
+| `fills` | 8 GPUs × 24 h | 192 | 0.00018 USDC (180) | 5% of the block: 0.001728 USDC (1,728) | 10 min | Filled, then Settled |
+| `fails` | 8 GPUs × 24 h | 192 | 0.00032 USDC (320) | 5% of the block: 0.003072 USDC (3,072) | 3 min | Expired, then Refunded |
+
+The seat prices are illustrative per-GPU-hour prices of 1.80 and 3.20 USDC, divided by 10,000 so
+that no pool holds as much as 0.1 USDC (section 7.2). Each pool's `terms` says so ("prices at
+1/10,000 scale"). The contract has no minimum price, and every amount stays in whole base units.
+At this scale the rounding is visible: the `fills` pool's minimum bonus per seat is 9 base units,
+and a `fails` pool that expires with 100 seats pays 30 base units of bonus per seat and sends 72 of
+its 3,072 back to the seller as dust (section 3).
 
 `swarm demo <scenario>` runs `setup`, then `open <scenario>`, then `run`, and ends with a check of
 the final on-chain state (section 10).
@@ -489,11 +566,16 @@ profile from a fixture: the seats it wants and its top price per seat. Each buye
 5. redeems with its NEP-413 proof until it gets `200` (a credential) or `410` (a refund);
 6. logs its outcome.
 
-The fixture is built so that no buyer wants more than the pool's `max_seats_per_buyer`, and:
+The fixture is built so that no buyer wants more than the pool's `max_seats_per_buyer`, no buyer's
+seats at its top price cost more than its budget, and:
 - the buyers who would accept the `fills` price want slightly more than 192 seats in total, so the
   last buyer's offer is for the seats left (the over-target return of section 5.3 is covered by the
   sandbox tests, since a client cannot reach it deterministically through the gateway);
 - the buyers who would accept the `fails` price want well under 192 seats.
+
+A budget covers one pool at a time, so the scenarios run one after the other, never together. If
+two pools were open at once, a buyer could run out of budget, and the gateway would refuse its
+second payment (`insufficient_balance`, section 6.4).
 
 ### 7.5 LLM buyer (MCP server)
 
@@ -506,9 +588,11 @@ The fixture is built so that no buyer wants more than the pool's `max_seats_per_
 | `quorum_commit` | `pool, seats` | Signs and pays. Returns the `202` receipt or the `200` credential |
 | `quorum_status` | `pool` | Pending, the credential, or the refund with its transaction |
 
-The server enforces a **spend cap** (configured, in mUSD) before it signs anything, because the
-buyer's key is a full-access key. A payment that would take the buyer's total spend past the cap is
-refused locally. The running total is kept on disk, so a restart does not reset it.
+The server enforces a **spend cap** (configured, in the token's base units) before it signs
+anything, because the buyer's key is a full-access key. A payment that would take the buyer's total
+spend past the cap is refused locally. The cap's default is the buyer's budget (10,000 base units).
+The running total is kept on disk, so a restart does not reset it; `swarm setup` clears it when it
+tops the buyer up, so the cap bounds what the buyer can spend between two setups.
 
 ### 7.6 Configuration
 
@@ -518,21 +602,25 @@ variables, and none of the secret ones is committed.
 | Setting | Used by | Meaning |
 |---|---|---|
 | Parent account | swarm, gateway | The `<parent>` of section 7.1 |
+| Token account | swarm, gateway, MCP server, live page | The token the pools contract is initialised with; default Circle's testnet USDC (section 5.7). Changing it needs a new pools account, because `new(token)` runs once; setup detects a mismatch through `get_token` |
+| Funding account | swarm | The account that setup tops up from and reset returns to; default `funding.<parent>` (section 7.2) |
 | RPC URL | gateway, swarm, MCP server, live page | The NEAR testnet RPC endpoint |
 | Gateway URL | swarm, MCP server | Where the gateway is reached |
 | Provider account | gateway | The only seller whose pools the gateway serves (section 6.1) |
 | Relayer keys | gateway | The several access keys of the relayer account (secret) |
 | Credential key | gateway | The Ed25519 key that signs credentials (section 6.6) (secret) |
 | Buyer account and key location | swarm, MCP server | One per buyer (secret) |
-| Spend cap | MCP server | The most mUSD the LLM buyer may spend in total (section 7.5) |
-| NEAR per buyer, NEAR for the provider | swarm | Amounts given during setup (section 7.2) |
+| Spend cap | MCP server | The most the LLM buyer may spend between two setups, in the token's base units; default the buyer's budget (section 7.5) |
+| NEAR per buyer, NEAR for the provider and the funding account | swarm | The NEAR balances setup tops up to (section 7.2) |
+| Budget per buyer, bonus funds for the provider | swarm | The token balances setup tops up to and reset returns to, in base units; default 10,000 (0.01 USDC) each (section 7.2) |
 
 ## 8. Live page
 
 `apps/web` is `index.html`, `app.js` (an ES module), `totals.js` and `style.css`. There is no build
 step, and the gateway serves the folder at `/`. The page never signs anything and needs no wallet.
 
-- **The banner:** "The provider is simulated. The money flow is real, on NEAR testnet."
+- **The banner:** "The provider is simulated, and prices are scaled down 10,000 times. The money
+  flow is real: USDC on NEAR testnet."
 - **The pool card:** the terms, a bar filling seat by seat, the seat price, the bonus escrowed, a
   countdown and the status.
 - **The buyer table:** buyer, seats, amount paid, and state (committed; refunded with its bonus
@@ -540,6 +628,8 @@ step, and the gateway serves the folder at `/`. The page never signs anything an
   contract), with a testnet explorer link for each transaction.
 - **The ledger totals:** paid in, paid to the seller, refunded, bonus paid out, and held now.
   *Held now* is shown beside `ft_balance_of(pools contract)`, so the solvency invariant can be seen.
+- **Amounts** are shown with all 6 of the token's decimals (read from its `ft_metadata`), since the
+  scaled prices are fractions of a cent.
 - **Data:** every 2 seconds, it reads pool state from the contract's views (`get_pool`,
   `get_seats`) with RPC `call_function`, and transaction links from `/activity`. The RPC URL is set
   in the page's configuration. If the RPC refuses browser requests, the page uses the gateway's
@@ -570,12 +660,12 @@ step, and the gateway serves the folder at `/`. The page never signs anything an
 | Gateway tests against a stubbed chain | Every row of the response tables in sections 6.4 and 6.5; payments in flight; the RPC timeout path; the keeper's calls |
 | MCP unit tests | Each tool against a stubbed gateway; the spend cap |
 | Live page | `totals.js` unit tests |
-| End to end on testnet | `swarm demo fills` and `swarm demo fails`, each ending with a check of the final on-chain state: pool status, every buyer's state, the seller's and the buyers' balances, and the contract's balance |
+| End to end on testnet, against Circle's testnet USDC | `swarm demo fills` and `swarm demo fails`, each ending with a check of the final on-chain state: pool status, every buyer's state, the seller's and the buyers' balances, and the contract's balance. Gas measured against USDC: a commit's stays within the offer's `minGas` and `maxGas`, and each `ft_transfer` the pools contract makes, read from the `settle` and `refund` receipts, stays within its transfer allowance with margin. `swarm setup` run twice in a row transfers nothing the second time, and so does `swarm reset`. Once every pool is Settled or Refunded, `swarm reset` followed by `swarm setup` leaves each buyer and the provider at its configured amount |
 
 ## 11. NEAR rules this design relies on
 
 From NEAR's documentation (docs.near.org: access keys, one-yocto deposits, meta transactions, gas
-keys) and the NEP-141, NEP-297, NEP-366 and NEP-413 standards:
+keys) and the NEP-141, NEP-145, NEP-297, NEP-366 and NEP-413 standards:
 
 - A **function-call access key cannot attach a deposit**, not even 1 yoctoNEAR. Buyers therefore
   sign with a full-access key, since `ft_transfer_call` requires 1 yoctoNEAR.
@@ -594,9 +684,10 @@ keys) and the NEP-141, NEP-297, NEP-366 and NEP-413 standards:
 - Gas keys cannot sign the inner delegate action, so buyers sign with a regular access key.
 - With a relayed call, the buyer is `predecessor_account_id` (the token sees the buyer as the
   sender); `signer_account_id` is the relayer. The contract never uses `signer_account_id`.
-- NEP-141: an account must be registered (`storage_deposit`) to hold tokens. `ft_transfer_call`
-  calls the receiver's `ft_on_transfer`, which returns the unused amount, and `ft_resolve_transfer`
-  refunds it. If `ft_on_transfer` panics, the whole amount is refunded.
+- NEP-141: an account must be registered (`storage_deposit`) to hold tokens. The deposit is set by
+  each token and read from its `storage_balance_bounds` (NEP-145). `ft_transfer_call` calls the
+  receiver's `ft_on_transfer`, which returns the unused amount, and `ft_resolve_transfer` refunds
+  it. If `ft_on_transfer` panics, the whole amount is refunded.
 - Cross-contract calls are asynchronous promises. Their results reach a callback, which must handle
   failure without panicking.
 
@@ -607,6 +698,11 @@ keys) and the NEP-141, NEP-297, NEP-366 and NEP-413 standards:
 - **The credential is simulated:** it proves a paid seat in a filled pool, not access to any real
   resource.
 - **One token** per deployment of the contract.
+- **The testnet token is not ours.** Circle's testnet USDC is run by its issuer, which may refuse a
+  transfer (section 5.7).
+- **Funding is manual.** USDC enters the system only through Circle's testnet faucet, by hand, into
+  the funding account (section 7.2). Prices are scaled down (section 7.3) so that one grant lasts
+  for many runs.
 - **The relayer is a cost centre:** it pays gas for every payment it relays, and the 1 yoctoNEAR
   deposit too if the deposit is charged to it (section 11). The checks in section 6.4 limit what it
   submits to the form of an offered payment, and a production version would also rate-limit per

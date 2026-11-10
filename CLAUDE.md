@@ -7,7 +7,8 @@ or a company, each commit a seat and pay over HTTP 402. If the target is reached
 deadline, the seller is paid and each buyer receives its access. If not, every seat is refunded
 together with a share of the bonus, which makes committing a no-lose move (a dominant assurance
 contract). The worked example is a block of GPU capacity shared by several teams' agents.
-The provider in that example is simulated; the money flow is real, on testnet.
+The provider in that example is simulated; the money flow is real, in Circle's USDC on testnet, at
+prices scaled down 10,000 times.
 
 ## Architecture (implementation-relevant facts)
 
@@ -15,9 +16,16 @@ Nothing is built yet. The design is
 [`docs/specs/2026-11-09-quorum-on-near-design.md`](docs/specs/2026-11-09-quorum-on-near-design.md);
 the spec wins where this summary is shorter. In brief:
 
-- **One NEAR contract** holds the pools, the seats and the bonuses, in a mock NEP-141 stablecoin on
-  testnet. It has no owner or admin methods: `settle` and `refund` are open to anyone, and each
-  buyer can call `claim_refund` for itself, so no buyer's money depends on our server.
+- **One NEAR contract** holds the pools, the seats and the bonuses, in one NEP-141 token set at
+  initialisation. On testnet it is Circle's USDC
+  (`3e2210e1184b45b64c8a434c0a7e7b23cc04ea7eb7a6c3c32520d03d4afcb8af`). In the sandbox tests it is
+  the mock token `contracts/mock-usd` (mUSD), which is never deployed to testnet. The contract has
+  no owner or admin methods: `settle` and `refund` are open to anyone, and each buyer can call
+  `claim_refund` for itself, so no buyer's money depends on our server.
+- **Funding:** USDC enters by hand, from Circle's testnet faucet, into one funding account, the
+  only source of USDC. `swarm setup` tops the buyers and the provider up from it, and `swarm reset`
+  returns their surpluses to it. Prices are scaled so that no pool holds, and no run moves, as much
+  as 0.1 USDC.
 - **Buyers are agents' sub-accounts** with full-access keys, each holding only its own budget. A
   buyer pays by signing an NEP-366 delegate action wrapping `ft_transfer_call`. The gateway checks
   it against the offer, then relays it, paying the gas.
