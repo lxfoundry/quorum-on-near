@@ -26,7 +26,7 @@ Executors read the spec and this plan together. Section numbers below refer to t
 ## Corrections found while executing this plan
 
 The plan was executed as written except for these corrections, which the code and the spec now
-carry:
+carry. Where a snippet below differs from the repository, the repository is authoritative.
 
 - `cargo add` refuses a manifest whose `[lib]` source file does not exist yet, so each crate's
   `src/lib.rs` is written before its `cargo add` step.
@@ -45,7 +45,13 @@ carry:
   every call, failed calls included.
 - Tests added beyond the plan: the `pool_opened`, `seats_committed` and `pool_filled` events in the
   receive unit tests; "Filled is final" at the `refund` and `claim_refund` entry points; the
-  amounts carried by `seat_refunded`, `pool_refunded` and `pool_settled`.
+  amounts carried by `seat_refunded`, `pool_refunded` and `pool_settled`; a refund scenario where
+  each buyer holds three seats, one buyer's taken in two commits, paid by a claim and by a push,
+  which ends with the contract holding nothing. The invariant check only proves the contract holds
+  at least what it owes, so it cannot catch an underpayment on its own.
+- The sandbox helper's `Outcome` carries each receipt's account and gas burnt, and `tests/gas.rs`
+  asserts that every transfer and callback in the full batch burns under 5 Tgas of its 10 (about
+  1.7 and 1.5 Tgas against the mock token).
 - `refund.rs` shares one `restore_claimable` helper between the two refund callbacks, its gate
   messages read "pool is not expired" and "pool is neither expired nor refunded", and
   `on_dust_sent` acts only on an Expired pool whose dust is in flight.

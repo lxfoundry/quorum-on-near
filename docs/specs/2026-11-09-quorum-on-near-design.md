@@ -231,10 +231,11 @@ amount is computed with checked arithmetic.
 
 **Gas and deposits.** Each transfer the contract makes is an `ft_transfer`, which needs exactly 1
 yoctoNEAR attached; the contract pays it from its own NEAR balance. Each transfer and each callback
-gets a fixed gas allowance of 10 Tgas, and each transfer with its callback also costs about 3 Tgas
-of runtime receipt fees. `settle`, `refund` and `claim_refund` assert at entry that their remaining
-prepaid gas covers every transfer and callback they are about to schedule, with those fees, plus
-10 Tgas for their own work, and panic before changing any state if it does not:
+is given at least 10 Tgas (near-sdk also shares out among them any gas the call leaves unused), and
+each transfer with its callback also costs about 3 Tgas of runtime receipt fees. `settle`, `refund`
+and `claim_refund` assert at entry that their remaining prepaid gas covers every transfer and
+callback they are about to schedule, with those fees, plus 10 Tgas for their own work, and panic
+before changing any state if it does not:
 
 | Method | Transfers it can schedule | Gas required at entry |
 |---|---|---|
@@ -247,7 +248,8 @@ batch of 10 completes with 280 Tgas, under the 300 Tgas per-transaction cap. The
 promise is reserved when the promise is scheduled, so a call that cannot reserve it fails as a whole
 and changes nothing; the entry assertion turns that into a clear refusal. What keeps a callback from
 running out of gas, which would leave a buyer marked `Refunded` with no transfer made, is its
-allowance: the sandbox tests measure about 1.5 Tgas used of the 10 reserved. The allowances, and
+allowance. Against the mock token, the sandbox gas test measures about 1.7 Tgas burnt by each
+transfer and 1.5 Tgas by each callback, and fails if any of them reaches 5 Tgas. The allowances, and
 with them the largest usable `limit`, come from that profiling; `limit` is at most 10.
 
 ### 5.5 Invariants
@@ -673,7 +675,7 @@ step, and the gateway serves the folder at `/`. The page never signs anything an
 | Level | What it covers |
 |---|---|
 | Contract unit tests (near-sdk test environment) | The bonus split and the dust; every state transition; every refusal in section 5.3; checked arithmetic at the limits |
-| Sandbox integration (`near-sandbox` and `near-api`, with the real mock token) | **Fills:** open, commits, fill, settle. **Fails:** expiry, refund in batches, dust to the seller. Also: a partial last commit; a payment from the wrong token; a commit after the deadline; a seller committing to its own pool; a failed pushed refund, then a claim; a failed payout, then a retried `settle`; a claim before any `refund` call; a pool with no seats at expiry; a pool whose dust is 0 (a bonus of 0 is covered by unit tests only, because the standard token rejects a zero-amount `ft_transfer_call`); `refund` called with just under the gas its entry assertion requires (refused) and with just over it (a full batch of 10 completes); a relayed payment that records which account is debited its 1 yoctoNEAR deposit. The invariants of section 5.5 are checked after every step, against `ft_balance_of` |
+| Sandbox integration (`near-sandbox` and `near-api`, with the real mock token) | **Fills:** open, commits, fill, settle. **Fails:** expiry, refund in batches, dust to the seller. Also: a partial last commit; a payment from the wrong token; a commit after the deadline; a seller committing to its own pool; a failed pushed refund, then a claim; a failed payout, then a retried `settle`; a claim before any `refund` call; buyers holding several seats, one of them taken in two commits, refunded by a claim and by a push; a pool with no seats at expiry; a pool whose dust is 0 (a bonus of 0 is covered by unit tests only, because the standard token rejects a zero-amount `ft_transfer_call`); `refund` called with just under the gas its entry assertion requires (refused) and with just over it (a full batch of 10 completes, each transfer and callback burning under half its allowance); a relayed payment that records which account is debited its 1 yoctoNEAR deposit. The invariants of section 5.5 are checked after every step, against `ft_balance_of` |
 | `packages/protocol` unit tests | Offer and payload encoding and decoding; the static checks, one test per rejection code, with fixture keys |
 | Gateway tests against a stubbed chain | Every row of the response tables in sections 6.4 and 6.5; payments in flight; the RPC timeout path; the keeper's calls |
 | MCP unit tests | Each tool against a stubbed gateway; the spend cap |
