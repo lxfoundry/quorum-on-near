@@ -16,8 +16,9 @@ import {
 import type { ActivityRecord } from '../src/activity.ts';
 import type { AccessKeyInfo } from '../src/chain.ts';
 import type { GatewayConfig } from '../src/config.ts';
+import type { Deps } from '../src/deps.ts';
 import { handleRedeem } from '../src/handle-redeem.ts';
-import { NOW_MS, TERMS, poolView, testConfig } from './fake-chain.ts';
+import { FakeChain, NOW_MS, TERMS, poolView, testConfig } from './fake-chain.ts';
 import { testDeps } from './handler-deps.ts';
 
 const BUYER = 'alice.testnet';
@@ -57,6 +58,32 @@ async function setup(
 afterEach(() => {
   vi.restoreAllMocks();
 });
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
+/**
+ * Makes the reads of BUYER's access keys wait until `release` is called. `waiting` resolves once a
+ * redemption is waiting on such a read.
+ */
+function slowBuyerKeyReads(deps: Deps & { fake: FakeChain }) {
+  const released = deferred<void>();
+  const waiting = deferred<void>();
+  const readKey = deps.fake.accessKey.bind(deps.fake);
+  vi.spyOn(deps.fake, 'accessKey').mockImplementation(async (account, key) => {
+    if (account === BUYER) {
+      waiting.resolve();
+      await released.promise;
+    }
+    return readKey(account, key);
+  });
+  return { waiting: waiting.promise, release: () => released.resolve() };
+}
 
 /** Silences console.error, where the handler logs the error behind a 503; the spy is restored after each test. */
 function silenceErrors() {
@@ -199,6 +226,61 @@ describe('handleRedeem', () => {
       expect(await handleRedeem(deps, POOL_ID, header)).toEqual({ status: 401, body: { error: 'replayed_proof' } });
       clock = NOW_MS + REDEEM_MAX_SKEW_MS + REDEEM_MAX_AGE_MS;
       expect(await handleRedeem(deps, POOL_ID, header)).toEqual({ status: 401, body: { error: 'stale_proof' } });
+    });
+
+    it('refuses a replay whose nonce another redemption forgets while the replay waits on its key read', async () => {
+      let clock = NOW_MS;
+      const { deps, proof } = await setup({ now: () => clock });
+      const otherKey = KeyPair.fromRandom('ed25519');
+      deps.fake.setKey(OTHER_BUYER, otherKey.getPublicKey().toString(), FULL_ACCESS);
+      deps.fake.setBuyer(POOL_ID, OTHER_BUYER, { seats: 1, state: 'committed' });
+      // Signed a minute ahead, first used at NOW_MS: fresh until NOW_MS + 6 minutes.
+      const header = await proof({ nowMs: NOW_MS + REDEEM_MAX_SKEW_MS });
+      expect((await handleRedeem(deps, POOL_ID, header)).status).toBe(202);
+
+      // The replay is fresh when it arrives, at its last fresh millisecond, then waits on its key read.
+      clock = NOW_MS + REDEEM_MAX_SKEW_MS + REDEEM_MAX_AGE_MS - 1;
+      const slow = slowBuyerKeyReads(deps);
+      const replay = handleRedeem(deps, POOL_ID, header);
+      await slow.waiting;
+
+      // A millisecond later, another account's redemption forgets the first use's nonce.
+      clock += 1;
+      const otherProof = await buildRedeemProofHeader({
+        keyPair: otherKey,
+        accountId: OTHER_BUYER,
+        poolId: POOL_ID,
+        recipient: RECIPIENT,
+        nowMs: clock,
+      });
+      expect((await handleRedeem(deps, POOL_ID, otherProof)).status).toBe(202);
+
+      slow.release();
+      expect(await replay).toEqual({ status: 401, body: { error: 'stale_proof' } });
+    });
+
+    it('answers 401 stale_proof for a proof that turns stale while its key is read', async () => {
+      let clock = NOW_MS;
+      const { deps, proof } = await setup({ now: () => clock });
+      const slow = slowBuyerKeyReads(deps);
+      const result = handleRedeem(deps, POOL_ID, await proof({ nowMs: NOW_MS }));
+      await slow.waiting;
+      clock = NOW_MS + REDEEM_MAX_AGE_MS;
+      slow.release();
+      expect(await result).toEqual({ status: 401, body: { error: 'stale_proof' } });
+    });
+
+    it('records the nonce at the time read after the key read', async () => {
+      let clock = NOW_MS;
+      const { deps, proof } = await setup({ now: () => clock });
+      const seen = vi.spyOn(deps.proofNonces, 'seen');
+      const slow = slowBuyerKeyReads(deps);
+      const result = handleRedeem(deps, POOL_ID, await proof());
+      await slow.waiting;
+      clock = NOW_MS + 30_000;
+      slow.release();
+      expect((await result).status).toBe(202);
+      expect(seen).toHaveBeenCalledExactlyOnceWith(expect.any(String), NOW_MS + 30_000);
     });
   });
 
