@@ -6,3 +6,5 @@ export * from './codec.ts';
 export * from './offer.ts';
 export * from './delegate.ts';
 export * from './nep413.ts';
+export * from './checks.ts';
+export * from './client.ts';
