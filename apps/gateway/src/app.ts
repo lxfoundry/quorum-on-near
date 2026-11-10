@@ -13,6 +13,8 @@ import type { Reply } from './reply.ts';
 const POOL_ID = /^(0|[1-9][0-9]*)$/;
 /** The largest `POST /rpc` body read; a longer one is answered 413. */
 const MAX_RPC_BODY_BYTES = 16 * 1024;
+/** How long a `POST /rpc` forward waits for the RPC's whole answer; past it, the request is answered 503. */
+const RPC_FORWARD_TIMEOUT_MS = 10_000;
 /**
  * The longest `args_base64` forwarded. The largest arguments a view of either contract takes,
  * `get_buyer`'s u64 pool id and 64-character account id, are 152 characters of base64.
@@ -76,7 +78,8 @@ function send(c: Context, r: Reply): Response {
  * - `GET /activity?pool=:id`
  * - `GET /.well-known/jwks.json`
  * - `GET /config.json`
- * - `POST /rpc` (only when `config.rpcPassthrough`), with a body of at most 16 KiB
+ * - `POST /rpc` (only when `config.rpcPassthrough`), with a body of at most 16 KiB, forwarded with a
+ *   10-second timeout
  * - the live page's static files at `/` (only when `config.webDir` is set), except any whose path has
  *   a segment that starts with a dot
  *
@@ -148,6 +151,7 @@ export function createApp(deps: Deps, options: { fetch?: typeof fetch } = {}): H
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
+          signal: AbortSignal.timeout(RPC_FORWARD_TIMEOUT_MS),
         });
         return c.json(await upstream.json(), upstream.status as ContentfulStatusCode);
       } catch (error) {

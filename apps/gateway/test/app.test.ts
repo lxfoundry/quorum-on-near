@@ -127,6 +127,17 @@ function upstream(body: unknown = RPC_RESULT, status = 200) {
   return vi.fn<typeof fetch>(async () => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } }));
 }
 
+/** An upstream RPC that never answers: like fetch, the request fails only once its signal aborts. */
+function silentUpstream() {
+  return vi.fn<typeof fetch>(
+    (_url, init) =>
+      new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+      }),
+  );
+}
+
 /** The app with the RPC pass-through on, over `fetch`. */
 async function passthrough(fetch: typeof globalThis.fetch) {
   return setup({ rpcPassthrough: true }, { fetch });
@@ -324,6 +335,7 @@ describe('createApp', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(viewCall()),
+        signal: expect.any(AbortSignal),
       });
     });
 
@@ -385,6 +397,23 @@ describe('createApp', () => {
       const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
       expect(await answer(postRpc(app, viewCall()))).toEqual({ status: 503, body: { error: 'chain_unavailable' } });
       expect(logged).toHaveBeenCalledExactlyOnceWith(expect.any(String), failure);
+    });
+
+    it('answers 503 chain_unavailable when the RPC has not answered after 10 seconds', async () => {
+      // The forward's timeout signal, aborted by the test in place of a 10-second wait.
+      const timer = new AbortController();
+      const timeout = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(timer.signal);
+      const fetch = silentUpstream();
+      const { app } = await passthrough(fetch);
+      const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const res = postRpc(app, viewCall());
+      await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+      expect(timeout).toHaveBeenCalledExactlyOnceWith(10_000);
+      expect(fetch.mock.calls[0]?.[1]?.signal).toBe(timer.signal);
+      const reason = new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+      timer.abort(reason);
+      expect(await answer(res)).toEqual({ status: 503, body: { error: 'chain_unavailable' } });
+      expect(logged).toHaveBeenCalledExactlyOnceWith(expect.any(String), reason);
     });
   });
 
