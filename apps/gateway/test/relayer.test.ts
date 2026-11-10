@@ -1,6 +1,7 @@
 import { sha256 } from '@noble/hashes/sha2.js';
 import { decodeSignedDelegate, type DecodedSignedDelegate } from '@quorum-on-near/protocol';
 import {
+  JsonRpcProvider,
   KeyPair,
   KeyPairSigner,
   actions,
@@ -217,6 +218,30 @@ async function buyerDelegate(maxBlockHeight = 1_100n): Promise<{ signed: Decoded
   const { signedDelegate } = await new KeyPairSigner(buyer).signDelegateAction(delegateAction);
   const bytes = encodeSignedDelegate(signedDelegate);
   return { signed: decodeSignedDelegate(bytes), bytes };
+}
+
+/**
+ * A send provider built as main.ts builds it (near-api-js, `retries: 1`), posting to an RPC that answers
+ * every request with HTTP `status`. `posted` holds each transaction posted, decoded from the request.
+ * Stubs the global fetch: unstub it after the test.
+ */
+function httpStatusSendProvider(status: number): { provider: Provider; posted: SentTx[] } {
+  const posted: SentTx[] = [];
+  vi.stubGlobal('fetch', async (_url: string, init: { body: string }) => {
+    const { params } = JSON.parse(init.body) as { params: { signed_tx_base64: string; wait_until: string } };
+    const { transaction } = decodeSignedTransaction(Buffer.from(params.signed_tx_base64, 'base64'));
+    posted.push({
+      hash: baseEncode(sha256(encodeTransaction(transaction))),
+      signerId: transaction.signerId,
+      publicKey: transaction.publicKey.toString(),
+      nonce: transaction.nonce,
+      receiverId: transaction.receiverId,
+      actions: transaction.actions,
+      waitUntil: params.wait_until,
+    });
+    return new Response('Too Many Requests', { status });
+  });
+  return { provider: new JsonRpcProvider({ url: 'http://rpc.invalid' }, { retries: 1 }), posted };
 }
 
 /** Lets every pending promise callback run. */
@@ -668,6 +693,50 @@ describe('RpcRelayer.relayDelegate', () => {
     const { signed } = await buyerDelegate();
     await Promise.all([relayer.relayDelegate(signed, 1_100n), relayer.relayDelegate(signed, 1_100n)]);
     expect(new Set(rpc.sent.map((tx) => tx.publicKey))).toEqual(new Set(keys.map((key) => key.getPublicKey().toString())));
+  });
+});
+
+describe('RpcRelayer HTTP error status on send', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('rejects a relay the RPC turns away with HTTP 429, looking nothing up', async () => {
+    const send = httpStatusSendProvider(429);
+    const { rpc, relayer } = setup(1, { sendProvider: send.provider });
+    const { signed } = await buyerDelegate();
+    const result = await relayer.relayDelegate(signed, 1_100n);
+    expect(result).toEqual({
+      kind: 'rejected',
+      txHash: send.posted[0]?.hash,
+      error: expect.stringContaining('Too Many Requests'),
+    });
+    expect(send.posted).toHaveLength(1);
+    expect(rpc.lookups).toHaveLength(0);
+  });
+
+  it('rejects a keeper call the RPC turns away with HTTP 429, looking nothing up', async () => {
+    const send = httpStatusSendProvider(429);
+    const { rpc, relayer } = setup(1, { sendProvider: send.provider });
+    const result = await relayer.callPools('settle', { pool_id: 7 }, 100n * TGAS);
+    expect(result).toEqual({
+      kind: 'rejected',
+      txHash: send.posted[0]?.hash,
+      error: expect.stringContaining('Too Many Requests'),
+    });
+    expect(send.posted).toHaveLength(1);
+    expect(rpc.lookups).toHaveLength(0);
+  });
+
+  it.each([408, 500, 502, 503])('looks up a relay the RPC answers with HTTP %i, without sending it again', async (status) => {
+    const send = httpStatusSendProvider(status);
+    const { rpc, relayer } = setup(1, { sendProvider: send.provider });
+    rpc.onLookup = async () => executedResponse(send.posted[0]!);
+    const { signed } = await buyerDelegate();
+    const result = await relayer.relayDelegate(signed, 1_100n);
+    expect(result).toMatchObject({ kind: 'executed', outcome: { txHash: send.posted[0]?.hash } });
+    expect(send.posted).toHaveLength(1);
+    expect(rpc.lookups).toHaveLength(1);
   });
 });
 

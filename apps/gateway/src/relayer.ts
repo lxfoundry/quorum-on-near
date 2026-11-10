@@ -104,10 +104,14 @@ type SignedDelegateParts = Parameters<typeof actions.signedDelegate>[0];
 
 /**
  * True when the RPC refused the transaction while validating it (a bad nonce, an expired block hash,
- * a congested or stuck shard, a malformed request), so it never ran. A timeout, a routed request, a
- * server error, an error it does not recognise or a network failure leaves its fate open.
+ * a congested or stuck shard, a malformed request), or turned the request away unread with HTTP 429
+ * (too many requests), so it never ran. A timeout, a routed request, a server error (any other HTTP
+ * error status included), an error it does not recognise or a network failure leaves its fate open.
  */
 function refused(error: unknown): boolean {
+  // near-api-js throws its own error class, which it does not export, for an HTTP error status, with
+  // the status as the error's cause.
+  if (error instanceof Error && error.cause === 429) return true;
   // An action error is what a transaction that ran raises. near-api-js also gives one to a transaction
   // refused for an invalid action; that one is looked up too, which only delays its answer.
   if (error instanceof ActionExecutionError) return false;
@@ -137,9 +141,9 @@ function readOutcome(response: unknown): TxOutcome | null {
  * about to expire. If the send times out, the network fails, the RPC cannot say whether it took the
  * transaction (a routed request, a server error) or its response cannot be read (or comes back below
  * `EXECUTED_OPTIMISTIC`), it looks the transaction up by hash (never re-signing or re-sending) until a
- * readable outcome is found or the deadline passes. An RPC error that refuses the transaction is a
- * rejection: nothing ran, and the key's cached nonce is dropped. Nothing throws once a transaction
- * has been sent.
+ * readable outcome is found or the deadline passes. An RPC error that refuses the transaction, or an
+ * HTTP 429 that turns the request away, is a rejection: nothing ran, and the key's cached nonce is
+ * dropped. Nothing throws once a transaction has been sent.
  *
  * The key goes back to the pool once a result is returned, even an `unknown` one whose transaction
  * may still be pending. Nonces are ordered, so the key's next transaction cannot clash with it: if
