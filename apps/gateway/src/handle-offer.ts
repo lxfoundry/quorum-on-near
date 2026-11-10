@@ -51,7 +51,7 @@ export function currentAccepts(pool: PoolView, seats: number, config: GatewayCon
  * - 410 `{error: "pool_expired", status}` if it is expired or refunded.
  * - 409 `{error: "pool_closed", status}` if it is filled, settled, or open with no seat left.
  * - otherwise 402 with paymentRequired(currentAccepts(...)).
- * - 503 `{error: "chain_unavailable"}` if the chain cannot be read.
+ * - 503 `{error: "chain_unavailable"}` if the pool cannot be read. The error is logged.
  */
 export async function handleOffer(deps: Deps, poolId: number, seatsParam: string | undefined): Promise<Reply> {
   const seats = parseSeats(seatsParam);
@@ -59,7 +59,8 @@ export async function handleOffer(deps: Deps, poolId: number, seatsParam: string
   let pool: PoolView | null;
   try {
     pool = await servedPool(deps.chain, deps.config.provider, poolId);
-  } catch {
+  } catch (error) {
+    console.error('could not read the pool for an offer:', error);
     return reply(503, { error: 'chain_unavailable' });
   }
   if (pool === null) return reply(404, { error: 'unknown_pool' });

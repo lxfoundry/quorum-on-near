@@ -1,6 +1,6 @@
 import { createLocalJWKSet, decodeJwt, jwtVerify } from 'jose';
 import { KeyPair } from 'near-api-js';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   REDEEM_MAX_AGE_MS,
   REDEEM_MAX_SKEW_MS,
@@ -48,6 +48,15 @@ async function setup(
   const proof = (overrides: Partial<ProofInput> = {}) =>
     buildRedeemProofHeader({ keyPair, accountId: BUYER, poolId: POOL_ID, recipient: RECIPIENT, nowMs: NOW_MS, ...overrides });
   return { deps, proof };
+}
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+/** Silences console.error, where the handler logs the error behind a 503; the spy is restored after each test. */
+function silenceErrors() {
+  return vi.spyOn(console, 'error').mockImplementation(() => {});
 }
 
 function refundRecord(overrides: Partial<ActivityRecord> = {}): ActivityRecord {
@@ -271,10 +280,27 @@ describe('handleRedeem', () => {
   });
 
   describe('chain failures', () => {
-    it.each(['getPool', 'accessKey', 'getBuyer'] as const)('answers 503 chain_unavailable when %s throws', async (method) => {
-      const { deps, proof } = await setup();
-      vi.spyOn(deps.fake, method).mockRejectedValue(new Error('rpc unreachable'));
+    it.each(['getPool', 'accessKey', 'getBuyer'] as const)(
+      'answers 503 chain_unavailable and logs the error when %s throws',
+      async (method) => {
+        const { deps, proof } = await setup();
+        const failure = new Error('rpc unreachable');
+        vi.spyOn(deps.fake, method).mockRejectedValue(failure);
+        const logged = silenceErrors();
+        expect(await handleRedeem(deps, POOL_ID, await proof())).toEqual({ status: 503, body: { error: 'chain_unavailable' } });
+        expect(logged).toHaveBeenCalledTimes(1);
+        expect(logged).toHaveBeenCalledWith(expect.any(String), failure);
+      },
+    );
+
+    it('answers 503 chain_unavailable and logs the error when the credential cannot be signed', async () => {
+      const { deps, proof } = await setup({ pool: { status: 'filled', taken: 192 } });
+      const failure = new Error('credential key unusable');
+      vi.spyOn(deps.credentials, 'issue').mockRejectedValue(failure);
+      const logged = silenceErrors();
       expect(await handleRedeem(deps, POOL_ID, await proof())).toEqual({ status: 503, body: { error: 'chain_unavailable' } });
+      expect(logged).toHaveBeenCalledTimes(1);
+      expect(logged).toHaveBeenCalledWith(expect.any(String), failure);
     });
   });
 });

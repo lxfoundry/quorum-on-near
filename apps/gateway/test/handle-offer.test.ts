@@ -1,10 +1,14 @@
 import { buildOffer, type PoolStatus } from '@quorum-on-near/protocol';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { currentAccepts, handleOffer, offerContext, parseSeats } from '../src/handle-offer.ts';
 import { POOLS, PROVIDER, RELAYER, TERMS, TOKEN, poolView, testConfig } from './fake-chain.ts';
 import { testDeps } from './handler-deps.ts';
 
 const CLOSED: PoolStatus[] = ['filled', 'settled', 'expired', 'refunded'];
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe('parseSeats', () => {
   it('reads an absent parameter as one seat', () => {
@@ -196,9 +200,13 @@ describe('handleOffer', () => {
     },
   );
 
-  it('answers 503 chain_unavailable when the pool cannot be read', async () => {
+  it('answers 503 chain_unavailable and logs the error when the pool cannot be read', async () => {
     const deps = await testDeps();
-    vi.spyOn(deps.fake, 'getPool').mockRejectedValue(new Error('connect ECONNREFUSED'));
+    const failure = new Error('connect ECONNREFUSED');
+    vi.spyOn(deps.fake, 'getPool').mockRejectedValue(failure);
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
     expect(await handleOffer(deps, 7, '2')).toEqual({ status: 503, body: { error: 'chain_unavailable' } });
+    expect(logged).toHaveBeenCalledTimes(1);
+    expect(logged).toHaveBeenCalledWith(expect.any(String), failure);
   });
 });

@@ -19,7 +19,8 @@ const REFUND_STATUS: Record<BuyerState, 'refund_pending' | 'refunded' | 'claimab
  *   seen, under any account.
  * - 404 `{error: "no_seats"}` if the account holds no seats in the pool.
  * - 202 pending, 200 with a credential, or 410 with the refund, by pool status.
- * - 503 `{error: "chain_unavailable"}` if the chain cannot be read.
+ * - 503 `{error: "chain_unavailable"}` if anything throws: a chain read, or the work after it, such as
+ *   signing the credential. The error is logged, since the reply names only the likeliest cause.
  */
 export async function handleRedeem(deps: Deps, poolId: number, header: string): Promise<Reply> {
   const { config, chain, proofNonces } = deps;
@@ -39,7 +40,8 @@ export async function handleRedeem(deps: Deps, poolId: number, header: string): 
     const holding = await chain.getBuyer(poolId, proof.accountId);
     if (holding === null || holding.seats === 0) return reply(404, { error: 'no_seats' });
     return await holdingReply(deps, pool, proof.accountId, holding);
-  } catch {
+  } catch (error) {
+    console.error('could not check or answer a redemption:', error);
     return reply(503, { error: 'chain_unavailable' });
   }
 }
