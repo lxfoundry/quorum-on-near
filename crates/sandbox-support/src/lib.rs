@@ -18,12 +18,14 @@ pub struct Chain {
     pub signer: Arc<Signer>,
 }
 
-/// The result of a function call: did the transaction succeed, what it logged, and its debug text
-/// (which includes any receipt failure message).
+/// The result of a function call: did the transaction succeed, what it logged, its debug text
+/// (which includes any receipt failure message), and every receipt it produced as the account the
+/// receipt ran on and the gas it burnt, the call's own receipt first.
 pub struct Outcome {
     pub ok: bool,
     pub logs: Vec<String>,
     pub debug: String,
+    pub receipts: Vec<(AccountId, u64)>,
 }
 
 impl Chain {
@@ -104,6 +106,16 @@ impl Chain {
             ok: result.is_success(),
             logs: result.logs().iter().map(|line| line.to_string()).collect(),
             debug: format!("{result:?}"),
+            receipts: result
+                .clone()
+                .into_full()
+                .map(|full| {
+                    full.receipt_outcomes()
+                        .iter()
+                        .map(|o| (o.executor_id.clone(), o.gas_burnt.as_gas()))
+                        .collect()
+                })
+                .unwrap_or_default(),
         })
     }
 

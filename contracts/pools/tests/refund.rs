@@ -1,6 +1,7 @@
 mod common;
 
 use common::*;
+use serde_json::json;
 
 /// A pool of 6 seats at 2 mUSD with a 10 mUSD bonus, three buyers with one seat each, then expired.
 async fn expired_pool(w: &World) -> anyhow::Result<(u64, AccountId, Vec<AccountId>)> {
@@ -191,5 +192,63 @@ async fn a_failed_dust_transfer_is_retried_by_the_next_refund_call() -> anyhow::
         );
     }
     w.check_invariants().await?;
+    Ok(())
+}
+
+/// Buyer a takes three seats in two commits and buyer b takes three in one. Each is refunded the
+/// price and the bonus share of every seat it holds: b by its own claim, a by a pushed refund.
+#[tokio::test]
+async fn a_buyer_holding_several_seats_is_refunded_for_each_of_them() -> anyhow::Result<()> {
+    let w = World::new().await?;
+    let seller = w.user("seller", 10).await?;
+    let a = w.user("a", 10).await?;
+    let b = w.user("b", 10).await?;
+    let deadline = w.deadline_in(DEADLINE_MS).await?;
+    let id = w
+        .open(&seller, 10 * MUSD, 2 * MUSD, 10, deadline, None)
+        .await?;
+    assert!(w.commit(&a, id, 1, 2 * MUSD).await?.ok);
+    assert!(w.commit(&a, id, 2, 2 * MUSD).await?.ok);
+    assert!(w.commit(&b, id, 3, 2 * MUSD).await?.ok);
+    let row = w
+        .chain
+        .view(
+            &w.pools,
+            "get_buyer",
+            json!({ "pool_id": id, "account_id": a }),
+        )
+        .await?;
+    assert_eq!(row["seats"], 3, "the second commit added to the first");
+    w.expire(id).await?;
+
+    // the 10 mUSD bonus over 6 seats: 1_666_666 each, floored, and a dust of 4 base units
+    let share = 10 * MUSD / 6;
+    let refund = 3 * (2 * MUSD + share);
+    let dust = 10 * MUSD - 6 * share;
+
+    let claimed = w.claim(&b, id).await?;
+    assert!(claimed.ok);
+    assert_eq!(w.balance(&b).await?, 4 * MUSD + refund);
+    let paid = events(&claimed, "refund_claimed");
+    assert_eq!(paid.len(), 1);
+    assert_eq!(paid[0]["amount"], refund.to_string());
+
+    let pushed = w.refund(&seller, id, 10, 300).await?;
+    assert!(pushed.ok);
+    assert_eq!(w.balance(&a).await?, 4 * MUSD + refund);
+    let paid = events(&pushed, "seat_refunded");
+    assert_eq!(paid.len(), 1, "b has claimed, so only a is pushed");
+    assert_eq!(paid[0]["buyer"], a.as_str());
+    assert_eq!(paid[0]["seats"], 3);
+    assert_eq!(paid[0]["amount"], refund.to_string());
+    assert_eq!(paid[0]["bonus_share"], (3 * share).to_string());
+
+    assert_eq!(w.pool(id).await?["status"], "refunded");
+    assert_eq!(w.balance(&seller).await?, dust);
+    assert_eq!(
+        w.balance(&w.pools).await?,
+        0,
+        "everything the pool took in was paid out"
+    );
     Ok(())
 }
