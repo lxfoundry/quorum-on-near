@@ -107,6 +107,62 @@ impl Contract {
         }
     }
 
+    /// A buyer collects its own refund from a pool that missed its deadline. It works whether or not
+    /// anyone has called `refund`, and it is how a buyer recovers a refund that could not be pushed
+    /// (for example, because the buyer was not registered on the token). The state is set before the
+    /// transfer; if the transfer fails, the callback makes the refund claimable again.
+    pub fn claim_refund(&mut self, pool_id: u64) {
+        require_gas_for(1);
+        let buyer = env::predecessor_account_id();
+        let now_ms = env::block_timestamp_ms();
+        let pool = self
+            .pools
+            .get_mut(&pool_id)
+            .unwrap_or_else(|| env::panic_str("pool not found"));
+        pool.expire_if_due(now_ms);
+        require!(
+            matches!(pool.status, PoolStatus::Expired | PoolStatus::Refunded),
+            "pool is not open past its deadline, expired or refunded"
+        );
+        let record = self
+            .buyers
+            .get_mut(&(pool_id, buyer.clone()))
+            .unwrap_or_else(|| env::panic_str("the caller holds no seats in this pool"));
+        require!(
+            matches!(record.state, BuyerState::Committed | BuyerState::Claimable),
+            "the refund was already paid or is on its way"
+        );
+        record.state = BuyerState::Refunded;
+        let amount = math::refund_amount(record.seats, pool.seat_price, pool.bonus_per_seat);
+        Self::transfer(&self.token, buyer.clone(), amount)
+            .then(
+                Self::ext(env::current_account_id())
+                    .with_static_gas(CALLBACK_GAS)
+                    .on_claim_sent(pool_id, buyer, U128(amount)),
+            )
+            .detach();
+    }
+
+    #[private]
+    pub fn on_claim_sent(
+        &mut self,
+        pool_id: u64,
+        buyer: AccountId,
+        amount: U128,
+        #[callback_result] result: Result<(), PromiseError>,
+    ) {
+        match result {
+            Ok(()) => events::refund_claimed(pool_id, &buyer, amount.0),
+            Err(_) => {
+                if let Some(record) = self.buyers.get_mut(&(pool_id, buyer)) {
+                    if record.state == BuyerState::Refunded {
+                        record.state = BuyerState::Claimable;
+                    }
+                }
+            }
+        }
+    }
+
     #[private]
     pub fn on_refund_sent(
         &mut self,
@@ -329,5 +385,91 @@ mod tests {
         c.on_dust_sent(id, U128(1), Ok(()));
         assert_eq!(c.pools.get(&id).unwrap().status, PoolStatus::Refunded);
         assert!(logged("pool_refunded"));
+    }
+
+    #[test]
+    fn a_buyer_can_claim_after_the_deadline_without_any_refund_call() {
+        let mut c = new_contract();
+        let id = pool_with(&mut c, 10, &["a.test", "b.test", "c.test"]);
+        set_context("a.test", 10_000);
+        c.claim_refund(id);
+        assert_eq!(state(&c, id, "a.test"), BuyerState::Refunded);
+        let pool = c.pools.get(&id).unwrap();
+        assert_eq!(pool.status, PoolStatus::Expired, "the claim stored the expiry");
+        assert_eq!(pool.bonus_per_seat, 3);
+        assert_eq!(state(&c, id, "b.test"), BuyerState::Committed);
+    }
+
+    #[test]
+    #[should_panic(expected = "pool is not open past its deadline, expired or refunded")]
+    fn a_claim_before_the_deadline_is_refused() {
+        let mut c = new_contract();
+        let id = pool_with(&mut c, 10, &["a.test"]);
+        set_context("a.test", 9_999);
+        c.claim_refund(id);
+    }
+
+    #[test]
+    #[should_panic(expected = "the caller holds no seats in this pool")]
+    fn a_claim_by_an_account_without_seats_is_refused() {
+        let mut c = new_contract();
+        let id = pool_with(&mut c, 10, &["a.test"]);
+        set_context("stranger.test", 10_000);
+        c.claim_refund(id);
+    }
+
+    #[test]
+    #[should_panic(expected = "the refund was already paid or is on its way")]
+    fn a_second_claim_is_refused() {
+        let mut c = new_contract();
+        let id = pool_with(&mut c, 10, &["a.test"]);
+        set_context("a.test", 10_000);
+        c.claim_refund(id);
+        c.claim_refund(id);
+    }
+
+    #[test]
+    fn a_claim_whose_transfer_fails_can_be_claimed_again() {
+        let mut c = new_contract();
+        let id = pool_with(&mut c, 10, &["a.test"]);
+        set_context("a.test", 10_000);
+        c.claim_refund(id);
+        c.on_claim_sent(id, acct("a.test"), U128(5), Err(PromiseError::Failed));
+        assert_eq!(state(&c, id, "a.test"), BuyerState::Claimable);
+        c.claim_refund(id);
+        assert_eq!(state(&c, id, "a.test"), BuyerState::Refunded);
+    }
+
+    #[test]
+    fn a_paid_claim_logs_the_event_and_keeps_the_state() {
+        let mut c = new_contract();
+        let id = pool_with(&mut c, 10, &["a.test"]);
+        set_context("a.test", 10_000);
+        c.claim_refund(id);
+        c.on_claim_sent(id, acct("a.test"), U128(5), Ok(()));
+        assert_eq!(state(&c, id, "a.test"), BuyerState::Refunded);
+        assert!(logged("refund_claimed"));
+    }
+
+    #[test]
+    fn a_claim_failure_callback_changes_nothing_unless_the_state_is_refunded() {
+        let mut c = new_contract();
+        let id = pool_with(&mut c, 10, &["a.test"]);
+        c.on_claim_sent(id, acct("a.test"), U128(5), Err(PromiseError::Failed));
+        assert_eq!(state(&c, id, "a.test"), BuyerState::Committed);
+    }
+
+    #[test]
+    fn refund_leaves_a_buyer_that_has_already_claimed_alone() {
+        let mut c = new_contract();
+        let id = pool_with(&mut c, 10, &["a.test", "b.test", "c.test"]);
+        set_context("a.test", 10_000);
+        c.claim_refund(id);
+        set_context("anyone.test", 10_000);
+        c.refund(id, 10);
+        assert_eq!(state(&c, id, "a.test"), BuyerState::Refunded);
+        assert_eq!(state(&c, id, "b.test"), BuyerState::Refunded);
+        assert_eq!(state(&c, id, "c.test"), BuyerState::Refunded);
+        assert_eq!(c.pools.get(&id).unwrap().refund_cursor, 3);
     }
 }
