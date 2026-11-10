@@ -1,5 +1,6 @@
 // Starts the gateway: `node --env-file-if-exists=.env src/main.ts` (see `.env.example`).
 import { statSync } from 'node:fs';
+import type { Server } from 'node:http';
 import { join, resolve } from 'node:path';
 import { serve } from '@hono/node-server';
 import { JsonRpcProvider, KeyPair, type KeyPairString } from 'near-api-js';
@@ -12,6 +13,7 @@ import { InFlight, proofNonceCache } from './guards.ts';
 import { Keeper } from './keeper.ts';
 import { KeyPool, RpcRelayer } from './relayer.ts';
 import { RpcChain } from './rpc-chain.ts';
+import { gracefulClose } from './shutdown.ts';
 
 function fail(message: string): never {
   console.error(message);
@@ -94,6 +96,8 @@ const server = serve({ fetch: createApp(deps).fetch, port: config.port }, (info)
   console.log(`gateway listening on http://localhost:${info.port} (public URL ${config.publicUrl})`);
 });
 server.once('error', (error) => fail(`cannot listen on port ${config.port}: ${error.message}`));
+// serve() makes a node:http server, since it is given no other createServer.
+const closeServer = gracefulClose(server as Server);
 
 const keeper = new Keeper({
   chain,
@@ -114,7 +118,7 @@ function shutdown(signal: NodeJS.Signals): void {
   process.off('SIGINT', shutdown);
   process.off('SIGTERM', shutdown);
   console.log(`${signal}: shutting down`);
-  server.close();
+  closeServer();
   void keeper.stop();
 }
 process.on('SIGINT', shutdown);
