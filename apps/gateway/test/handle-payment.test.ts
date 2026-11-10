@@ -650,6 +650,20 @@ describe('handlePayment: relay', () => {
       body: { x402Version: 1, error: 'expired', accepts: [offerFor(currentPool(s.fake), 2)] },
     });
   });
+
+  it("counts the seats the buyer holds in the offer that comes with the relayer's expired refusal", async () => {
+    // The buyer holds 21 of the 24 seats it may take, asks for 5 and pays for the 3 it may still take.
+    const s = await scenario({ pool: { max_seats_per_buyer: 24 } });
+    s.fake.setBuyer(POOL_ID, BUYER, { seats: 21, state: 'committed' });
+    s.fake.onRelay = () => {
+      throw new DelegateExpiredError('the delegate expires at block 1100 and the final height is 1095');
+    };
+    const result = await handlePayment(s.deps, POOL_ID, '5', await s.header({ seats: 3 }));
+    expect(result).toEqual({
+      status: 402,
+      body: { x402Version: 1, error: 'expired', accepts: [offerFor(currentPool(s.fake), 3)] },
+    });
+  });
 });
 
 describe('handlePayment: responses', () => {
