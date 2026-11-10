@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
@@ -14,7 +14,7 @@ import {
   type ExpectedOffer,
 } from '@quorum-on-near/protocol';
 import { KeyPair } from 'near-api-js';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { ActivityRecord } from '../src/activity.ts';
 import { createApp } from '../src/app.ts';
 import type { GatewayConfig } from '../src/config.ts';
@@ -151,9 +151,13 @@ function postRpc(app: Awaited<ReturnType<typeof setup>>['app'], body: unknown): 
   });
 }
 
-/** A temporary folder holding the live page's files, by path within it. */
+/**
+ * A temporary folder holding the live page's files, by path within it. It is removed once the calling
+ * test has finished.
+ */
 async function webFolder(files: Record<string, string>): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'quorum-web-'));
+  onTestFinished(() => rm(dir, { recursive: true, force: true }));
   for (const [name, text] of Object.entries(files)) {
     await mkdir(dirname(join(dir, name)), { recursive: true });
     await writeFile(join(dir, name), text);
@@ -562,5 +566,19 @@ describe('createApp', () => {
       expect(await answer(app.request('/.well-known/jwks.json'))).toEqual({ status: 500, body: { error: 'internal_error' } });
       expect(logged).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('GET /.well-known/jwks.json'), failure);
     });
+  });
+});
+
+describe('webFolder', () => {
+  let made = '';
+
+  it("holds the live page's files while the test runs", async () => {
+    made = await webFolder({ 'index.html': INDEX_HTML });
+    expect(await readdir(made)).toEqual(['index.html']);
+  });
+
+  // Runs after the test above, which it depends on.
+  it('is removed once the test that made it has finished', async () => {
+    await expect(readdir(made)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 });
