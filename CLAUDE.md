@@ -12,7 +12,8 @@ prices scaled down 10,000 times.
 
 ## Architecture (implementation-relevant facts)
 
-Nothing is built yet. The design is
+The contracts are built and tested; the protocol package, gateway, swarm, MCP server and live page
+are not yet. The design is
 [`docs/specs/2026-11-09-quorum-on-near-design.md`](docs/specs/2026-11-09-quorum-on-near-design.md);
 the spec wins where this summary is shorter. In brief:
 
@@ -36,8 +37,8 @@ the spec wins where this summary is shorter. In brief:
   amount `ft_on_transfer` reports as unused).
 - **The bonus** is escrowed when the pool opens. It goes back to the seller on settlement, or is
   split among the committed seats on refund.
-- **Settlement and refunds** are promises with `#[private]` callbacks. State is zeroed before a
-  transfer and restored if the transfer fails.
+- **Settlement and refunds** are promises with `#[private]` callbacks. State is marked (Settled,
+  Refunded) before a transfer and restored if the transfer fails.
 - **HTTP flow:** `402 Payment Required` with the offer, then `202 Accepted` with a receipt while the
   pool fills, then `200` with the access credential once it has filled (a full pool is final).
 
@@ -60,14 +61,23 @@ NEAR rules the design relies on (from NEAR's documentation):
 | `docs/specs/` | Design specs: what the system is and how it behaves |
 | `docs/plans/` | Implementation plans written from the specs |
 | `.claude/` | Vendored skills and a SessionStart hook (see Skills) |
+| `contracts/mock-usd/` | The Mock USD token (NEP-141), for the sandbox tests only |
+| `contracts/pools/` | The pools escrow contract |
+| `crates/sandbox-support/` | Test helper: starts a local NEAR sandbox and wraps calls and views |
 
-The code layout is set by the first implementation plan.
+The TypeScript packages and apps are added by later plans.
 
 ## Toolchain
 
-Set by the first implementation plan in `docs/plans/`, and recorded here when it lands: languages,
-versions, and how to build, test and run locally. NEAR **testnet** only until the test circuit
-passes (rule 4).
+Rust stable with the wasm32-unknown-unknown target; near-sdk 5 and near-contract-standards 5;
+cargo-near for builds (cargo near build non-reproducible-wasm). Unit tests: cargo test --lib.
+Sandbox tests use near-sandbox and near-api and build the contracts themselves: cargo test
+--workspace (Linux or macOS on Apple silicon, or WSL2). The sandbox node that near-sandbox
+downloads (nearcore 2.13.4) needs glibc 2.38 or later, so Ubuntu 24.04 or later; older nodes that
+run on an older glibc reject the wasm current Rust emits. A bare `cargo check` stops at near-sdk's
+native-build guard, because it leaves out the dev-dependency that turns on `unit-testing`: use
+`cargo check --tests`, or `cargo check --target wasm32-unknown-unknown`. NEAR testnet only until
+the test circuit passes (rule 4).
 
 ## Rules
 

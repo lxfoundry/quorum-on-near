@@ -23,6 +23,39 @@ test talks to one thin interface.
 **Spec:** [`../specs/2026-11-09-quorum-on-near-design.md`](../specs/2026-11-09-quorum-on-near-design.md).
 Executors read the spec and this plan together. Section numbers below refer to the spec.
 
+## Corrections found while executing this plan
+
+The plan was executed as written except for these corrections, which the code and the spec now
+carry. Where a snippet below differs from the repository, the repository is authoritative.
+
+- `cargo add` refuses a manifest whose `[lib]` source file does not exist yet, so each crate's
+  `src/lib.rs` is written before its `cargo add` step.
+- A bare `cargo check -p <crate>` stops at near-sdk's native-build guard, because it leaves out the
+  dev-dependency that turns on `unit-testing`. Use `cargo check --tests` or
+  `cargo check --target wasm32-unknown-unknown`.
+- `Cargo.lock` is committed with the workspace.
+- The sandbox node that near-sandbox downloads (nearcore 2.13.4) needs glibc 2.38 or later, so
+  Ubuntu 24.04 or later. Older nodes that run on an older glibc reject the wasm current Rust emits.
+- `gas.rs` adds `FEES_PER_TRANSFER` (3 Tgas), so `gas_needed(n)` is 10 + 23n Tgas: 33 Tgas for one
+  transfer, 263 Tgas for a full refund batch of 10 plus the dust. `tests/gas.rs` checks that 262
+  Tgas is refused and that 280 Tgas completes a full batch, which burnt 52 Tgas in the sandbox.
+- The refund unit tests are run with the filter `refund::tests`, because `refund` also matches
+  three `math` tests.
+- The sandbox `World`'s `open`, `commit`, `settle`, `refund` and `claim` check the invariants after
+  every call, failed calls included.
+- Tests added beyond the plan: the `pool_opened`, `seats_committed` and `pool_filled` events in the
+  receive unit tests; "Filled is final" at the `refund` and `claim_refund` entry points; the
+  amounts carried by `seat_refunded`, `pool_refunded` and `pool_settled`; a refund scenario where
+  each buyer holds three seats, one buyer's taken in two commits, paid by a claim and by a push,
+  which ends with the contract holding nothing. The invariant check only proves the contract holds
+  at least what it owes, so it cannot catch an underpayment on its own.
+- The sandbox helper's `Outcome` carries each receipt's account and gas burnt, and `tests/gas.rs`
+  asserts that every transfer and callback in the full batch burns under 5 Tgas of its 10 (about
+  1.7 and 1.5 Tgas against the mock token).
+- `refund.rs` shares one `restore_claimable` helper between the two refund callbacks, its gate
+  messages read "pool is not expired" and "pool is neither expired nor refunded", and
+  `on_dust_sent` acts only on an Expired pool whose dust is in flight.
+
 ## Status of the code in this plan
 
 **No snippet in this plan has been compiled.** Treat each as unverified until the command at the end
@@ -4137,7 +4170,7 @@ git commit -m "verify the gas allowances with a full refund batch"
 | 5.2 lifecycle, Filled is final, derived Expired | Tasks 3 (`Pool::expire_if_due`), 6 (view), 8 (settle after deadline) |
 | 5.3 open and commit messages and every refusal | Tasks 4, 5 (unit), 7 (sandbox) |
 | 5.4 `settle`, `refund`, `claim_refund`, views | Tasks 8, 9, 10 (implementation, unit tests for every state transition and callback, sandbox scenarios), 6 (views, `get_token` included) |
-| Gas and deposits paragraph of 5.4 | Tasks 3 (`gas.rs`, `Contract::transfer`), 9 (gas refusal), 11 (a full batch at about the least gas `refund` accepts) |
+| Gas and deposits paragraph of 5.4 | Tasks 3 (`gas.rs`, `Contract::transfer`), 9 (gas refusal), 11 (a refusal just under the gas required, and a full batch just over it) |
 | 5.5 invariants | Task 7 (`check_invariants` covers 1, 2 and 4 after each step); 3 and 5 through the balance assertions in Tasks 8 to 10 |
 | 5.6 events | Task 3 (`events.rs`), emitted in Tasks 4, 5, 8, 9, 10 and asserted in the unit tests of Tasks 8 to 10 |
 | 5.7 tokens: the mock token | Tasks 1, 2 |
