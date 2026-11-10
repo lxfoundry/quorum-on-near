@@ -36,6 +36,102 @@ and its captured-outcome test were typechecked but have never run: they need the
 files and Linux, macOS on Apple silicon or WSL2. Treat them as unverified until their commands have
 passed, and fix names in place if a library call differs (do not change what they assert).
 
+## Departures from this plan
+
+The shipped code of Tasks 1 to 14 differs from the code blocks of this plan in the ways listed
+below. The task text is left as first written. Where it disagrees with this list, the list and the
+shipped code apply: copying a block as written brings back the behaviour the change replaced. With
+these changes Tasks 1 to 14 have 936 tests: 340 in the protocol package and 596 in the gateway. The
+per-task counts in the steps are those of the code as written.
+
+- **nearcore's signature rules (Task 3).** `verifyDelegateSignature` keeps near-api-js's check and
+  adds nearcore's: a secp256k1 signature is 65 bytes with a recovery byte of at most 3, and an
+  ed25519 signature passes ed25519-dalek's cofactorless check, where the canonical encoding of
+  [s]B − [k]A must equal the bytes of R. near-api-js takes signatures nearcore refuses (a recovery
+  byte above 3, an R with a small-order component, a non-canonical R), and such a delegate fails on
+  chain after the relayer has paid for it, without using up its nonce. The ed25519 check needs
+  `@noble/curves` 2.2.0, the version near-api-js already resolves, now a direct dependency of
+  `packages/protocol`: the one dependency beyond the Tech Stack line.
+- **Redemption proof key types (Task 4).** `checkRedeemProof` answers `invalid_proof` for a key
+  that is not ed25519 or secp256k1 (spec section 6.5). near-api-js 7.4.0 also parses and verifies
+  ML-DSA-65 keys, which a payment's delegate action may not be signed with either.
+- **Keeper gas floor (Tasks 1 and 6).** The least keeper gas is the contract's entry figure plus
+  17 Tgas, since a call uses some gas before the entry check and one that attaches only the entry
+  figure always fails there. Task 1 Step 9 and Task 6 already carry this change, so their text and
+  code match the shipped code; it is listed so that the list is complete.
+- **Credential JWK checks (Task 6).** `loadConfig` derives the public key from `d` with
+  `node:crypto` and requires it to equal `x`, and keeps only `kty`, `crv`, `x` and `d`. A mismatched
+  pair, or a member such as `key_ops` that the JWK import passes on as the key's usages, is then a
+  `QUORUM_CREDENTIAL_JWK` problem at startup instead of an error later that names no variable.
+- **Keeper interval bound (Task 6).** `QUORUM_KEEPER_INTERVAL_MS` is at most 2147483647, the
+  longest delay a Node timer honours; a longer one fires after 1 ms and the keeper would tick back
+  to back. `.env.example` says so.
+- **RPC URL check (Task 6).** While `QUORUM_RPC_PASSTHROUGH` is false, `loadConfig` refuses a
+  `QUORUM_RPC_URL` with a user name, a password, a query or a fragment, since `/config.json` gives
+  that URL to the live page and such parts can hold an API key. The problem line does not repeat
+  the URL and points to `QUORUM_RPC_PASSTHROUGH=true` for keyed endpoints.
+- **HTTP 429 on send (Task 8).** `RpcRelayer` treats a send that near-api-js fails with HTTP status
+  429 as `rejected`, with no lookup by hash: the RPC refused the request before reading it, so the
+  transaction cannot have run. Every other HTTP status is still looked up.
+- **Activity append (Task 9).** After a failed append, the next one starts with a newline, so a line
+  the failed append cut short does not absorb the next record and make it unreadable on reload.
+- **Redemption nonce cache (Tasks 9, 12 and 14).** `guards.ts` exports `proofNonceCache()`, a
+  `NonceCache` that keeps a nonce for `REDEEM_MAX_AGE_MS + REDEEM_MAX_SKEW_MS`, used by `main.ts`
+  and `test/handler-deps.ts`, so the six-minute life is set in one place and tested.
+- **Redemption time re-check (Task 12).** After the access-key read, `handleRedeem` reads the clock
+  again, answers `stale_proof` if the proof has reached `REDEEM_MAX_AGE_MS` by then, and records the
+  nonce at that later time. A redemption running meanwhile forgets nonces by its own, later time, so
+  recording at the earlier time let a replay that was fresh before its read be accepted once the
+  first use's nonce was forgotten.
+- **The in-flight slot (Task 11).** `handlePayment` runs checks 4 and 5 before it takes the buyer's
+  slot: one key read for the full-access and nonce checks, then the final block read for the nonce
+  bound and the `max_block_height` window, which also releases a held buyer. Only then does it call
+  `inFlight.begin`. It then reads the key again and repeats the nonce check, and judges the pool
+  against the same final block, so a relayed payment makes the same reads as before. Taking the slot
+  first let a delegate signed with another key, or a replay of a used or expired payment copied from
+  the chain, hold the buyer's slot and refuse its own payments with `payment_in_flight`.
+- **Failed delegate in the feed (Task 11).** A relayed commit whose delegate action failed on chain
+  is recorded in the activity feed (seats 0, amount `0`, not ok, with its transaction hash) before
+  the `502 relay_failed` answer: the transaction ran and cost gas, and the feed records what the
+  gateway relayed.
+- **Logged 5xx catches (Tasks 10, 11, 12 and 14).** Every catch that turns an unexpected error into
+  a 5xx reply logs it with `console.error` and a short message naming what failed: the offer,
+  payment and redemption handlers' 503s, the payment handler's `502 result_unknown` (with the
+  transaction hash), the `/pools` and `/rpc` 503s, and `app.onError`'s 500, which names the
+  request's method and path. The replies are unchanged.
+- **`/rpc` timeout (Task 14).** The pass-through forwards with `AbortSignal.timeout` of 10 seconds;
+  a forward that times out is logged and answered `503 chain_unavailable`. Without it, fetch waits
+  up to 300 seconds for an answer, and a stalled RPC would hold one open forward per read of the
+  page.
+- **Shutdown (Task 14).** `src/shutdown.ts` exports `gracefulClose(server)`, which `main.ts` sets up
+  before the server takes a request. Once shutdown starts, every response closes its connection, and
+  a connection whose response had already started is dropped once that response ends. With
+  `server.close()` alone, a client that kept reusing a connection busy at close time was served
+  without end and the process never exited. No connection is cut while it carries a request.
+- **Tests.** Besides the tests of the changes above: the crafted ed25519 signatures of Task 3 use a
+  key made at run time, not a fixed seed; `testDeps` and the app tests' `webFolder` remove their
+  temporary folders when the test that made them finishes (`test/handler-deps.test.ts` checks it);
+  a few cases are tightened so that only the rule they name can refuse them (the `/rpc` request type
+  and declared `Content-Length` cases) or so that they first show near-api-js accepting the vector
+  (the 64-byte secp256k1 signature); and a configuration test's title names both networks the
+  gateway accepts. New files: `apps/gateway/src/shutdown.ts`, `apps/gateway/test/shutdown.test.ts`
+  and `apps/gateway/test/handler-deps.test.ts`.
+
+Three passages of the spec read differently from what applying Task 1 Step 9 gives. The spec's
+wording applies:
+
+- **Section 6.2 (Step 9, edit 2).** The fresh offer that comes with a refused payment counts the
+  seats the buyer already holds against `max_seats_per_buyer` only with an `over_buyer_cap` refusal
+  and with a payment the relayer finds too close to its expiry to send, not with every refusal.
+- **Section 6.4 (Step 9, edit 6).** A payment is in flight from the moment it has passed checks 4
+  and 5 (its key on the buyer's account with full access, a nonce above the key's, and a
+  `max_block_height` within the accepted window), not from its relay, until its result is known or a
+  final block above its `max_block_height` has been seen.
+- **Section 9 (Step 9, edit 12).** The row "A keeper call fails" reads: a call that throws before it
+  has a result is retried on the next tick; a call whose result is rejected or unknown, or shows no
+  progress, is retried with the backoff of section 6.7; the contract's guards make every call safe
+  to repeat. Step 9 does not edit this row.
+
 ## Global Constraints
 
 Every task's requirements include this section.
