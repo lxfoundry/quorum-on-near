@@ -554,12 +554,13 @@ describe('createApp', () => {
 
     it('answers 500 internal_error when a route throws', async () => {
       const { deps, app } = await setup();
+      const failure = new Error('broken key');
       vi.spyOn(deps.credentials, 'jwks').mockImplementation(() => {
-        throw new Error('broken key');
+        throw failure;
       });
       const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
       expect(await answer(app.request('/.well-known/jwks.json'))).toEqual({ status: 500, body: { error: 'internal_error' } });
-      expect(logged).toHaveBeenCalledOnce();
+      expect(logged).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('GET /.well-known/jwks.json'), failure);
     });
   });
 });

@@ -170,7 +170,7 @@ export function createApp(deps: Deps, options: { fetch?: typeof fetch } = {}): H
 
   app.notFound((c) => c.json({ error: 'not_found' }, 404));
   app.onError((error, c) => {
-    console.error(error);
+    console.error(`unhandled error in ${c.req.method} ${c.req.path}:`, error);
     return c.json({ error: 'internal_error' }, 500);
   });
   return app;
