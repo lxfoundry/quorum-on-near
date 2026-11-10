@@ -366,6 +366,7 @@ describe('verifyDelegateSignature', () => {
       const short = Uint8Array.from(signed.signature.secp256k1Signature.data).subarray(0, 64);
       const truncated = { ...signed, signature: { secp256k1Signature: { data: short } } };
 
+      expect(nearApiJsAccepts(truncated)).toBe(true);
       expect(verifyDelegateSignature(truncated)).toBe(false);
     });
 
