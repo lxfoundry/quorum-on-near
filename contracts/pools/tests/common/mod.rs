@@ -28,6 +28,17 @@ fn amount(value: &Value) -> u128 {
         .expect("a u128")
 }
 
+/// The `data` elements of every NEP-297 event named `name` that an outcome logged, in log order.
+pub fn events(out: &Outcome, name: &str) -> Vec<Value> {
+    out.logs
+        .iter()
+        .filter_map(|line| line.strip_prefix("EVENT_JSON:"))
+        .filter_map(|body| serde_json::from_str::<Value>(body).ok())
+        .filter(|event| event["event"] == name)
+        .flat_map(|event| event["data"].as_array().cloned().unwrap_or_default())
+        .collect()
+}
+
 impl World {
     /// Starts a sandbox, deploys the token and the pools contract (initialised in its deploy
     /// transaction), and registers the pools contract on the token.

@@ -30,7 +30,8 @@ async fn a_failed_pool_refunds_every_buyer_in_batches_and_the_dust_goes_to_the_s
     let dust = 10 * MUSD - 3 * share; // 1 base unit
 
     // first batch: two buyers
-    assert!(w.refund(&seller, id, 2, 300).await?.ok);
+    let first = w.refund(&seller, id, 2, 300).await?;
+    assert!(first.ok);
     w.check_invariants().await?;
     let pool = w.pool(id).await?;
     assert_eq!(pool["status"], "expired");
@@ -40,7 +41,8 @@ async fn a_failed_pool_refunds_every_buyer_in_batches_and_the_dust_goes_to_the_s
     assert_eq!(w.balance(&buyers[2]).await?, 8 * MUSD, "not refunded yet");
 
     // second batch: the last buyer, then the dust
-    assert!(w.refund(&seller, id, 2, 300).await?.ok);
+    let second = w.refund(&seller, id, 2, 300).await?;
+    assert!(second.ok);
     w.check_invariants().await?;
     let pool = w.pool(id).await?;
     assert_eq!(pool["status"], "refunded");
@@ -48,6 +50,19 @@ async fn a_failed_pool_refunds_every_buyer_in_batches_and_the_dust_goes_to_the_s
     assert_eq!(w.balance(&buyers[2]).await?, 10 * MUSD + share);
     assert_eq!(w.balance(&seller).await?, dust);
     assert_eq!(w.balance(&w.pools).await?, 0);
+
+    // the events carry the amounts paid: the price plus the bonus share, once per buyer
+    let mut refunded = events(&first, "seat_refunded");
+    refunded.extend(events(&second, "seat_refunded"));
+    assert_eq!(refunded.len(), 3);
+    for (event, buyer) in refunded.iter().zip(&buyers) {
+        assert_eq!(event["buyer"], buyer.as_str());
+        assert_eq!(event["amount"], (2 * MUSD + share).to_string());
+        assert_eq!(event["bonus_share"], share.to_string());
+    }
+    let finished = events(&second, "pool_refunded");
+    assert_eq!(finished.len(), 1);
+    assert_eq!(finished[0]["dust"], dust.to_string());
 
     // a refunded pool takes no more refund calls
     assert!(!w.refund(&seller, id, 2, 300).await?.ok);

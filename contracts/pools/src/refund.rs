@@ -242,6 +242,65 @@ mod tests {
         get_logs().iter().any(|line| line.contains(fragment))
     }
 
+    /// A pool of 2 seats at a price of 2 with a bonus of 10 that is filled by `a` and `b`.
+    fn filled_pool(c: &mut Contract) -> u64 {
+        let id = c.open_pool(
+            acct("seller.test"),
+            10,
+            OpenParams {
+                seat_price: 2,
+                target: 2,
+                deadline_ms: 10_000,
+                max_seats_per_buyer: None,
+                terms: String::new(),
+            },
+            1_000,
+        );
+        c.commit_seats(acct("a.test"), 2, id, 1, 2_000);
+        c.commit_seats(acct("b.test"), 2, id, 1, 2_000);
+        id
+    }
+
+    #[test]
+    #[should_panic(expected = "pool is not open past its deadline or expired")]
+    fn refund_refuses_a_filled_pool_past_its_deadline() {
+        let mut c = new_contract();
+        let id = filled_pool(&mut c);
+        set_context("anyone.test", 10_000);
+        c.refund(id, 5);
+    }
+
+    #[test]
+    #[should_panic(expected = "pool is not open past its deadline or expired")]
+    fn refund_refuses_a_settled_pool() {
+        let mut c = new_contract();
+        let id = filled_pool(&mut c);
+        set_context("anyone.test", 3_000);
+        let _ = c.settle(id);
+        set_context("anyone.test", 10_000);
+        c.refund(id, 5);
+    }
+
+    #[test]
+    #[should_panic(expected = "pool is not open past its deadline, expired or refunded")]
+    fn claim_refund_refuses_a_filled_pool_past_its_deadline() {
+        let mut c = new_contract();
+        let id = filled_pool(&mut c);
+        set_context("a.test", 10_000);
+        c.claim_refund(id);
+    }
+
+    #[test]
+    #[should_panic(expected = "pool is not open past its deadline, expired or refunded")]
+    fn claim_refund_refuses_a_settled_pool() {
+        let mut c = new_contract();
+        let id = filled_pool(&mut c);
+        set_context("anyone.test", 3_000);
+        let _ = c.settle(id);
+        set_context("a.test", 10_000);
+        c.claim_refund(id);
+    }
+
     #[test]
     #[should_panic(expected = "pool is not open past its deadline or expired")]
     fn refund_is_refused_before_the_deadline() {

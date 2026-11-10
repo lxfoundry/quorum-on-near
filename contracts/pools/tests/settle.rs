@@ -20,8 +20,12 @@ async fn anyone_can_settle_a_filled_pool_and_the_seller_is_paid() -> anyhow::Res
     let (id, seller, a) = filled_pool(&w).await?;
     let stranger = w.chain.create_account("stranger", 10).await?;
 
-    assert!(w.settle(&stranger, id).await?.ok);
+    let out = w.settle(&stranger, id).await?;
+    assert!(out.ok);
     w.check_invariants().await?;
+    let settled = events(&out, "pool_settled");
+    assert_eq!(settled.len(), 1);
+    assert_eq!(settled[0]["amount"], (14 * MUSD).to_string());
 
     assert_eq!(w.pool(id).await?["status"], "settled");
     assert_eq!(
@@ -72,8 +76,30 @@ async fn a_filled_pool_settles_even_after_its_deadline() -> anyhow::Result<()> {
         "filled",
         "a full pool is final"
     );
-    assert!(w.settle(&a, id).await?.ok);
+
+    // filled is final: neither a refund call nor a buyer's claim is accepted, and nothing moves
+    let stranger = w.chain.create_account("stranger", 10).await?;
+    let before = (
+        w.balance(&a).await?,
+        w.balance(&seller).await?,
+        w.balance(&w.pools).await?,
+    );
+    assert!(!w.refund(&stranger, id, 10, 300).await?.ok);
+    assert!(!w.claim(&a, id).await?.ok);
+    let after = (
+        w.balance(&a).await?,
+        w.balance(&seller).await?,
+        w.balance(&w.pools).await?,
+    );
+    assert_eq!(before, after, "no refund path moved any money");
+    assert_eq!(w.pool(id).await?["status"], "filled");
+
+    let out = w.settle(&a, id).await?;
+    assert!(out.ok);
     assert_eq!(w.pool(id).await?["status"], "settled");
+    let settled = events(&out, "pool_settled");
+    assert_eq!(settled.len(), 1);
+    assert_eq!(settled[0]["amount"], (12 * MUSD).to_string());
     w.check_invariants().await?;
     Ok(())
 }
