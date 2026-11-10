@@ -27,9 +27,11 @@ Executors read the spec and this plan together. Section numbers below refer to t
 
 ## Status of the code in this plan
 
-The code and tests of Tasks 1 to 14 were typechecked with `tsc` and run with vitest (707 tests),
-with the pinned package versions above, before this plan was written; they ran on Node 22.18, for
-which near-api-js 7.4.0 only prints an engine warning. Copy them as written. Task 15's sandbox test
+The code and tests of Tasks 1 to 14 were typechecked with `tsc` and run with vitest (867 tests:
+331 in the protocol package, 536 in the gateway), with the pinned package versions above, before
+this plan was written; they ran on Node 22.18, for which near-api-js 7.4.0 only prints an engine
+warning. Each task was also checked on its own, with only its files and earlier tasks' present: it
+typechecks and passes with the counts its steps state. Copy them as written. Task 15's sandbox test
 and its captured-outcome test were typechecked but have never run: they need the contracts' wasm
 files and Linux, macOS on Apple silicon or WSL2. Treat them as unverified until their commands have
 passed, and fix names in place if a library call differs (do not change what they assert).
@@ -49,9 +51,12 @@ Every task's requirements include this section.
   snake_case field names, lowercase status strings, amounts as decimal strings, `deadline_ms` a
   number, events as `EVENT_JSON:` log lines with a one-element `data` array.
 - **Deadlines** are judged by block time, never by the gateway's clock. The gateway's clock is used
-  only for the redemption proof's age and the activity feed's timestamps.
+  only for durations and timestamps: the redemption proof's age, the redemption nonce cache's expiry,
+  the relayer's lookup budget and key-wait timeout, the keeper's backoff, and the credential's and the
+  activity feed's timestamps.
 - **The relayer never re-signs or re-sends a payment** (spec sections 6.4 and 9). The send provider is
-  built with `retries: 0`; after a timeout the result is looked up by transaction hash.
+  built with `retries: 1`: near-api-js counts attempts, so 1 posts each request once and 0 posts
+  nothing. After a timeout the result is looked up by transaction hash.
 - **Each relayer key signs one transaction at a time**; the keeper and the payment relay share the
   same key pool.
 - **The gateway serves only pools whose seller is its configured provider** (spec section 6.1).
@@ -96,13 +101,14 @@ Every task's requirements include this section.
 | `apps/gateway/src/guards.ts` | One payment in flight per buyer; the redemption nonce cache |
 | `apps/gateway/src/pools.ts` | Served pools, `GET /pools` rows |
 | `apps/gateway/src/reply.ts`, `src/deps.ts` | A framework-free reply type; the handlers' dependencies |
-| `apps/gateway/src/access.ts` | The offer and the payment flow (spec sections 6.2 to 6.4) |
-| `apps/gateway/src/redeem.ts` | Redemption (spec section 6.5) |
+| `apps/gateway/src/handle-offer.ts`, `src/handle-payment.ts` | The offer and the payment flow (spec sections 6.2 to 6.4) |
+| `apps/gateway/src/handle-redeem.ts` | Redemption (spec section 6.5) |
 | `apps/gateway/src/keeper.ts` | The keeper (spec section 6.7) |
 | `apps/gateway/src/app.ts`, `src/main.ts` | Routes, static serving, `/config.json`, `/rpc`; process wiring |
 | `apps/gateway/test/fake-chain.ts` | `FakeChain`, a pool and configuration for tests, outcome builders |
 | `apps/gateway/test/handler-deps.ts` | `testDeps`: handler dependencies over a `FakeChain` |
 | `apps/gateway/test/fixtures/` | A provisional relayed outcome (Task 7) and one captured from the sandbox (Task 15) |
+| `apps/gateway/test/outcome.captured.test.ts` | The outcome parser against the outcome captured from the sandbox (Task 15) |
 | `apps/gateway/test/sandbox/` | The sandbox test (Task 15), excluded from `pnpm test` |
 
 **Out of scope** (later plans): the swarm (`apps/swarm`: account setup, funding, the provider agent,
@@ -124,14 +130,21 @@ example fnm:
 ```bash
 # Linux, macOS or WSL2
 curl -fsSL https://fnm.vercel.app/install | bash
+# open a new shell (the installer adds fnm to the shell profile), then:
+eval "$(fnm env --use-on-cd)"
 fnm install 22 && fnm use 22
 ```
 
 ```powershell
 # Windows
 winget install Schniz.fnm
+# open a new PowerShell window, then:
+fnm env --use-on-cd --shell powershell | Out-String | Invoke-Expression
 fnm install 22; fnm use 22
 ```
+
+`fnm use` fails until `fnm env` has set up the current shell. To keep it, add the `fnm env` line to
+the shell profile (`~/.bashrc`, or `$PROFILE` in PowerShell).
 
 - [ ] **Step 2: Enable pnpm through Corepack**
 
@@ -145,7 +158,8 @@ Expected: `10.23.0`. Corepack then uses the `packageManager` version from the ro
 
 - [ ] **Step 3: Note where each task runs**
 
-Tasks 1 to 14 run anywhere Node runs, Windows included. Task 15 needs Linux, macOS on Apple silicon or
+Tasks 1 to 14 run anywhere Node runs, Windows included. On Windows, run the `bash` blocks in Git
+Bash: some use `mkdir -p`, which PowerShell does not accept. Task 15 needs Linux, macOS on Apple silicon or
 WSL2 (with the repository on the WSL filesystem), Rust and `cargo near` as the contracts plan's
 Task 0 installs them, and Node as above. On Linux and WSL2 the sandbox node needs glibc 2.38 or
 later, so Ubuntu 24.04 or later.
@@ -158,7 +172,7 @@ The pnpm workspace sits beside the Cargo workspace; neither touches the other's 
 
 **Files:**
 - Create: `package.json`, `pnpm-workspace.yaml`, `tsconfig.base.json`, `pnpm-lock.yaml`, `packages/protocol/package.json`, `packages/protocol/tsconfig.json`, `packages/protocol/src/constants.ts`, `packages/protocol/src/account.ts`, `packages/protocol/src/contract.ts`, `packages/protocol/src/amounts.ts`, `packages/protocol/src/index.ts`
-- Modify: `docs/specs/2026-11-09-quorum-on-near-design.md (sections 6.1, 6.4, 6.5, 6.7, 7.6; last step)`
+- Modify: `docs/specs/2026-11-09-quorum-on-near-design.md` (sections 6.1 to 6.5, 6.7, 7.6, 9 and 12; last step)
 - Test: `packages/protocol/test/account.test.ts`, `packages/protocol/test/contract.test.ts`, `packages/protocol/test/amounts.test.ts`
 
 **Interfaces:**
@@ -679,6 +693,10 @@ const EVENT_PREFIX = 'EVENT_JSON:';
  * Parses one log line. Returns the event when the line is `EVENT_JSON:` followed by a JSON object
  * with `standard: "quorum"`, `version: "1.0.0"`, a known `event` name and a one-element `data`
  * array; returns null for any other line. Never throws.
+ *
+ * Only the envelope is checked: `data` is cast to the event's type, its fields unchecked. Any
+ * contract can log such a line, so callers must pass only logs of receipts that the pools contract
+ * executed.
  */
 export function parseEventLog(log: string): QuorumEvent | null {
   if (!log.startsWith(EVENT_PREFIX)) return null;
@@ -750,104 +768,308 @@ git commit -m "add the pnpm workspace and the contract interface of the protocol
 
 - [ ] **Step 9: Record in the spec what this plan adds**
 
-These edits touch sections 6.1, 6.4, 6.5, 6.7 and 7.6 only. The contracts plan edits sections 4, 5.3
-and 10, so the two branches merge without conflict. In
-`docs/specs/2026-11-09-quorum-on-near-design.md`:
+These edits touch sections 6.1 to 6.5, 6.7, 7.6, 9 and 12 only. The contracts plan edits sections 4,
+5.3, 5.4, 5.6 and 10, so the two branches merge without conflict. In
+`docs/specs/2026-11-09-quorum-on-near-design.md`, make each replacement below. A table row is one
+line in the file; a passage of prose may wrap differently in the file than here, so match its
+words, not its line breaks.
 
-1. Section 6.1, the endpoint table, row `` `GET /pools/:id/access?seats=N` ``: replace `With no header:
-   \`402\` with the offer (\`seats\` defaults to 1).` with `With no header: \`402\` with the offer
-   (\`seats\` defaults to 1), \`409\` if the pool is filled or has no seat left, \`410\` if it has
-   expired.`
-2. Section 6.1, the endpoint table: after the `POST /rpc` row, add the row
+1. Section 6.1, the endpoint table. Replace the row
 
    ```markdown
+   | `GET /` | The live page (static files from `apps/web`) |
+   ```
+
+   with
+
+   ```markdown
+   | `GET /` | The live page (static files from `apps/web`). No file whose path has a segment that starts with a dot, such as `/.env`, is served (`404`) |
+   ```
+
+   Replace the row
+
+   ```markdown
+   | `GET /pools/:id/access?seats=N` | With no header: `402` with the offer (`seats` defaults to 1). With `X-PAYMENT`: process a payment. With `X-QUORUM-PROOF`: redeem (section 6.5) |
+   ```
+
+   with
+
+   ```markdown
+   | `GET /pools/:id/access?seats=N` | With no header: `402` with the offer (`seats` defaults to 1; `N` from 1 to 1000, otherwise `400` with `error` set to `invalid_seats`), `404` (`unknown_pool`) for a pool the gateway does not serve, `409` if the pool is filled or has no seat left, `410` if it has expired, `503` (`chain_unavailable`) if the chain cannot be read. With `X-PAYMENT`: process a payment. With `X-QUORUM-PROOF`: redeem (section 6.5) |
+   ```
+
+   Replace the row
+
+   ```markdown
+   | `POST /rpc` | Only if the public RPC refuses browser requests: a read-only pass-through that forwards `call_function` view calls on the pools contract and the token, and nothing else |
+   ```
+
+   with these two rows
+
+   ```markdown
+   | `POST /rpc` | Only if the public RPC refuses browser requests: a read-only pass-through that forwards `call_function` view calls on the pools contract and the token, and nothing else. Any other call, or `args_base64` over 1,024 characters, is answered `403` (`not_allowed`); a body over 16 KiB `413` (`body_too_large`); a body that is not JSON `400` (`invalid_json`); and an RPC that cannot be reached `503` (`chain_unavailable`) |
    | `GET /config.json` | What the live page needs: the network, the RPC URL (`/rpc` when the pass-through is on), the pools contract, the token, the provider and the explorer's transaction link prefix |
    ```
 
-3. Section 6.4, the checks table: replace row 5 with
+2. Section 6.2, below the offer. Replace the passage
+
+   ```markdown
+   If fewer seats are left than requested, the offer is made for the seats left, and
+   `extra.seats` says so. From here on, "the seats" of a payment means `extra.seats`.
+   ```
+
+   with
+
+   ```markdown
+   The offer is made for the seats requested, or fewer if fewer are left or the pool's
+   `max_seats_per_buyer` is lower, and `extra.seats` says so. The fresh offer that comes with a
+   refused payment (section 6.4) also counts the seats the buyer already holds against
+   `max_seats_per_buyer`. From here on, "the seats" of a payment means the seats its `msg` commits
+   to: any number from 1 to the seats of its request (`?seats=N`), so a buyer that pays an offer
+   reduced to `extra.seats` at the URL it first requested is accepted.
+   ```
+
+3. Section 6.3: after the line ``- gas of at least `minGas`.``, add a blank line and the paragraph
+
+   ```markdown
+   Before signing, a buyer checks the offer against its own configuration, its request and a
+   spending limit for this payment (not the token balance of section 7.2; the MCP server's spend cap
+   of section 7.5 is a separate, running limit): the scheme is `quorum`; `network`, `asset` and `payTo` are its configured network, token
+   and pools contract, never taken from the gateway; the fields it pays from are well formed;
+   `extra.poolId` is the pool it requested; `extra.seats` is at most the seats it requested (fewer
+   is a reduced offer, and accepted); and `maxAmountRequired` is exactly `extra.seats ×
+   extra.seatPrice` and at most that spending limit. It refuses the first
+   failure, in that order (`wrong_scheme`, `wrong_network`, `wrong_asset`, `wrong_pay_to`,
+   `invalid_offer`, `wrong_pool`, `too_many_seats`, `wrong_amount`, `over_budget`), and signs
+   nothing. The check bounds what the payment commits to and what it costs. Within the limit the
+   seat price is the offer's, and what `extra` says about the pool (terms, deadline, bonus, seats
+   taken) is the gateway's word; a buyer that relies on it reads the pool from the chain. A payment
+   at a seat price other than the pool's own is refused by the contract, and the token returns the
+   transfer.
+   ```
+
+4. Section 6.4, its first paragraph: in the sentence that starts `A failed check is answered with`,
+   replace the words `carrying the same offer` with `carrying the offer as it stands (section 6.2)`.
+   Then, in the checks table, replace row 5 with
 
    ```markdown
    | 5 | `nonce` is above the key's current nonce, and below the final block height × 10^6 (the chain refuses a larger delegate nonce without using it up, so the same payment could be relayed again); `max_block_height` is more than 5 blocks above the final height, and no further ahead than `maxTimeoutSeconds` of blocks (converted with the configured average block time) plus 5 | gateway | `stale_nonce`, `nonce_too_large`, `expired` |
    ```
 
-4. Section 6.4, the checks table: after row 7 (`insufficient_balance`), add the row
+5. Section 6.4, the checks table: after row 7 (`insufficient_balance`), add the row
 
    ```markdown
    | 8 | `sender_id` is not the pool's seller, and the seats it already holds (`get_buyer`) plus the seats paid for stay within `max_seats_per_buyer`. The contract refuses both, so the gateway refuses them before the relayer pays gas | gateway | `seller_commit`, `over_buyer_cap` |
    ```
 
-5. Section 6.4, directly after that table and before the paragraph that starts `Each buyer has at
-   most one payment in flight`, add the paragraph
+6. Section 6.4: replace the passage
 
    ```markdown
-   A payment may be for any number of seats from 1 to the seats of its request (`?seats=N`), so a
-   buyer that pays an offer reduced to `extra.seats` at the URL it first requested is accepted. The
-   `ft_transfer_call` arguments must be compact JSON, as `JSON.stringify` writes them. The gateway
-   reads the contract's views and access keys at optimistic finality, so it sees state at least as
-   new as the results it relays; heights and deadlines are judged against the final block. The
-   relayer checks the expiry again once it holds a key, and refuses a payment that expired while it
-   waited with `expired`. If the chain cannot be read while the checks run, the gateway answers `503`
-   and relays nothing.
+   Each buyer has at most one payment in flight; a second one is refused with `payment_in_flight`. A
+   payment is in flight from its relay until its result is known or its `max_block_height` has passed,
+   whichever comes first.
    ```
 
-6. Section 6.4, the outcome table:
-   - in the row that starts `| No seats taken (the pool filled or closed in between`, replace
-     `` `409 Conflict`, with a fresh offer if seats are left `` with `` `409 Conflict`, with a fresh
-     offer if seats are left. A refusal the pool's state does not explain (the transfer never reached
-     the pools contract, or the pool is still open with enough seats) answers `502` with `error` set
-     to `relay_failed` instead, so the buyer does not retry the same payment ``;
-   - in the row that starts `| The relay failed, or its result is unknown after the timeout |`,
-     replace `with the transaction hash if there is one` with `with the transaction hash if there is
-     one, and \`error\` set to \`relay_failed\` or \`result_unknown\``.
+   with
 
-7. Section 6.5: after the line `4. that the nonce has not been seen.`, add a blank line and the
+   ```markdown
+   The delegate action must be signed with an ed25519 or a secp256k1 key; any other key type is
+   `invalid_payload`. The `ft_transfer_call` arguments must be compact JSON, as `JSON.stringify`
+   writes them. The gateway reads the contract's views and access keys at optimistic finality, so it
+   sees state at least as new as the results it relays; heights and deadlines are judged against the
+   final block. The relayer checks the expiry again once it holds a key, and refuses a payment that
+   expired while it waited with `expired`. If the chain cannot be read while the checks run, the
+   gateway answers `503` and relays nothing.
+
+   Each buyer has at most one payment in flight; a second one is refused with `payment_in_flight`. A
+   payment is in flight from its relay until its result is known or a final block above its
+   `max_block_height` has been seen. If the relay ends with the result unknown while the delegate
+   may still land, the buyer stays in flight after the `502`: the gateway releases it once a final
+   height it reads for a later payment (the buyer's own or any other buyer's) is above that
+   `max_block_height`, never by its own clock. Until then, the buyer's payments are refused with
+   `payment_in_flight`.
+   ```
+
+7. Section 6.4, the relay paragraph: replace
+
+   ```markdown
+   On an RPC timeout, the gateway looks the result up by transaction hash. It never re-signs or
+   re-sends a payment.
+   ```
+
+   with
+
+   ```markdown
+   On an RPC timeout, the gateway looks the result up by transaction hash. It never re-signs or
+   re-sends a payment. A response counts as the result only once its `final_execution_status` is
+   `EXECUTED_OPTIMISTIC`, `EXECUTED` or `FINAL`; at a lower status its receipts may not all have run,
+   so the transaction is looked up again.
+   ```
+
+8. Section 6.4, the outcome table. Replace the row
+
+   ```markdown
+   | No seats taken (the pool filled or closed in between; the token has returned the money) | `409 Conflict`, with a fresh offer if seats are left |
+   ```
+
+   with these two rows
+
+   ```markdown
+   | No seats taken because the pool filled in between (the token has returned the money) | `409 Conflict`, with `error` set to `no_seats_taken` and no offer |
+   | No seats taken while the pool is still Open with a seat left, or the transfer never reached the pools contract | `502 Bad Gateway`, with `error` set to `relay_failed` and the transaction hash. The contract takes whatever seats are left, so something else refused the commit, and the same payment would be refused again |
+   ```
+
+   Replace the row
+
+   ```markdown
+   | The pool had expired | `410 Gone` |
+   ```
+
+   with
+
+   ```markdown
+   | The pool had expired: the views say Expired or Refunded, or Open with the final block's time at or past the deadline | `410 Gone` |
+   ```
+
+   Replace the row
+
+   ```markdown
+   | The relay failed, or its result is unknown after the timeout | `502 Bad Gateway`, with the transaction hash if there is one |
+   ```
+
+   with
+
+   ```markdown
+   | The relay failed, or its result is unknown after the timeout | `502 Bad Gateway`, with the transaction hash if there is one, and `error` set to `relay_failed` or `result_unknown` |
+   ```
+
+   Then, directly after the table and before the line that starts `` `X-PAYMENT-RESPONSE` carries ``,
+   add the paragraph
+
+   ```markdown
+   When a commit took no seats, the first of these that applies is the answer: `410` if the pool is
+   past its deadline, judged by block time; `502` with `relay_failed` if the transfer never reached
+   the pools contract or the pool is still Open with a seat left; otherwise `409`.
+   ```
+
+9. Section 6.5: after the line `4. that the nonce has not been seen.`, add a blank line and the
    paragraph
 
    ```markdown
    The replay check is keyed by the public key and the nonce, which is what NEP-413 signs. A proof
    that fails is answered with `401` and `error` set to `invalid_proof`, `wrong_message`,
    `wrong_recipient`, `stale_proof`, `invalid_signature`, `not_full_access` or `replayed_proof`. In
-   the header, `signature` and `nonce` are standard base64, `publicKey` is `ed25519:<base58>`, and
-   `recipient` is the gateway's host as its URL writes it (`host` or `host:port`). A signing time up
-   to one minute ahead of the gateway's clock is accepted, to absorb clock skew, so a nonce is
-   remembered for six minutes.
+   the header, `signature` and `nonce` are standard base64, `publicKey` is the key in NEAR's text
+   form (`ed25519:<base58>` or `secp256k1:<base58>`), and `recipient` is the gateway's host as its
+   URL writes it (`host` or `host:port`). A signing time up to one minute ahead of the gateway's
+   clock is accepted, to absorb clock skew, so a nonce is remembered for six minutes.
    ```
 
-8. Section 6.7: replace the line
+10. Section 6.7: replace the line
 
-   ```markdown
-   - for each pool past its deadline that is not yet Refunded, it calls `refund(pool_id, 10)`.
-   ```
+    ```markdown
+    - for each pool past its deadline that is not yet Refunded, it calls `refund(pool_id, 10)`.
+    ```
 
-   with
+    with
 
-   ```markdown
-   - for each Expired pool (the views report an Open pool past its deadline as Expired; a Filled or
-     Settled pool is never refunded), it calls `refund(pool_id, limit)`, with `limit` 10 by default,
-     unless the pool's dust transfer is already in flight (every buyer visited and `dust_sent` set),
-     when the call would do nothing.
+    ```markdown
+    - for each Expired pool (the views report an Open pool past its deadline as Expired; a Filled or
+      Settled pool is never refunded), it calls `refund(pool_id, limit)`, with `limit` 10 by default,
+      unless the pool's dust transfer is already in flight (every buyer visited and `dust_sent` set),
+      when the call would do nothing.
 
-   A pool whose call makes no progress (no settlement, refund or dust event) is retried with a
-   backoff: 30 seconds, doubling, up to 10 minutes. Only the first failure of such a streak is
-   written to the activity feed.
-   ```
+    A call makes progress when `settle` settles the pool, or when the `refund` call's receipt at the
+    pools contract succeeds and either the pool had buyers left to visit (the call moves the refund
+    cursor, even past buyers who claimed their own refunds and log nothing) or the dust arrives
+    (`pool_refunded`). A pool whose call makes no progress is retried with a backoff: 30 seconds,
+    doubling, up to 10 minutes. Only the first failure of such a streak is written to the activity
+    feed; a refund that could not be pushed to a buyer is always written.
+    ```
 
-9. Section 7.6, the configuration table: after its last row (`| Budget per buyer, bonus funds for the
-   provider | …`), add the rows
+11. Section 7.6, the configuration table. Replace the row
 
-   ```markdown
-   | Commit gas bounds | gateway | The offer's `minGas` and `maxGas` (section 6.2) |
-   | Average block time | gateway, swarm, MCP server | Converts `maxTimeoutSeconds` into blocks (section 6.4, check 5) |
-   | Keeper settings | gateway | The keeper's interval, the refund batch `limit`, and the gas attached to `settle` and `refund` (section 6.7) |
-   | RPC pass-through | gateway | Turns `POST /rpc` on (section 6.1) |
-   ```
+    ```markdown
+    | RPC URL | gateway, swarm, MCP server, live page | The NEAR testnet RPC endpoint |
+    ```
+
+    with
+
+    ```markdown
+    | RPC URL | gateway, swarm, MCP server, live page | The NEAR testnet RPC endpoint. The gateway refuses to start if the RPC's `chain_id` does not fit the network: `testnet` for `near:testnet`, and neither `testnet` nor `mainnet` for `near:sandbox`. It publishes the URL to the live page in `/config.json` unless the pass-through is on, so the URL must not carry an API key |
+    ```
+
+    Replace the row
+
+    ```markdown
+    | Relayer keys | gateway | The several access keys of the relayer account (secret) |
+    ```
+
+    with
+
+    ```markdown
+    | Relayer keys | gateway | The several access keys of the relayer account (secret), each listed once |
+    ```
+
+    After the table's last row (`| Budget per buyer, bonus funds for the provider | …`), add the rows
+
+    ```markdown
+    | Network | gateway, swarm, MCP server | `near:testnet`, the network that offers and payments name. The gateway refuses any other, except `near:sandbox`, the local chain its sandbox test runs on |
+    | Pools account | gateway, swarm, MCP server | The pools contract buyers pay; default `pools.<parent>`. A buyer refuses an offer whose `payTo` is not this account (section 6.3) |
+    | Commit gas bounds | gateway | The offer's `minGas` and `maxGas` (section 6.2): `minGas` at most `maxGas`, both at most 300 Tgas |
+    | Average block time | gateway, swarm, MCP server | Converts `maxTimeoutSeconds` into blocks (section 6.4, check 5) |
+    | Keeper settings | gateway | The keeper's interval, the refund batch `limit` (1 to 10), and the gas attached to `settle` and `refund` (section 6.7): at least what the contract requires at entry (section 5.4), 33 Tgas for `settle` and 10 + 23 × (`limit` + 1) Tgas for `refund`, and at most 300 Tgas |
+    | RPC pass-through | gateway | Turns `POST /rpc` on (section 6.1) |
+    | Live page folder | gateway | The folder served at `/` (section 8). The gateway refuses to start if it is, or contains, the gateway's own folder |
+    ```
+
+12. Section 9, the error table. Replace the row
+
+    ```markdown
+    | The RPC times out during a relay | The result is looked up by transaction hash; the payment is never re-signed or re-sent. If the result is still unknown, `502` with the hash, and the buyer checks through redemption |
+    ```
+
+    with
+
+    ```markdown
+    | The RPC times out during a relay | The result is looked up by transaction hash; the payment is never re-signed or re-sent. If the result is still unknown, `502` with the hash, and the buyer checks through redemption. The buyer stays in flight until a final block above the delegate's `max_block_height` has been seen (section 6.4) |
+    ```
+
+    Replace the row
+
+    ```markdown
+    | The gateway restarts | All money state is on chain. The activity feed is reloaded from its file. The redemption nonce cache restarts empty, so a proof captured before the restart can be replayed once within its 5-minute life; the replay returns the credential, a bearer token (section 12) |
+    ```
+
+    with
+
+    ```markdown
+    | The gateway restarts | All money state is on chain. The activity feed is reloaded from its file; a line cut short by a stop mid-write is skipped, and the file is ended with a newline before the next record. The redemption nonce cache restarts empty, so a proof captured before the restart can be replayed once within its life (up to six minutes, section 6.5); the replay returns the credential, a bearer token (section 12). Payments in flight, and buyers held after an unknown result, are forgotten (section 12) |
+    ```
+
+13. Section 12: after its last bullet (``**The credential is a bearer token**``), add
+
+    ```markdown
+    - **`/rpc` has no rate limit.** With the pass-through on, anyone can send view calls on the pools
+      contract and the token through the gateway, up to 16 KiB each, and the RPC's own limits then
+      apply to the gateway as a whole. A production version would rate-limit it per client.
+    - **Credentials are issued at optimistic execution, not finality.** The relayer waits for the
+      commit to execute optimistically, and redemption reads the pool at optimistic finality, so a
+      credential can be issued before the block holding the commit is final. If that block were not
+      finalised, the credential would stand for a seat the contract does not hold.
+    - **The in-flight hold is bounded by the delegate action, not its receipts.** `max_block_height`
+      bounds when the delegate action may execute, not the token and pools receipts it starts. If
+      those were still pending when a final block passed it, the buyer is released while its commit
+      can still land, and a second payment could commit too. The hold also lives in memory, so a
+      gateway restart releases it.
+    ```
 
 Check that nothing else changed: `git diff --stat` shows only the spec, and `git diff` shows only these
-hunks, none in sections 4, 5.3 or 10.
+hunks, none in sections 4, 5 or 10.
 
 ```bash
 git add docs/specs/2026-11-09-quorum-on-near-design.md
-git commit -m "specify the gateway's extra payment checks, proof errors, keeper backoff and configuration"
+git commit -m "specify the gateway's extra checks and answers, the in-flight hold, keeper progress, configuration and limits"
 ```
 
 
@@ -1329,6 +1551,59 @@ const TOKEN = 'token.testnet';
 const POOLS = 'pools.parent.testnet';
 const GAS = 50_000_000_000_000n;
 
+function ascii(text: string): number[] {
+  return [...Buffer.from(text, 'ascii')];
+}
+
+/** A fixed 32-byte ed25519 public key (bytes 1 to 32), with no secret key behind it. */
+const PUBLIC_KEY = Array.from({ length: 32 }, (_, i) => i + 1);
+/** An all-zero signature: decodeSignedDelegate does not verify signatures. */
+const SIGNATURE = new Array<number>(64).fill(0);
+
+/**
+ * A DelegateAction laid out by hand from NEP-366 and nearcore's Borsh types (strings and vectors
+ * have a u32 little-endian length, integers are little-endian), so that near-api-js is not its own
+ * oracle.
+ */
+const DELEGATE_ACTION_BYTES = [
+  // sender_id: AccountId, a string.
+  13, 0, 0, 0, ...ascii(BUYER),
+  // receiver_id: AccountId.
+  13, 0, 0, 0, ...ascii(TOKEN),
+  // actions: Vec<NonDelegateAction>, one action.
+  1, 0, 0, 0,
+  // Action::FunctionCall is variant 2.
+  2,
+  // method_name: String.
+  4, 0, 0, 0, ...ascii('ping'),
+  // args: Vec<u8>.
+  2, 0, 0, 0, ...ascii('{}'),
+  // gas: u64, 50 Tgas (0x2d79883d2000).
+  0x00, 0x20, 0x3d, 0x88, 0x79, 0x2d, 0x00, 0x00,
+  // deposit: u128, 1 yoctoNEAR.
+  1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  // nonce: u64, 42.
+  42, 0, 0, 0, 0, 0, 0, 0,
+  // max_block_height: u64, 1,000,100 (0x0f42a4).
+  0xa4, 0x42, 0x0f, 0x00, 0x00, 0x00, 0x00, 0x00,
+  // public_key: KeyType::ED25519 (0), then 32 bytes.
+  0, ...PUBLIC_KEY,
+];
+/** The SignedDelegateAction: the DelegateAction, then the signature, KeyType::ED25519 (0) and 64 bytes. */
+const SIGNED_DELEGATE_BYTES = Uint8Array.from([...DELEGATE_ACTION_BYTES, 0, ...SIGNATURE]);
+/** The fields of SIGNED_DELEGATE_BYTES, as decodeSignedDelegate returns them. */
+const SIGNED_DELEGATE: DecodedSignedDelegate = {
+  delegateAction: {
+    senderId: BUYER,
+    receiverId: TOKEN,
+    actions: [{ functionCall: { methodName: 'ping', args: ascii('{}'), gas: GAS, deposit: 1n } }],
+    nonce: 42n,
+    maxBlockHeight: 1_000_100n,
+    publicKey: { ed25519Key: { data: PUBLIC_KEY } },
+  },
+  signature: { ed25519Signature: { data: SIGNATURE } },
+};
+
 function commitCall(amount = '360'): Action {
   return actions.functionCall(
     'ft_transfer_call',
@@ -1379,6 +1654,10 @@ describe('decodeSignedDelegate', () => {
     });
   });
 
+  it('decodes a SignedDelegate laid out by hand from NEP-366 into its fields', () => {
+    expect(decodeSignedDelegate(SIGNED_DELEGATE_BYTES)).toEqual(SIGNED_DELEGATE);
+  });
+
   it('re-encodes a decoded delegate to the identical bytes', async () => {
     const { bytes } = await signWithNear(KeyPair.fromRandom('ed25519'));
 
@@ -1416,7 +1695,19 @@ describe('decodeSignedDelegate', () => {
   });
 });
 
+describe('encodeSignedDelegate', () => {
+  it('lays a SignedDelegate out as NEP-366 does, byte for byte', () => {
+    expect(encodeSignedDelegate(SIGNED_DELEGATE)).toEqual(SIGNED_DELEGATE_BYTES);
+  });
+});
+
 describe('delegateHash', () => {
+  it('is sha256 of the NEP-366 tag 2^30 + 366 as a little-endian u32 (6e 01 00 40), then the DelegateAction', () => {
+    const message = Uint8Array.from([0x6e, 0x01, 0x00, 0x40, ...DELEGATE_ACTION_BYTES]);
+
+    expect(delegateHash(SIGNED_DELEGATE.delegateAction)).toEqual(sha256(message));
+  });
+
   it('equals sha256 of near-api-js encodeDelegateAction', async () => {
     const { delegateAction, bytes } = await signWithNear(KeyPair.fromRandom('ed25519'));
 
@@ -1706,7 +1997,7 @@ export * from './delegate.ts';
 
 Run: `pnpm --filter @quorum-on-near/protocol exec vitest run test/delegate.test.ts`
 
-Expected: PASS, 22 tests (`test/delegate.test.ts` 22).
+Expected: PASS, 25 tests (`test/delegate.test.ts` 25).
 
 Run: `pnpm --filter @quorum-on-near/protocol typecheck`
 
@@ -1741,6 +2032,7 @@ A buyer redeems with an NEP-413 signed message (spec section 6.5). This task che
 
 ```typescript
 import { randomBytes } from 'node:crypto';
+import { sha256 } from '@noble/hashes/sha2.js';
 import { KeyPair, KeyPairSigner } from 'near-api-js';
 import { describe, expect, it } from 'vitest';
 import { encodeHeader } from '../src/codec.ts';
@@ -1763,6 +2055,28 @@ function nonceAt(signedAtMs: number): Uint8Array {
 function base64(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString('base64');
 }
+
+function ascii(text: string): number[] {
+  return [...Buffer.from(text, 'ascii')];
+}
+
+/** A fixed nonce, bytes 0 to 31. */
+const FIXED_NONCE = Array.from({ length: 32 }, (_, i) => i);
+/**
+ * The hashed message up to its callbackUrl, laid out by hand from NEP-413 so that near-api-js is not
+ * its own oracle: the tag, then the Borsh fields of a payload of `quorum:redeem:7` for RECIPIENT (a
+ * string is a u32 little-endian length then UTF-8; the nonce is a fixed-size array, with no length).
+ */
+const SIGNED_MESSAGE_START = [
+  // The tag.
+  0x9d, 0x01, 0x00, 0x80,
+  // message: string.
+  15, 0, 0, 0, ...ascii('quorum:redeem:7'),
+  // nonce: [u8; 32].
+  ...FIXED_NONCE,
+  // recipient: string.
+  14, 0, 0, 0, ...ascii(RECIPIENT),
+];
 
 /** Changes a base64 character's two low bits, which a 32-byte value's last character does not use. */
 function flipLowBits(char: string): string {
@@ -1800,6 +2114,21 @@ function check(proof: unknown, overrides: { nowMs?: number; maxAgeMs?: number } 
 }
 
 describe('nep413Hash', () => {
+  it('is sha256 of the NEP-413 tag 2^31 + 413 as a little-endian u32 (9d 01 00 80), then the payload', () => {
+    const payload = { message: 'quorum:redeem:7', nonce: Uint8Array.from(FIXED_NONCE), recipient: RECIPIENT };
+
+    // callbackUrl: Option<string>, None.
+    expect(nep413Hash(payload)).toEqual(sha256(Uint8Array.from([...SIGNED_MESSAGE_START, 0])));
+  });
+
+  it('lays out a callbackUrl as Some (1), then the string', () => {
+    const callbackUrl = 'https://example.com/cb';
+    const payload = { message: 'quorum:redeem:7', nonce: Uint8Array.from(FIXED_NONCE), recipient: RECIPIENT, callbackUrl };
+    const message = [...SIGNED_MESSAGE_START, 1, 22, 0, 0, 0, ...ascii(callbackUrl)];
+
+    expect(nep413Hash(payload)).toEqual(sha256(Uint8Array.from(message)));
+  });
+
   it('is the hash near-api-js signs, so its signature verifies against it', async () => {
     const keyPair = KeyPair.fromRandom('ed25519');
     const payload = { message: 'quorum:redeem:3', recipient: RECIPIENT, nonce: nonceAt(NOW_MS) };
@@ -2190,7 +2519,7 @@ export * from './nep413.ts';
 
 Run: `pnpm --filter @quorum-on-near/protocol exec vitest run test/nep413.test.ts`
 
-Expected: PASS, 46 tests (`test/nep413.test.ts` 46).
+Expected: PASS, 48 tests (`test/nep413.test.ts` 48).
 
 Run: `pnpm --filter @quorum-on-near/protocol typecheck`
 
@@ -2208,7 +2537,7 @@ git commit -m "check NEP-413 redemption proofs"
 
 ### Task 5: Static payment checks and the buyer builders
 
-Rows 1 to 3 of spec section 6.4, in order, as one pure function, and the builders a buyer uses to make what those checks accept. A payment may commit to any number of seats from 1 to the seats of its request, so a buyer that pays an offer reduced to `extra.seats` at the URL it first requested is accepted. The `ft_transfer_call` arguments must be compact JSON, which also refuses duplicated keys (the token's deserializer would refuse them on chain, at the relayer's cost). A buyer attaches the offer's `maxGas` unless told otherwise: unused gas is refunded to the relayer.
+Rows 1 to 3 of spec section 6.4, in order, as one pure function, and the builders a buyer uses to make what those checks accept. A payment may commit to any number of seats from 1 to the seats of its request, so a buyer that pays an offer reduced to `extra.seats` at the URL it first requested is accepted. The `ft_transfer_call` arguments must be compact JSON, which also refuses duplicated keys (the token's deserializer would refuse them on chain, at the relayer's cost). A buyer attaches the offer's `maxGas` unless told otherwise: unused gas is refunded to the relayer. Before signing, the builder checks the offer against the buyer's own configuration (network, token, pools contract), its request (the pool, at most the seats asked for) and its budget, and that the amount is exactly the seats' price, since the offer names where the tokens go and what they buy; it refuses any other offer and signs nothing.
 
 **Files:**
 - Create: `packages/protocol/src/checks.ts`, `packages/protocol/src/client.ts`
@@ -2217,7 +2546,7 @@ Rows 1 to 3 of spec section 6.4, in order, as one pure function, and the builder
 
 **Interfaces:**
 - Consumes: `isAccountId`, `parseAmount`, `priceOf`, `commitMsg`, the constants (Task 1); `decodeHeader`, `encodeHeader`, `Offer` (Task 2); `decodeSignedDelegate`, `delegatePublicKey`, `onlyFunctionCall`, `verifyDelegateSignature` (Task 3); `RedeemProof`, `redeemMessage` (Task 4).
-- Produces: `type StaticErrorCode`, `GatewayErrorCode` (`not_full_access`, `stale_nonce`, `nonce_too_large`, `expired`, `pool_closed`, `insufficient_balance`, `seller_commit`, `over_buyer_cap`, `payment_in_flight`), `PaymentErrorCode`; `interface ExpectedPayment {network, token, poolsContract, poolId, maxSeats, seatPrice, minGas, maxGas}`, `interface CheckedPayment {signedDelegate, senderId, publicKey, nonce, maxBlockHeight, gas, amount, poolId, seats}`, `type StaticCheckResult`, `checkPaymentHeader(header: string, expected: ExpectedPayment): StaticCheckResult`; `interface PaymentInput {keyPair, senderId, nonce, maxBlockHeight, offer, gas?}`, `buildPaymentHeader(input): Promise<string>`, `maxBlockHeightFor(finalHeight: bigint, maxTimeoutSeconds: number, blockTimeMs: number): bigint`, `interface ProofInput {keyPair, accountId, poolId, recipient, nowMs, random?}`, `buildRedeemProofHeader(input): Promise<string>`.
+- Produces: `type StaticErrorCode`, `GatewayErrorCode` (`not_full_access`, `stale_nonce`, `nonce_too_large`, `expired`, `pool_closed`, `insufficient_balance`, `seller_commit`, `over_buyer_cap`, `payment_in_flight`), `PaymentErrorCode`; `interface ExpectedPayment {network, token, poolsContract, poolId, maxSeats, seatPrice, minGas, maxGas}`, `interface CheckedPayment {signedDelegate, senderId, publicKey, nonce, maxBlockHeight, gas, amount, poolId, seats}`, `type StaticCheckResult`, `checkPaymentHeader(header: string, expected: ExpectedPayment): StaticCheckResult`; `interface ExpectedOffer` (`network`, `token`, `poolsContract`: the buyer's own configuration; `poolId`, `maxSeats`: its request; `maxAmount: bigint`: its budget for this payment), `type OfferErrorCode` (in the order checked: `wrong_scheme`, `wrong_network`, `wrong_asset`, `wrong_pay_to`, `invalid_offer`, `wrong_pool`, `too_many_seats`, `wrong_amount`, `over_budget`), `interface OfferRefusal {code, detail}`, `checkOffer(offer: Offer, expected: ExpectedOffer): OfferRefusal | null`, `class OfferRefusedError` (`code`); `interface PaymentInput {keyPair, senderId, nonce, maxBlockHeight, offer, expected, gas?}`, `buildPaymentHeader(input): Promise<string>` (throws `OfferRefusedError`, signing nothing, when `checkOffer` refuses the offer), `maxBlockHeightFor(finalHeight: bigint, maxTimeoutSeconds: number, blockTimeMs: number): bigint`, `interface ProofInput {keyPair, accountId, poolId, recipient, nowMs, random?}`, `buildRedeemProofHeader(input): Promise<string>`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2236,6 +2565,7 @@ import { describe, expect, it } from 'vitest';
 import { checkPaymentHeader } from '../src/checks.ts';
 import type { CheckedPayment, ExpectedPayment, StaticErrorCode } from '../src/checks.ts';
 import { buildPaymentHeader } from '../src/client.ts';
+import type { ExpectedOffer } from '../src/client.ts';
 import { decodeHeader, encodeHeader } from '../src/codec.ts';
 import type { PaymentPayload } from '../src/codec.ts';
 import { commitMsg } from '../src/contract.ts';
@@ -2291,6 +2621,15 @@ const EXPECTED: ExpectedPayment = {
   minGas: MIN_GAS,
   maxGas: MAX_GAS,
 };
+/** What the buyer requires of the offer it signs: the same contracts, pool and seats, for at most their price. */
+const BUYER_CONFIG: ExpectedOffer = {
+  network: NETWORK,
+  token: TOKEN,
+  poolsContract: POOLS,
+  poolId: POOL_ID,
+  maxSeats: SEATS,
+  maxAmount: BigInt(AMOUNT),
+};
 
 function check(header: string): ReturnType<typeof checkPaymentHeader> {
   return checkPaymentHeader(header, EXPECTED);
@@ -2325,6 +2664,7 @@ function buyerHeader(gas?: bigint): Promise<string> {
     nonce: NONCE,
     maxBlockHeight: MAX_BLOCK_HEIGHT,
     offer: OFFER,
+    expected: BUYER_CONFIG,
     gas,
   });
 }
@@ -2402,6 +2742,7 @@ describe('checkPaymentHeader', () => {
         nonce: NONCE,
         maxBlockHeight: MAX_BLOCK_HEIGHT,
         offer: OFFER,
+        expected: BUYER_CONFIG,
       });
 
       expect(paymentOf(header)).toEqual({
@@ -2740,8 +3081,8 @@ import { KeyPair } from 'near-api-js';
 import { describe, expect, it } from 'vitest';
 import { checkPaymentHeader } from '../src/checks.ts';
 import type { CheckedPayment, ExpectedPayment } from '../src/checks.ts';
-import { buildPaymentHeader, buildRedeemProofHeader, maxBlockHeightFor } from '../src/client.ts';
-import type { PaymentInput, ProofInput } from '../src/client.ts';
+import { OfferRefusedError, buildPaymentHeader, buildRedeemProofHeader, checkOffer, maxBlockHeightFor } from '../src/client.ts';
+import type { ExpectedOffer, OfferErrorCode, PaymentInput, ProofInput } from '../src/client.ts';
 import { decodeHeader } from '../src/codec.ts';
 import type { PaymentPayload } from '../src/codec.ts';
 import type { PoolView } from '../src/contract.ts';
@@ -2784,6 +3125,67 @@ const CONTEXT: OfferContext = {
   maxGas: MAX_GAS,
   maxTimeoutSeconds: 120,
 };
+/**
+ * The buyer's own configuration, which agrees with the gateway's, its request for 2 seats of pool 7,
+ * and a budget of their price at 180.
+ */
+const BUYER_CONFIG: ExpectedOffer = {
+  network: 'near:testnet',
+  token: 'usdc.testnet',
+  poolsContract: 'pools.parent.testnet',
+  poolId: 7,
+  maxSeats: 2,
+  maxAmount: 360n,
+};
+const OFFER = buildOffer(POOL, 2, CONTEXT);
+
+/**
+ * The 2-seat offer with `changes` applied and `extra` merged into its extra. The fields take any
+ * value, as an offer read from a 402 body can.
+ */
+function offerWith(changes: Record<string, unknown>, extra: Record<string, unknown> = {}): Offer {
+  return { ...OFFER, ...changes, extra: { ...OFFER.extra, ...extra } } as Offer;
+}
+
+/**
+ * Offers that name other contracts, another pool or more seats than the buyer's, an amount that is
+ * not the price of their seats or is above the budget, and the code each is refused with.
+ */
+const MISMATCHED: [string, OfferErrorCode, Offer][] = [
+  ['a scheme other than quorum', 'wrong_scheme', offerWith({ scheme: 'exact' })],
+  ['another network', 'wrong_network', offerWith({ network: 'near:mainnet' })],
+  ['another token as its asset', 'wrong_asset', offerWith({ asset: 'usdc.other.testnet' })],
+  ['another account to pay to', 'wrong_pay_to', offerWith({ payTo: 'pools.other.testnet' })],
+  ['another pool than the one asked for', 'wrong_pool', offerWith({}, { poolId: 8 })],
+  ['more seats than asked for, within the budget', 'too_many_seats', offerWith({ maxAmountRequired: '300' }, { seats: 3, seatPrice: '100' })],
+  ['an amount above the budget', 'over_budget', offerWith({ maxAmountRequired: '362' }, { seatPrice: '181' })],
+  ['an amount below the price of its seats', 'wrong_amount', offerWith({ maxAmountRequired: '359' })],
+  ['an amount above the price of its seats', 'wrong_amount', offerWith({ maxAmountRequired: '361' })],
+  ['the amount for 2 seats but 1 seat in extra', 'wrong_amount', offerWith({}, { seats: 1 })],
+  ['the amount at another seat price than extra.seatPrice', 'wrong_amount', offerWith({}, { seatPrice: '179' })],
+];
+
+/** Offers with a field the payment is built from that is not of the offer's form. */
+const MALFORMED: [string, Offer][] = [
+  ['an extra that is not an object', { ...OFFER, extra: null } as unknown as Offer],
+  ['a pool id that is a string', offerWith({}, { poolId: '7' })],
+  ['a negative pool id', offerWith({}, { poolId: -1 })],
+  ['0 seats', offerWith({ maxAmountRequired: '0' }, { seats: 0 })],
+  ['a fractional seat count', offerWith({}, { seats: 1.5 })],
+  ['a seat count beyond the safe integer range', offerWith({}, { seats: 2 ** 53 })],
+  ['a seat price that is a number', offerWith({}, { seatPrice: 180 })],
+  ['a seat price in hexadecimal', offerWith({}, { seatPrice: '0xb4' })],
+  ['an amount with a leading zero', offerWith({ maxAmountRequired: '0360' })],
+  ['a maxGas in exponent form', offerWith({}, { maxGas: '1e14' })],
+];
+
+/** Offers that fail several checks, and the code of the first in checkOffer's order. */
+const FIRST_FAILURE: [string, OfferErrorCode, Offer][] = [
+  ['a string pool id and more seats', 'invalid_offer', offerWith({ maxAmountRequired: '540' }, { poolId: '8', seats: 3 })],
+  ['another pool and more seats, above the budget', 'wrong_pool', offerWith({ maxAmountRequired: '540' }, { poolId: 8, seats: 3 })],
+  ['more seats, above the budget', 'too_many_seats', offerWith({ maxAmountRequired: '540' }, { seats: 3 })],
+  ['an amount not the price of its seats, above the budget', 'wrong_amount', offerWith({ maxAmountRequired: '1000' })],
+];
 
 /** What the gateway expects of a payment that answers `offer`. */
 function expectedFor(offer: Offer): ExpectedPayment {
@@ -2805,7 +3207,8 @@ function paymentInput(overrides: Partial<PaymentInput> = {}): PaymentInput {
     senderId: BUYER,
     nonce: NONCE,
     maxBlockHeight: MAX_BLOCK_HEIGHT,
-    offer: buildOffer(POOL, 2, CONTEXT),
+    offer: OFFER,
+    expected: BUYER_CONFIG,
     ...overrides,
   };
 }
@@ -2831,6 +3234,62 @@ function proofInput(overrides: Partial<ProofInput> = {}): ProofInput {
 function nonceOf(header: string): Uint8Array {
   return new Uint8Array(Buffer.from((decodeHeader(header) as RedeemProof).nonce, 'base64'));
 }
+
+describe('checkOffer', () => {
+  it('accepts an offer that buildOffer made from the same configuration as the buyer', () => {
+    expect(checkOffer(OFFER, BUYER_CONFIG)).toBeNull();
+  });
+
+  it('accepts a reduced offer for fewer seats', () => {
+    expect(checkOffer(buildOffer(POOL, 1, CONTEXT), BUYER_CONFIG)).toBeNull();
+  });
+
+  it('accepts an offer whose amount is exactly the budget', () => {
+    expect(checkOffer(OFFER, { ...BUYER_CONFIG, maxAmount: 360n })).toBeNull();
+  });
+
+  it('refuses the same offer as over_budget with a budget 1 below its amount', () => {
+    expect(checkOffer(OFFER, { ...BUYER_CONFIG, maxAmount: 359n })?.code).toBe('over_budget');
+  });
+
+  it('accepts any seat price whose total is within the budget', () => {
+    expect(checkOffer(offerWith({ maxAmountRequired: '300' }, { seats: 1, seatPrice: '300' }), BUYER_CONFIG)).toBeNull();
+  });
+
+  it.each(MISMATCHED)('refuses an offer with %s as %s', (_name, code, offer) => {
+    expect(checkOffer(offer, BUYER_CONFIG)?.code).toBe(code);
+  });
+
+  it.each(MALFORMED)('refuses an offer with %s as invalid_offer', (_name, offer) => {
+    expect(checkOffer(offer, BUYER_CONFIG)?.code).toBe('invalid_offer');
+  });
+
+  it.each(FIRST_FAILURE)('refuses an offer with %s as %s', (_name, code, offer) => {
+    expect(checkOffer(offer, BUYER_CONFIG)?.code).toBe(code);
+  });
+
+  it('explains a refusal with the value the buyer is configured with', () => {
+    expect(checkOffer(offerWith({ payTo: 'pools.other.testnet' }), BUYER_CONFIG)).toEqual({
+      code: 'wrong_pay_to',
+      detail: 'payTo is not pools.parent.testnet',
+    });
+  });
+
+  it('explains a wrong amount with the price of the seats', () => {
+    expect(checkOffer(offerWith({ maxAmountRequired: '359' }), BUYER_CONFIG)).toEqual({
+      code: 'wrong_amount',
+      detail: 'maxAmountRequired is not 360, the price of 2 seats at 180',
+    });
+  });
+
+  it.each<[OfferErrorCode, Offer, string]>([
+    ['wrong_pool', offerWith({}, { poolId: 8 }), 'extra.poolId is not 7, the pool asked for'],
+    ['too_many_seats', offerWith({ maxAmountRequired: '300' }, { seats: 3, seatPrice: '100' }), 'extra.seats is above 2, the seats asked for'],
+    ['over_budget', offerWith({ maxAmountRequired: '362' }, { seatPrice: '181' }), 'maxAmountRequired is above 360, the budget'],
+  ])('explains %s with what the buyer asked for', (code, offer, detail) => {
+    expect(checkOffer(offer, BUYER_CONFIG)).toEqual({ code, detail });
+  });
+});
 
 describe('buildPaymentHeader', () => {
   it('builds a header that passes checkPaymentHeader for the offer it answers', async () => {
@@ -2884,6 +3343,12 @@ describe('buildPaymentHeader', () => {
     expect(result).toMatchObject({ ok: true, payment: { seats: 1, amount: 180n } });
   });
 
+  it('signs an offer whose amount is exactly the budget', async () => {
+    const payment = await checkedPayment(paymentInput({ expected: { ...BUYER_CONFIG, maxAmount: 360n } }));
+
+    expect(payment).toMatchObject({ seats: 2, amount: 360n });
+  });
+
   it('uses the offer maxGas when no gas is given', async () => {
     expect((await checkedPayment(paymentInput())).gas).toBe(MAX_GAS);
   });
@@ -2892,6 +3357,38 @@ describe('buildPaymentHeader', () => {
     const gas = 75_000_000_000_000n;
 
     expect((await checkedPayment(paymentInput({ gas }))).gas).toBe(gas);
+  });
+
+  it.each(MISMATCHED)('refuses to sign an offer with %s, with an OfferRefusedError of code %s', async (_name, code, offer) => {
+    const building = buildPaymentHeader(paymentInput({ offer }));
+
+    await expect(building).rejects.toThrow(OfferRefusedError);
+    await expect(building).rejects.toMatchObject({ code });
+  });
+
+  it.each(MALFORMED)('refuses to sign an offer with %s, as invalid_offer', async (_name, offer) => {
+    await expect(buildPaymentHeader(paymentInput({ offer }))).rejects.toMatchObject({
+      name: 'OfferRefusedError',
+      code: 'invalid_offer',
+    });
+  });
+
+  it('says in the error why the offer was refused', async () => {
+    const offer = offerWith({ asset: 'usdc.other.testnet' });
+
+    await expect(buildPaymentHeader(paymentInput({ offer }))).rejects.toThrow(
+      'offer refused (wrong_asset): the asset is not usdc.testnet',
+    );
+  });
+
+  it('signs an offer for other contracts when the buyer is configured with them', async () => {
+    const other = { ...CONTEXT, token: 'usdc.other.testnet', poolsContract: 'pools.other.testnet' };
+    const offer = buildOffer(POOL, 2, other);
+    const expected = { ...BUYER_CONFIG, token: other.token, poolsContract: other.poolsContract };
+
+    const payment = await checkedPayment(paymentInput({ offer, expected }));
+
+    expect(payment).toMatchObject({ seats: 2, amount: 360n });
   });
 });
 
@@ -3234,6 +3731,8 @@ function fail(code: StaticErrorCode, detail: string): Failure {
 import { randomBytes } from 'node:crypto';
 import { KeyPairSigner, actions, buildDelegateAction, encodeSignedDelegate } from 'near-api-js';
 import type { KeyPair } from 'near-api-js';
+import { parseAmount, priceOf } from './amounts.ts';
+import type { ExpectedPayment } from './checks.ts';
 import { encodeHeader } from './codec.ts';
 import type { PaymentPayload } from './codec.ts';
 import { ONE_YOCTO, SCHEME, X402_VERSION } from './constants.ts';
@@ -3253,26 +3752,38 @@ export interface PaymentInput {
   nonce: bigint;
   maxBlockHeight: bigint;
   offer: Offer;
+  /** The buyer's own configuration, its request and its budget, which the offer must match. */
+  expected: ExpectedOffer;
   /**
-   * Gas for the inner ft_transfer_call; defaults to the offer's maxGas. Unused gas is refunded to
-   * the relayer, so the most the offer allows costs nothing extra and is the least likely to run out.
+   * Gas for the inner ft_transfer_call; defaults to the offer's maxGas, the most the gateway accepts
+   * and the least likely to run out. The relayer prepays it and is refunded what the call does not
+   * use, under the protocol's refund rules.
    */
   gas?: bigint;
 }
 
 /**
- * Builds and signs the delegate action for an offer: one `ft_transfer_call` on `offer.asset`, to
- * `offer.payTo`, for `offer.maxAmountRequired`, with the commit msg for `extra.poolId` and
- * `extra.seats` and 1 yoctoNEAR attached. Returns the `X-PAYMENT` header value.
+ * Builds and signs the delegate action for an offer that checkOffer accepts (OfferRefusedError
+ * otherwise): one `ft_transfer_call` on the expected token, to the expected pools contract, for
+ * `offer.maxAmountRequired`, with the commit msg for `extra.poolId` and `extra.seats` and
+ * 1 yoctoNEAR attached. The payment is therefore for the pool asked for, for at most the seats asked
+ * for, and for at most `expected.maxAmount`; within that budget, the seat price is the offer's.
+ * Returns the `X-PAYMENT` header value.
  */
 export async function buildPaymentHeader(input: PaymentInput): Promise<string> {
-  const { keyPair, senderId, nonce, maxBlockHeight, offer, gas } = input;
+  const { keyPair, senderId, nonce, maxBlockHeight, offer, expected, gas } = input;
+  const refusal = checkOffer(offer, expected);
+  if (refusal !== null) throw new OfferRefusedError(refusal);
   const { extra } = offer;
-  const args = { receiver_id: offer.payTo, amount: offer.maxAmountRequired, msg: commitMsg(extra.poolId, extra.seats) };
+  const args = {
+    receiver_id: expected.poolsContract,
+    amount: offer.maxAmountRequired,
+    msg: commitMsg(extra.poolId, extra.seats),
+  };
   const transfer = actions.functionCall('ft_transfer_call', args, gas ?? BigInt(extra.maxGas), ONE_YOCTO);
   const delegateAction = buildDelegateAction({
     senderId,
-    receiverId: offer.asset,
+    receiverId: expected.token,
     actions: [transfer],
     nonce,
     maxBlockHeight,
@@ -3282,10 +3793,92 @@ export async function buildPaymentHeader(input: PaymentInput): Promise<string> {
   const payment: PaymentPayload = {
     x402Version: X402_VERSION,
     scheme: SCHEME,
-    network: offer.network,
+    network: expected.network,
     payload: { signedDelegate: base64(encodeSignedDelegate(signedDelegate)) },
   };
   return encodeHeader(payment);
+}
+
+/**
+ * What a buyer requires of every offer before it signs one. The network, the token and the pools
+ * contract come from its own configuration: an offer names the contract the tokens are sent to, so
+ * these never come from the gateway. `poolId` and `maxSeats` are the pool and the seats of the
+ * request the offer answers. Nothing here bounds the seat price except `maxAmount`.
+ */
+export interface ExpectedOffer extends Pick<ExpectedPayment, 'network' | 'token' | 'poolsContract' | 'poolId' | 'maxSeats'> {
+  /** The most the buyer pays for this payment, in the token's base units. */
+  maxAmount: bigint;
+}
+
+export type OfferErrorCode =
+  | 'invalid_offer'
+  | 'wrong_scheme'
+  | 'wrong_network'
+  | 'wrong_asset'
+  | 'wrong_pay_to'
+  | 'wrong_pool'
+  | 'too_many_seats'
+  | 'wrong_amount'
+  | 'over_budget';
+
+export interface OfferRefusal {
+  code: OfferErrorCode;
+  detail: string;
+}
+
+/**
+ * Checks an offer against the buyer's configuration, request and budget, in this order: the scheme
+ * is `quorum`; the network, `asset` and `payTo` are the expected network, token and pools contract;
+ * the fields the payment is built from are well formed (`extra.poolId` a non-negative integer,
+ * `extra.seats` a positive integer, `maxAmountRequired`, `extra.seatPrice` and `extra.maxGas` decimal
+ * strings); `extra.poolId` is the expected pool; `extra.seats` is at most `maxSeats` (fewer is a
+ * reduced offer); `maxAmountRequired` is exactly `extra.seats × extra.seatPrice`; and it is at most
+ * `maxAmount`. Returns the first refusal, or null when the offer may be signed. Never throws,
+ * whatever the offer's field values.
+ *
+ * This bounds what the payment commits to and what it costs. The rest of the offer is the gateway's
+ * word: the seat price within the budget, the gas figures, the timeout and what `extra` says of the
+ * pool, which a buyer that relies on it reads from the chain.
+ */
+export function checkOffer(offer: Offer, expected: ExpectedOffer): OfferRefusal | null {
+  if (offer.scheme !== SCHEME) return refuse('wrong_scheme', `the scheme is not ${SCHEME}`);
+  if (offer.network !== expected.network) return refuse('wrong_network', `the network is not ${expected.network}`);
+  if (offer.asset !== expected.token) return refuse('wrong_asset', `the asset is not ${expected.token}`);
+  if (offer.payTo !== expected.poolsContract) return refuse('wrong_pay_to', `payTo is not ${expected.poolsContract}`);
+
+  const { extra } = offer;
+  if (typeof extra !== 'object' || extra === null) return refuse('invalid_offer', 'extra is not an object');
+  const { poolId, seats } = extra;
+  if (!Number.isSafeInteger(poolId) || poolId < 0) return refuse('invalid_offer', 'extra.poolId is not a non-negative integer');
+  if (!Number.isSafeInteger(seats) || seats < 1) return refuse('invalid_offer', 'extra.seats is not a positive integer');
+  const amount = parseAmount(offer.maxAmountRequired);
+  const seatPrice = parseAmount(extra.seatPrice);
+  if (amount === null || seatPrice === null || parseAmount(extra.maxGas) === null) {
+    return refuse('invalid_offer', 'maxAmountRequired, extra.seatPrice and extra.maxGas must be decimal strings');
+  }
+
+  if (poolId !== expected.poolId) return refuse('wrong_pool', `extra.poolId is not ${expected.poolId}, the pool asked for`);
+  if (seats > expected.maxSeats) {
+    return refuse('too_many_seats', `extra.seats is above ${expected.maxSeats}, the seats asked for`);
+  }
+
+  const price = priceOf(seats, seatPrice);
+  if (amount !== price) {
+    return refuse('wrong_amount', `maxAmountRequired is not ${price}, the price of ${seats} seats at ${seatPrice}`);
+  }
+  if (amount > expected.maxAmount) return refuse('over_budget', `maxAmountRequired is above ${expected.maxAmount}, the budget`);
+  return null;
+}
+
+/** Thrown by buildPaymentHeader, before anything is signed, for an offer that checkOffer refuses. */
+export class OfferRefusedError extends Error {
+  override name = 'OfferRefusedError';
+  readonly code: OfferErrorCode;
+
+  constructor(refusal: OfferRefusal) {
+    super(`offer refused (${refusal.code}): ${refusal.detail}`);
+    this.code = refusal.code;
+  }
 }
 
 /**
@@ -3342,6 +3935,10 @@ function proofNonce(nowMs: number, random: Uint8Array): Uint8Array {
 function base64(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString('base64');
 }
+
+function refuse(code: OfferErrorCode, detail: string): OfferRefusal {
+  return { code, detail };
+}
 ```
 
 `packages/protocol/src/index.ts`:
@@ -3363,7 +3960,7 @@ export * from './client.ts';
 
 Run: `pnpm --filter @quorum-on-near/protocol exec vitest run test/checks.test.ts test/client.test.ts`
 
-Expected: PASS, 88 tests (`test/checks.test.ts` 71, `test/client.test.ts` 17).
+Expected: PASS, 147 tests (`test/checks.test.ts` 71, `test/client.test.ts` 76).
 
 Run: `pnpm --filter @quorum-on-near/protocol typecheck`
 
@@ -3373,7 +3970,7 @@ Expected: no errors.
 
 Run: `pnpm --filter @quorum-on-near/protocol test`
 
-Expected: PASS, 9 test files, 267 tests.
+Expected: PASS, 9 test files, 331 tests.
 
 - [ ] **Step 6: Commit**
 
@@ -3387,7 +3984,7 @@ git commit -m "check quorum payments statically and build payments and proofs fo
 
 ### Task 6: Gateway package, configuration and credentials
 
-The gateway reads every setting from `QUORUM_*` variables (spec section 7.6) and refuses to start on any problem, listing them all; secret values never appear in the message. The credential is an EdDSA compact JWS (spec section 6.6), signed with an Ed25519 key that is distinct from every NEAR key.
+The gateway reads every setting from `QUORUM_*` variables (spec section 7.6) and refuses to start on any problem, listing them all; secret values never appear in the message. It runs on testnet only (`near:sandbox` is accepted for the local sandbox test), checks each keeper gas setting against what the contract requires at entry, bounds every gas setting at 300 Tgas, refuses a relayer key listed twice and a web folder that holds the gateway's own folder. `checkChainId` lets `main.ts` (Task 14) refuse an RPC that serves another chain than the configured network. The credential is an EdDSA compact JWS (spec section 6.6), signed with an Ed25519 key that is distinct from every NEAR key.
 
 **Files:**
 - Create: `apps/gateway/package.json`, `apps/gateway/tsconfig.json`, `apps/gateway/.env.example`, `apps/gateway/src/credential.ts`, `apps/gateway/src/config.ts`, `apps/gateway/src/keygen.ts`
@@ -3396,7 +3993,7 @@ The gateway reads every setting from `QUORUM_*` variables (spec section 7.6) and
 
 **Interfaces:**
 - Consumes: `isAccountId`, `Network` from `@quorum-on-near/protocol` (Tasks 1 to 5).
-- Produces: `TESTNET_USDC`, `interface GatewayConfig` (every field of the table in `.env.example`), `class ConfigError`, `loadConfig(env: Record<string, string | undefined>): GatewayConfig`; `interface CredentialInput {buyer, poolId, seats, terms}`, `interface CredentialIssuer {issue(input): Promise<string>; jwks(): {keys: JWK[]}}`, `isPrivateEd25519Jwk(value): boolean`, `createCredentialIssuer({jwk, issuer, now?, newId?}): Promise<CredentialIssuer>`, `generateCredentialJwk(): Promise<JWK>`; the `keygen` script.
+- Produces: `TESTNET_USDC`, `interface GatewayConfig` (every field of the table in `.env.example`), `class ConfigError`, `loadConfig(env: Record<string, string | undefined>): GatewayConfig`, `checkChainId(network: Network, chainId: string): string | null`; `interface CredentialInput {buyer, poolId, seats, terms}`, `interface CredentialIssuer {issue(input): Promise<string>; jwks(): {keys: JWK[]}}`, `isPrivateEd25519Jwk(value): boolean`, `createCredentialIssuer({jwk, issuer, now?, newId?}): Promise<CredentialIssuer>`, `generateCredentialJwk(): Promise<JWK>`; the `keygen` script.
 
 - [ ] **Step 1: Write the gateway package manifest and install**
 
@@ -3452,11 +4049,12 @@ Expected: `pnpm-lock.yaml` gains the gateway's dependencies, and `@quorum-on-nea
 ```typescript
 import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseEnv, promisify } from 'node:util';
 import { KeyPair } from 'near-api-js';
 import { describe, expect, it } from 'vitest';
-import { ConfigError, loadConfig, TESTNET_USDC, type GatewayConfig } from '../src/config.ts';
+import { checkChainId, ConfigError, loadConfig, TESTNET_USDC, type GatewayConfig } from '../src/config.ts';
 import { generateCredentialJwk } from '../src/credential.ts';
 
 const EXAMPLE = fileURLToPath(new URL('../.env.example', import.meta.url));
@@ -3527,8 +4125,8 @@ describe('loadConfig', () => {
     const secondKey = KeyPair.fromRandom('ed25519').toString();
     const config = loadConfig(
       env({
-        QUORUM_NETWORK: 'near:mainnet',
-        QUORUM_RPC_URL: 'https://rpc.mainnet.near.org',
+        QUORUM_NETWORK: 'near:sandbox',
+        QUORUM_RPC_URL: 'http://127.0.0.1:3030',
         QUORUM_GATEWAY_URL: 'https://gateway.example',
         QUORUM_GATEWAY_PORT: '9000',
         QUORUM_TOKEN_ACCOUNT: 'usdc.testnet',
@@ -3547,12 +4145,12 @@ describe('loadConfig', () => {
         QUORUM_DATA_DIR: '/var/lib/quorum',
         QUORUM_WEB_DIR: 'public',
         QUORUM_RPC_PASSTHROUGH: 'true',
-        QUORUM_EXPLORER_TX_URL: 'https://nearblocks.io/txns/',
+        QUORUM_EXPLORER_TX_URL: 'https://explorer.example/txns/',
       }),
     );
     expect(config).toEqual<GatewayConfig>({
-      network: 'near:mainnet',
-      rpcUrl: 'https://rpc.mainnet.near.org',
+      network: 'near:sandbox',
+      rpcUrl: 'http://127.0.0.1:3030',
       publicUrl: 'https://gateway.example',
       port: 9000,
       parent: PARENT,
@@ -3573,7 +4171,7 @@ describe('loadConfig', () => {
       dataDir: '/var/lib/quorum',
       webDir: 'public',
       rpcPassthrough: true,
-      explorerTxUrl: 'https://nearblocks.io/txns/',
+      explorerTxUrl: 'https://explorer.example/txns/',
     });
   });
 
@@ -3627,6 +4225,7 @@ describe('loadConfig', () => {
     ['QUORUM_PARENT_ACCOUNT', `${'a'.repeat(57)}.testnet`],
     ['QUORUM_TOKEN_ACCOUNT', 'usdc..testnet'],
     ['QUORUM_POOLS_ACCOUNT', 'pools_.testnet'],
+    ['QUORUM_POOLS_ACCOUNT', ''],
     ['QUORUM_RELAYER_ACCOUNT', '-relay.testnet'],
     ['QUORUM_PROVIDER_ACCOUNT', 'provider.testnet.'],
     ['QUORUM_COMMIT_MIN_GAS', '0'],
@@ -3747,6 +4346,125 @@ describe('loadConfig', () => {
       x: expect.any(String),
       d: expect.any(String),
     });
+  });
+});
+
+describe('loadConfig network', () => {
+  it.each(['near:testnet', 'near:sandbox'])('accepts %s', (network) => {
+    expect(loadConfig(env({ QUORUM_NETWORK: network })).network).toBe(network);
+  });
+
+  it.each(['near:mainnet', 'near:localnet'])('refuses %s: the gateway runs on testnet only', (network) => {
+    expect(problems(env({ QUORUM_NETWORK: network }))).toEqual([
+      `QUORUM_NETWORK must be near:testnet or near:sandbox (the gateway runs on no other network), got "${network}"`,
+    ]);
+  });
+});
+
+describe('checkChainId', () => {
+  it.each([
+    ['near:testnet', 'testnet'],
+    // A sandbox initialised without a chain id gets test-chain- and 5 random characters.
+    ['near:sandbox', 'test-chain-a1B2c'],
+    ['near:sandbox', 'localnet'],
+  ] as const)('accepts %s on the chain %j', (network, chainId) => {
+    expect(checkChainId(network, chainId)).toBeNull();
+  });
+
+  it.each(['mainnet', 'test-chain-a1B2c', 'Testnet', ''])('refuses near:testnet on the chain %j', (chainId) => {
+    expect(checkChainId('near:testnet', chainId)).toBe(
+      `QUORUM_NETWORK is near:testnet, but QUORUM_RPC_URL serves the chain ${JSON.stringify(chainId)}, not "testnet"`,
+    );
+  });
+
+  it.each(['mainnet', 'testnet'])('refuses near:sandbox on the public chain %j', (chainId) => {
+    expect(checkChainId('near:sandbox', chainId)).toBe(
+      `QUORUM_NETWORK is near:sandbox, but QUORUM_RPC_URL serves NEAR's public chain ${JSON.stringify(chainId)}`,
+    );
+  });
+});
+
+describe('loadConfig gas', () => {
+  const MOST = '300000000000000';
+
+  it('accepts the gas the pools contract requires at entry, at the smallest and the largest refund limit', () => {
+    const atLimit = (limit: string, refundGas: string) =>
+      loadConfig(
+        env({ QUORUM_REFUND_LIMIT: limit, QUORUM_SETTLE_GAS: '33000000000000', QUORUM_REFUND_GAS: refundGas }),
+      );
+    // settle: 10 + 23 Tgas; refund: 10 + 23 × (limit + 1) Tgas.
+    expect(atLimit('1', '56000000000000')).toMatchObject({ settleGas: 33_000_000_000_000n, refundGas: 56_000_000_000_000n });
+    expect(atLimit('10', '263000000000000').refundGas).toBe(263_000_000_000_000n);
+  });
+
+  it('accepts 300 Tgas, the most gas the gateway attaches to one call', () => {
+    const config = loadConfig(
+      env({ QUORUM_COMMIT_MIN_GAS: MOST, QUORUM_COMMIT_MAX_GAS: MOST, QUORUM_SETTLE_GAS: MOST, QUORUM_REFUND_GAS: MOST }),
+    );
+    expect([config.minGas, config.maxGas, config.settleGas, config.refundGas]).toEqual(Array(4).fill(BigInt(MOST)));
+  });
+
+  const SETTLE_FROM = '33000000000000 (what settle requires at entry)';
+  const REFUND_FROM = '263000000000000 (what refund requires at entry with QUORUM_REFUND_LIMIT 10)';
+  it.each([
+    ['QUORUM_COMMIT_MIN_GAS', '0', '1'],
+    ['QUORUM_COMMIT_MIN_GAS', '300000000000001', '1'],
+    ['QUORUM_COMMIT_MAX_GAS', '300000000000001', '1'],
+    ['QUORUM_SETTLE_GAS', '32999999999999', SETTLE_FROM],
+    ['QUORUM_SETTLE_GAS', '300000000000001', SETTLE_FROM],
+    ['QUORUM_REFUND_GAS', '300000000000001', REFUND_FROM],
+  ])('reports %s = %s out of its range', (name, gas, from) => {
+    expect(problems(env({ [name]: gas }))).toEqual([
+      `${name} must be an amount of gas from ${from} to 300000000000000 (300 Tgas, the most the gateway attaches to one call), got "${gas}"`,
+    ]);
+  });
+
+  it.each([
+    ['10', '262999999999999', '263000000000000'],
+    ['3', '100000000000000', '102000000000000'],
+    ['1', '55999999999999', '56000000000000'],
+  ])('reports refund gas below what refund requires at entry with QUORUM_REFUND_LIMIT %s', (limit, gas, needed) => {
+    expect(problems(env({ QUORUM_REFUND_LIMIT: limit, QUORUM_REFUND_GAS: gas }))).toEqual([
+      `QUORUM_REFUND_GAS must be an amount of gas from ${needed} (what refund requires at entry with QUORUM_REFUND_LIMIT ${limit}) to 300000000000000 (300 Tgas, the most the gateway attaches to one call), got "${gas}"`,
+    ]);
+  });
+
+  it('checks the refund gas only against the range when the refund limit is invalid', () => {
+    expect(problems(env({ QUORUM_REFUND_LIMIT: '11', QUORUM_REFUND_GAS: '1' }))).toEqual([
+      'QUORUM_REFUND_LIMIT must be an integer from 1 to 10, got "11"',
+    ]);
+  });
+});
+
+describe('loadConfig relayer keys', () => {
+  it('reports a key listed twice, by position, without the key', () => {
+    const secondKey = KeyPair.fromRandom('ed25519').toString();
+    const message = problems(env({ QUORUM_RELAYER_KEYS: `${RELAYER_KEY}, ${secondKey},,${RELAYER_KEY}` }));
+    expect(message).toEqual(['QUORUM_RELAYER_KEYS must list each key once: keys 1 and 3 are the same']);
+  });
+});
+
+describe('loadConfig web folder', () => {
+  // The folder this package lives in, which holds its .env file.
+  const GATEWAY_DIR = resolve(fileURLToPath(new URL('..', import.meta.url)));
+
+  it.each([
+    ['the gateway folder', GATEWAY_DIR],
+    ['the gateway folder relative to the current folder', relative(process.cwd(), GATEWAY_DIR) || '.'],
+    ['a folder above the gateway folder', dirname(GATEWAY_DIR)],
+    ['a folder two levels above it', dirname(dirname(GATEWAY_DIR))],
+  ])('refuses %s, which would publish its .env file', (_label, dir) => {
+    expect(problems(env({ QUORUM_WEB_DIR: dir }))).toEqual([
+      `QUORUM_WEB_DIR must be empty, or a folder that neither is nor contains the gateway's own folder (${GATEWAY_DIR}), got ${JSON.stringify(dir)}`,
+    ]);
+  });
+
+  it.each([
+    ['a folder inside the gateway folder', join(GATEWAY_DIR, 'public')],
+    ['a sibling of the gateway folder', join(dirname(GATEWAY_DIR), 'web')],
+    ['a sibling whose name starts with the gateway folder name', `${GATEWAY_DIR}-web`],
+  ])('accepts %s', (_label, dir) => {
+    expect(loadConfig(env({ QUORUM_WEB_DIR: dir })).webDir).toBe(dir);
   });
 });
 ```
@@ -3905,9 +4623,11 @@ The configuration reference, with every variable and its default:
 # Gateway configuration. Copy to .env and fill in the three required values (left empty here).
 # Every other line shows its default, which applies when the variable is unset.
 
-# NEAR network, in CAIP-2 form.
+# NEAR network, in CAIP-2 form: near:testnet, or near:sandbox for a local test chain. No other is accepted.
+# The gateway exits at startup unless QUORUM_RPC_URL serves that chain (testnet, or any non-public chain).
 QUORUM_NETWORK=near:testnet
-# NEAR RPC endpoint.
+# NEAR RPC endpoint. Public: unless QUORUM_RPC_PASSTHROUGH is true, /config.json gives it to the live page,
+# so it must not carry an API key.
 QUORUM_RPC_URL=https://test.rpc.fastnear.com
 # The gateway's public base URL: the credential issuer, and the recipient redemption proofs name.
 QUORUM_GATEWAY_URL=http://localhost:8402
@@ -3923,11 +4643,11 @@ QUORUM_TOKEN_ACCOUNT=3e2210e1184b45b64c8a434c0a7e7b23cc04ea7eb7a6c3c32520d03d4af
 #QUORUM_RELAYER_ACCOUNT=
 # The only seller whose pools the gateway serves. Unset means provider.<parent>.
 #QUORUM_PROVIDER_ACCOUNT=
-# Required, secret. The relayer account's full-access secret keys, comma-separated ed25519:... values.
+# Required, secret. The relayer account's full-access secret keys, comma-separated ed25519:... values, each listed once.
 QUORUM_RELAYER_KEYS=
 # Required, secret. Private Ed25519 JWK that signs credentials; `node src/keygen.ts` prints one.
 QUORUM_CREDENTIAL_JWK=
-# Least gas a payment's ft_transfer_call may attach.
+# Least gas a payment's ft_transfer_call may attach. Every gas value is at most 300000000000000 (300 Tgas).
 QUORUM_COMMIT_MIN_GAS=50000000000000
 # Most gas a payment's ft_transfer_call may attach; at least the minimum.
 QUORUM_COMMIT_MAX_GAS=100000000000000
@@ -3939,13 +4659,16 @@ QUORUM_BLOCK_TIME_MS=1000
 QUORUM_KEEPER_INTERVAL_MS=5000
 # Buyers refunded per refund call, from 1 to 10.
 QUORUM_REFUND_LIMIT=10
-# Gas attached to a settle call.
+# Gas attached to a settle call. settle requires 33000000000000 left at entry and uses a few Tgas before
+# that check; a value below the requirement is refused.
 QUORUM_SETTLE_GAS=100000000000000
-# Gas attached to a refund call.
+# Gas attached to a refund call. refund requires 10 + 23 x (QUORUM_REFUND_LIMIT + 1) Tgas left at entry
+# (263000000000000 at a limit of 10) and uses a few Tgas before that check; a value below it is refused.
 QUORUM_REFUND_GAS=300000000000000
 # Folder for the activity feed.
 QUORUM_DATA_DIR=data
-# Folder of the live page, served at /. Empty serves nothing there.
+# Folder of the live page, served at /. Empty serves nothing there. Never this folder or one above it,
+# which would publish .env; files and folders whose names start with a dot are never served.
 QUORUM_WEB_DIR=../web
 # true lets the live page call the pools and token views through POST /rpc.
 QUORUM_RPC_PASSTHROUGH=false
@@ -4025,6 +4748,8 @@ export async function generateCredentialJwk(): Promise<JWK> {
 `apps/gateway/src/config.ts`:
 
 ```typescript
+import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { isAccountId, type Network } from '@quorum-on-near/protocol';
 import type { JWK } from 'jose';
 import { baseDecode, KeyPair, type KeyPairString } from 'near-api-js';
@@ -4034,7 +4759,9 @@ import { isPrivateEd25519Jwk } from './credential.ts';
 export const TESTNET_USDC = '3e2210e1184b45b64c8a434c0a7e7b23cc04ea7eb7a6c3c32520d03d4afcb8af';
 
 export interface GatewayConfig {
+  /** `near:testnet`, or `near:sandbox` for a local test chain. */
   network: Network;
+  /** Public: `/config.json` gives it to the live page unless `rpcPassthrough` is on. */
   rpcUrl: string;
   /** The gateway's public base URL, without a trailing slash. */
   publicUrl: string;
@@ -4078,13 +4805,40 @@ interface Rule<T> {
   secret?: boolean;
 }
 
-const NETWORK = /^near:[a-z0-9-]+$/;
+/** The networks the gateway runs on. */
+const NETWORKS: Network[] = ['near:testnet', 'near:sandbox'];
 const INTEGER = /^(0|[1-9][0-9]*)$/;
 const ED25519_PREFIX = 'ed25519:';
+const TGAS = 1_000_000_000_000n;
+/**
+ * The most gas the gateway attaches to one call: 300 Tgas. A deliberately conservative bound of the
+ * gateway's own, not a protocol limit: the largest call the gateway makes is a full refund batch,
+ * which needs about 280 Tgas attached (spec section 5.4).
+ */
+const MAX_CALL_GAS = 300n * TGAS;
+/** NEAR's public chains, by the `chain_id` their RPC nodes report. */
+const PUBLIC_CHAINS = ['mainnet', 'testnet'];
+/** The gateway's own folder, which holds its `.env` file. */
+const GATEWAY_DIR = resolve(fileURLToPath(new URL('..', import.meta.url)));
+
+/**
+ * The gas the pools contract asserts at the entry of a call that schedules `transfers` transfers:
+ * 10 Tgas for its own work, then 10 for each transfer, 10 for its callback and 3 for their receipts.
+ * `settle` schedules 1; `refund` up to its limit, plus the dust.
+ */
+function gasRequiredAtEntry(transfers: number): bigint {
+  return 10n * TGAS + BigInt(transfers) * 23n * TGAS;
+}
+
+/** Whether `dir` is `inner` or a folder above it. */
+function holds(dir: string, inner: string): boolean {
+  const path = relative(dir, inner);
+  return path === '' || (!isAbsolute(path) && path.split(sep)[0] !== '..');
+}
 
 const asNetwork: Rule<Network> = {
-  expected: 'a NEAR network in CAIP-2 form, such as near:testnet',
-  parse: (raw) => (NETWORK.test(raw) ? (raw as Network) : undefined),
+  expected: `${NETWORKS.join(' or ')} (the gateway runs on no other network)`,
+  parse: (raw) => NETWORKS.find((network) => network === raw),
 };
 
 const asHttpUrl: Rule<string> = {
@@ -4114,10 +4868,17 @@ function asInteger(min: number, max: number, expected = `an integer from ${min} 
 
 const asPositiveInteger = asInteger(1, Number.MAX_SAFE_INTEGER, 'a positive integer');
 
-const asGas: Rule<bigint> = {
-  expected: 'a positive integer',
-  parse: (raw) => (INTEGER.test(raw) && raw !== '0' ? BigInt(raw) : undefined),
-};
+/** Gas from `min`, which `why` explains, to the most the gateway attaches to one call. */
+function asGas(min = 1n, why?: string): Rule<bigint> {
+  const from = why === undefined ? `${min}` : `${min} (${why})`;
+  return {
+    expected: `an amount of gas from ${from} to ${MAX_CALL_GAS} (300 Tgas, the most the gateway attaches to one call)`,
+    parse(raw) {
+      const gas = INTEGER.test(raw) ? BigInt(raw) : -1n;
+      return gas >= min && gas <= MAX_CALL_GAS ? gas : undefined;
+    },
+  };
+}
 
 const asBoolean: Rule<boolean> = {
   expected: 'true or false',
@@ -4129,9 +4890,10 @@ const asPath: Rule<string> = {
   parse: (raw) => (raw === '' ? undefined : raw),
 };
 
-const asPathOrNothing: Rule<string | null> = {
-  expected: 'a path, or empty',
-  parse: (raw) => (raw === '' ? null : raw),
+/** A relative path resolves against the current folder, as the gateway serves it. */
+const asWebDir: Rule<string | null> = {
+  expected: `empty, or a folder that neither is nor contains the gateway's own folder (${GATEWAY_DIR})`,
+  parse: (raw) => (raw === '' ? null : holds(resolve(raw), GATEWAY_DIR) ? undefined : raw),
 };
 
 const asRelayerKeys: Rule<string[]> = {
@@ -4159,6 +4921,16 @@ const asCredentialJwk: Rule<JWK> = {
   },
 };
 
+/** The positions, from 1, of the first key listed twice, compared by public key; null if none is. */
+function repeatedKey(keys: string[]): [number, number] | null {
+  const publicKeys = keys.map((key) => KeyPair.fromString(key as KeyPairString).getPublicKey().toString());
+  for (const [later, publicKey] of publicKeys.entries()) {
+    const first = publicKeys.indexOf(publicKey);
+    if (first < later) return [first + 1, later + 1];
+  }
+  return null;
+}
+
 /**
  * Whether `key` is a NEAR ed25519 secret key: 64 bytes, the seed then its public key.
  * `KeyPair.fromString` alone also accepts 32 bytes, such as a public key, and derives another key.
@@ -4172,6 +4944,20 @@ function isEd25519SecretKey(key: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Checks the `chain_id` that the RPC at QUORUM_RPC_URL reports against QUORUM_NETWORK, which only
+ * labels offers: the RPC decides which chain the gateway pays on. `near:testnet` needs `testnet`;
+ * `near:sandbox` takes any chain but NEAR's public ones. Returns the problem, or null.
+ */
+export function checkChainId(network: Network, chainId: string): string | null {
+  if (network === 'near:testnet') {
+    if (chainId === 'testnet') return null;
+    return `QUORUM_NETWORK is near:testnet, but QUORUM_RPC_URL serves the chain ${JSON.stringify(chainId)}, not "testnet"`;
+  }
+  if (!PUBLIC_CHAINS.includes(chainId)) return null;
+  return `QUORUM_NETWORK is ${network}, but QUORUM_RPC_URL serves NEAR's public chain ${JSON.stringify(chainId)}`;
 }
 
 /** A GatewayConfig being read: a value is undefined when its variable has a problem. */
@@ -4216,12 +5002,33 @@ export function loadConfig(env: Record<string, string | undefined>): GatewayConf
   const relayer = child('QUORUM_RELAYER_ACCOUNT', 'relay');
   const provider = child('QUORUM_PROVIDER_ACCOUNT', 'provider');
   const relayerKeys = required('QUORUM_RELAYER_KEYS', asRelayerKeys);
+  // A key listed twice could sign two transactions at once. Positions only: the keys are secret.
+  const repeated = relayerKeys === undefined ? null : repeatedKey(relayerKeys);
+  if (repeated !== null) {
+    problems.push(`QUORUM_RELAYER_KEYS must list each key once: keys ${repeated[0]} and ${repeated[1]} are the same`);
+  }
   const credentialJwk = required('QUORUM_CREDENTIAL_JWK', asCredentialJwk);
-  const minGas = optional('QUORUM_COMMIT_MIN_GAS', '50000000000000', asGas);
-  const maxGas = optional('QUORUM_COMMIT_MAX_GAS', '100000000000000', asGas);
+  const minGas = optional('QUORUM_COMMIT_MIN_GAS', '50000000000000', asGas());
+  const maxGas = optional('QUORUM_COMMIT_MAX_GAS', '100000000000000', asGas());
   if (minGas !== undefined && maxGas !== undefined && maxGas < minGas) {
     problems.push(`QUORUM_COMMIT_MAX_GAS must be at least QUORUM_COMMIT_MIN_GAS (${minGas}), got "${maxGas}"`);
   }
+  const maxTimeoutSeconds = optional('QUORUM_MAX_TIMEOUT_SECONDS', '120', asPositiveInteger);
+  const blockTimeMs = optional('QUORUM_BLOCK_TIME_MS', '1000', asPositiveInteger);
+  const keeperIntervalMs = optional('QUORUM_KEEPER_INTERVAL_MS', '5000', asPositiveInteger);
+  const refundLimit = optional('QUORUM_REFUND_LIMIT', '10', asInteger(1, 10));
+  // With less gas than the contract asserts at entry, every call would panic.
+  const settleGas = optional(
+    'QUORUM_SETTLE_GAS',
+    '100000000000000',
+    asGas(gasRequiredAtEntry(1), 'what settle requires at entry'),
+  );
+  // Without a valid limit there is no requirement to check, and the limit's problem is already listed.
+  const refundGasRule =
+    refundLimit === undefined
+      ? asGas()
+      : asGas(gasRequiredAtEntry(refundLimit + 1), `what refund requires at entry with QUORUM_REFUND_LIMIT ${refundLimit}`);
+  const refundGas = optional('QUORUM_REFUND_GAS', '300000000000000', refundGasRule);
 
   const draft: Draft = {
     network,
@@ -4237,14 +5044,14 @@ export function loadConfig(env: Record<string, string | undefined>): GatewayConf
     credentialJwk,
     minGas,
     maxGas,
-    maxTimeoutSeconds: optional('QUORUM_MAX_TIMEOUT_SECONDS', '120', asPositiveInteger),
-    blockTimeMs: optional('QUORUM_BLOCK_TIME_MS', '1000', asPositiveInteger),
-    keeperIntervalMs: optional('QUORUM_KEEPER_INTERVAL_MS', '5000', asPositiveInteger),
-    refundLimit: optional('QUORUM_REFUND_LIMIT', '10', asInteger(1, 10)),
-    settleGas: optional('QUORUM_SETTLE_GAS', '100000000000000', asGas),
-    refundGas: optional('QUORUM_REFUND_GAS', '300000000000000', asGas),
+    maxTimeoutSeconds,
+    blockTimeMs,
+    keeperIntervalMs,
+    refundLimit,
+    settleGas,
+    refundGas,
     dataDir: optional('QUORUM_DATA_DIR', 'data', asPath),
-    webDir: optional('QUORUM_WEB_DIR', '../web', asPathOrNothing),
+    webDir: optional('QUORUM_WEB_DIR', '../web', asWebDir),
     rpcPassthrough: optional('QUORUM_RPC_PASSTHROUGH', 'false', asBoolean),
     explorerTxUrl: optional('QUORUM_EXPLORER_TX_URL', 'https://testnet.nearblocks.io/txns/', asHttpUrl),
   };
@@ -4268,7 +5075,7 @@ process.stdout.write(`QUORUM_CREDENTIAL_JWK=${JSON.stringify(jwk)}\n`);
 
 Run: `pnpm --filter @quorum-on-near/gateway exec vitest run test/config.test.ts test/credential.test.ts`
 
-Expected: PASS, 75 tests (`test/config.test.ts` 60, `test/credential.test.ts` 15).
+Expected: PASS, 109 tests (`test/config.test.ts` 94, `test/credential.test.ts` 15).
 
 Run: `pnpm --filter @quorum-on-near/gateway typecheck`
 
@@ -4278,7 +5085,7 @@ Expected: no errors.
 
 Run: `pnpm --filter @quorum-on-near/gateway keygen`
 
-Expected: one line, `QUORUM_CREDENTIAL_JWK={"crv":"Ed25519","d":"…","x":"…","kty":"OKP"}`. It is a private key: put it only in `apps/gateway/.env`, which is gitignored, never in a committed file.
+Expected: after pnpm's own header lines, one line, `QUORUM_CREDENTIAL_JWK={"crv":"Ed25519","d":"…","x":"…","kty":"OKP"}`. It is a private key: put it only in `apps/gateway/.env`, which is gitignored, never in a committed file.
 
 - [ ] **Step 7: Commit**
 
@@ -4292,7 +5099,7 @@ git commit -m "add the gateway package with its configuration and credential iss
 
 ### Task 7: The chain seam and transaction outcomes
 
-Every handler talks to the chain through two interfaces, so that it can be tested against an in-memory fake. `RpcChain` reads the contract's views and access keys at optimistic finality, so the gateway sees state at least as new as the outcomes it relays; heights and block times come from the final block. A relayed commit's result is read from the pools contract's `seats_committed` and `pool_filled` events, never from the transaction's top-level status, which ends at the delegate receipt. The fixture is shaped like a relayed commit's RPC result; Task 15 captures a real one and adds a test against it.
+Every handler talks to the chain through two interfaces, so that it can be tested against an in-memory fake. `RpcChain` reads the contract's views and access keys at optimistic finality, so the gateway sees state at least as new as the outcomes it relays; heights and block times come from the final block. A relayed commit's result is read from the pools contract's `seats_committed` and `pool_filled` events, never from the transaction's top-level status, which ends at the delegate receipt. A response counts as an outcome only once its `final_execution_status` is `EXECUTED_OPTIMISTIC`, `EXECUTED` or `FINAL`; below that, its receipts may not all have run. The fixture is shaped like a relayed commit's RPC result; Task 15 captures a real one and adds a test against it.
 
 **Files:**
 - Create: `apps/gateway/src/chain.ts`, `apps/gateway/src/outcome.ts`, `apps/gateway/src/rpc-chain.ts`, `apps/gateway/test/fake-chain.ts`, `apps/gateway/test/fixtures/relayed-commit.provisional.json`
@@ -4300,7 +5107,7 @@ Every handler talks to the chain through two interfaces, so that it can be teste
 
 **Interfaces:**
 - Consumes: `GatewayConfig`, `TESTNET_USDC` (Task 6); `PoolView`, `BuyerView`, `DecodedSignedDelegate`, `QuorumEvent`, `parseEventLog` from the protocol package.
-- Produces: `interface AccessKeyInfo {nonce, fullAccess}`, `BlockInfo {height, timestampMs}`, `ReceiptOutcome {executorId, logs, failed, gasBurnt}`, `TxOutcome {txHash, receipts}`, `interface ChainReader {getPool, listPools, getBuyer, ftBalanceOf, accessKey, finalBlock, getToken}`, `type RelayResult` (`executed` | `unknown` | `rejected`), `EXPIRY_MARGIN_BLOCKS = 5n`, `class DelegateExpiredError`, `interface ChainWriter {relayDelegate(signed, maxBlockHeight), callPools(method, args, gas)}`; `toTxOutcome(response: unknown): TxOutcome`, `poolsEvents(outcome, poolsContract): QuorumEvent[]`, `interface CommitResult`, `readCommit(outcome, {poolsContract, buyer, poolId}): CommitResult`; `class RpcChain implements ChainReader` (`new RpcChain({provider, poolsContract, token})`); test support `FakeChain`, `poolView`, `testConfig`, `eventLog`, `outcome`, `commitOutcome` and the constants `PARENT`, `PROVIDER`, `POOLS`, `RELAYER`, `TOKEN`, `NOW_MS`, `TERMS`.
+- Produces: `interface AccessKeyInfo {nonce, fullAccess}`, `BlockInfo {height, timestampMs}`, `ReceiptOutcome {executorId, logs, failed, gasBurnt}`, `TxOutcome {txHash, receipts}`, `interface ChainReader {getPool, listPools, getBuyer, ftBalanceOf, accessKey, finalBlock, getToken}`, `type RelayResult` (`executed` | `unknown`, with `expired`: whether the delegate can no longer execute | `rejected`), `EXPIRY_MARGIN_BLOCKS = 5n`, `class DelegateExpiredError`, `interface ChainWriter {relayDelegate(signed, maxBlockHeight), callPools(method, args, gas)}`; `toTxOutcome(response: unknown): TxOutcome` (throws unless `final_execution_status` is `EXECUTED_OPTIMISTIC`, `EXECUTED` or `FINAL`), `poolsEvents(outcome, poolsContract): QuorumEvent[]`, `interface CommitResult`, `readCommit(outcome, {poolsContract, buyer, poolId}): CommitResult`; `class RpcChain implements ChainReader` (`new RpcChain({provider, poolsContract, token})`); test support `FakeChain`, `poolView`, `testConfig`, `eventLog`, `outcome`, `commitOutcome` and the constants `PARENT`, `PROVIDER`, `POOLS`, `RELAYER`, `TOKEN`, `NOW_MS`, `TERMS`.
 
 - [ ] **Step 1: Write the chain interfaces**
 
@@ -4349,13 +5156,16 @@ export interface ChainReader {
 
 /**
  * The result of submitting a transaction.
- * - `executed`: the RPC returned the outcome (which may still contain failed receipts).
- * - `unknown`: the transaction was sent but its result was not known in time.
+ * - `executed`: the RPC returned the outcome once every non-refund receipt had run (some may have
+ *   failed).
+ * - `unknown`: the transaction was sent but its result was not known in time. `expired` is true when
+ *   a final block above the delegate's `maxBlockHeight` was seen, so the delegate can no longer
+ *   execute; false when it may still land, and for a call that relays no delegate.
  * - `rejected`: the RPC refused the transaction, so nothing ran.
  */
 export type RelayResult =
   | { kind: 'executed'; outcome: TxOutcome }
-  | { kind: 'unknown'; txHash: string }
+  | { kind: 'unknown'; txHash: string; expired: boolean }
   | { kind: 'rejected'; txHash: string; error: string };
 
 /**
@@ -5004,6 +5814,7 @@ const QUERY = { poolsContract: POOLS, buyer: BUYER, poolId: 7 };
 
 /** The fields of the fixture that these tests change. */
 interface RawResponse {
+  final_execution_status?: string;
   receipts_outcome: Array<{ outcome: { status: unknown; gas_burnt: unknown } }>;
 }
 
@@ -5080,6 +5891,26 @@ describe('toTxOutcome', () => {
     const response = relayedCommit();
     response.receipts_outcome[1]!.outcome.gas_burnt = 1.5;
     expect(() => toTxOutcome(response)).toThrow(TypeError);
+  });
+
+  it.each(['EXECUTED_OPTIMISTIC', 'EXECUTED', 'FINAL'])('reads a response whose final_execution_status is %s', (status) => {
+    const response = { ...relayedCommit(), final_execution_status: status };
+    expect(toTxOutcome(response).receipts).toHaveLength(7);
+  });
+
+  it.each(['NONE', 'INCLUDED', 'INCLUDED_FINAL'])(
+    'throws on a response whose final_execution_status is %s, since its receipts may not all have run',
+    (status) => {
+      const response = relayedCommit();
+      response.final_execution_status = status;
+      response.receipts_outcome.splice(1);
+      expect(() => toTxOutcome(response)).toThrow(TypeError);
+    },
+  );
+
+  it('throws on a response that has no final_execution_status', () => {
+    const { final_execution_status: _, ...rest } = relayedCommit();
+    expect(() => toTxOutcome(rest)).toThrow(TypeError);
   });
 });
 
@@ -5544,13 +6375,23 @@ function readOutcome(value: unknown, where: string): { id: string; receipt: Rece
 }
 
 /**
+ * The `final_execution_status` values at which every non-refund receipt has run. Below them (`NONE`,
+ * `INCLUDED`, `INCLUDED_FINAL`), `receipts_outcome` may be incomplete.
+ */
+const EXECUTED_STATUSES = new Set(['EXECUTED_OPTIMISTIC', 'EXECUTED', 'FINAL']);
+
+/**
  * Converts the RPC's transaction response (`send_tx` / `tx`, near-api-js's RpcTransactionResponse)
  * into a TxOutcome: `transaction_outcome` first, then `receipts_outcome` in order. A receipt is failed
- * when its status has a `Failure` key.
+ * when its status has a `Failure` key. Throws on a response whose `final_execution_status` is not in
+ * EXECUTED_STATUSES, since its outcome is not complete yet.
  */
 export function toTxOutcome(response: unknown): TxOutcome {
   if (!isFields(response)) malformed('response', 'is not an object');
-  const { transaction_outcome: transaction, receipts_outcome: receipts } = response;
+  const { final_execution_status: status, transaction_outcome: transaction, receipts_outcome: receipts } = response;
+  if (typeof status !== 'string' || !EXECUTED_STATUSES.has(status)) {
+    throw new TypeError(`transaction response not executed yet: final_execution_status is ${String(status)}`);
+  }
   if (!Array.isArray(receipts)) malformed('receipts_outcome', 'is not an array');
   const tx = readOutcome(transaction, 'transaction_outcome');
   return {
@@ -5702,7 +6543,7 @@ export class RpcChain implements ChainReader {
 
 Run: `pnpm --filter @quorum-on-near/gateway exec vitest run test/outcome.test.ts test/rpc-chain.test.ts`
 
-Expected: PASS, 50 tests (`test/outcome.test.ts` 22, `test/rpc-chain.test.ts` 28).
+Expected: PASS, 57 tests (`test/outcome.test.ts` 29, `test/rpc-chain.test.ts` 28).
 
 Run: `pnpm --filter @quorum-on-near/gateway typecheck`
 
@@ -5711,7 +6552,9 @@ Expected: no errors.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add apps/gateway/src apps/gateway/test
+git add apps/gateway/src/chain.ts apps/gateway/src/outcome.ts apps/gateway/src/rpc-chain.ts \
+  apps/gateway/test/fake-chain.ts apps/gateway/test/fixtures/relayed-commit.provisional.json \
+  apps/gateway/test/outcome.test.ts apps/gateway/test/rpc-chain.test.ts
 git commit -m "read the chain through a seam and parse relayed outcomes"
 ```
 
@@ -5720,7 +6563,7 @@ git commit -m "read the chain through a seam and parse relayed outcomes"
 
 ### Task 8: The relayer
 
-The relayer account holds several full-access keys; `KeyPool` lends each to one transaction at a time, so nonces never clash, and the keeper and the payments share it. `RpcRelayer` signs with the leased key, sends once and waits for `EXECUTED_OPTIMISTIC`. Build both of its providers with `{retries: 1}`: near-api-js counts attempts, so `retries: 1` posts a transaction exactly once and `retries: 0` posts nothing. After a timeout, a network failure, or a response it cannot read, it looks the transaction up by hash until the final height passes the delegate's `maxBlockHeight` or the time budget runs out, whichever is first; it never signs or sends a payment twice. Only an RPC refusal (the transaction never ran) is `rejected`. Before signing a delegate it checks again that the delegate has not come within `EXPIRY_MARGIN_BLOCKS` of expiring while it waited for a key.
+The relayer account holds several full-access keys; `KeyPool` lends each to one transaction at a time, so nonces never clash, and the keeper and the payments share it. `RpcRelayer` signs with the leased key, sends once and waits for `EXECUTED_OPTIMISTIC`. Build both of its providers with `{retries: 1}`: near-api-js counts attempts, so `retries: 1` posts a transaction exactly once and `retries: 0` posts nothing. After a timeout, a network failure, or a response it cannot read, it looks the transaction up by hash until the final height passes the delegate's `maxBlockHeight` or the time budget runs out, whichever is first; it never signs or sends a payment twice. A response that comes back before the transaction has executed is looked up the same way. An `unknown` result says whether the delegate can no longer execute (`expired`: the lookup saw a final height above `maxBlockHeight`) or may still land. Only an RPC refusal (the transaction never ran) is `rejected`. Before signing a delegate it checks again that the delegate has not come within `EXPIRY_MARGIN_BLOCKS` of expiring while it waited for a key.
 
 **Files:**
 - Create: `apps/gateway/src/relayer.ts`
@@ -5751,9 +6594,17 @@ import {
   type SignedTransaction,
 } from 'near-api-js';
 import {
+  DelegateActionInvalidNonceActionError,
+  DelegateActionMustBeOnlyOneActionError,
   InternalRpcError,
   InvalidNonceError,
+  InvalidTransactionError,
   RequestRoutedError,
+  RpcError,
+  RpcMethodNotFoundError,
+  RpcRequestParseError,
+  ShardCongestedError,
+  ShardStuckError,
   TransactionTimeoutError,
   UnknownTransactionError,
 } from 'near-api-js/rpc-errors';
@@ -5827,6 +6678,12 @@ function executedResponse(tx: SentTx): unknown {
     transaction_outcome: executionOutcome(tx.hash, tx.signerId, { SuccessReceiptId: receiptId }),
     receipts_outcome: [executionOutcome(receiptId, tx.receiverId, { SuccessValue: '' })],
   };
+}
+
+/** A `send_tx` / `tx` result returned at `status`, before the transaction's receipt has run. */
+function notExecutedResponse(tx: SentTx, status: 'INCLUDED' | 'INCLUDED_FINAL'): unknown {
+  const executed = executedResponse(tx) as Record<string, unknown>;
+  return { ...executed, final_execution_status: status, status: 'Started', receipts_outcome: [] };
 }
 
 /**
@@ -6102,14 +6959,14 @@ describe('RpcRelayer.relayDelegate', () => {
     expect(rpc.sleeps).toEqual([LOOKUP_INTERVAL_MS, LOOKUP_INTERVAL_MS]);
   });
 
-  it('gives unknown once the final height has passed maxBlockHeight with nothing found', async () => {
+  it('gives unknown and expired once the final height has passed maxBlockHeight with nothing found', async () => {
     const { rpc, relayer } = setup();
     rpc.onSend = async () => {
       throw new TransactionTimeoutError();
     };
     const { signed } = await buyerDelegate(1_008n);
     const result = await relayer.relayDelegate(signed, 1_008n);
-    expect(result).toEqual({ kind: 'unknown', txHash: rpc.sent[0]?.hash });
+    expect(result).toEqual({ kind: 'unknown', txHash: rpc.sent[0]?.hash, expired: true });
     expect(rpc.sent).toHaveLength(1);
     expect(rpc.lookups.map((lookup) => lookup.finalHeight)).toEqual(
       Array.from({ length: 10 }, (_, i) => 1_000n + BigInt(i)),
@@ -6150,11 +7007,11 @@ describe('RpcRelayer.relayDelegate', () => {
       throw new UnknownTransactionError(txHash);
     };
     const result = await relayer.relayDelegate(signed, 1_010n);
-    expect(result.kind).toBe('unknown');
+    expect(result).toEqual({ kind: 'unknown', txHash: rpc.sent[0]?.hash, expired: true });
     expect(rpc.lookups).toHaveLength(4);
   });
 
-  it('gives unknown after delegateLookupMs while the final height cannot be read', async () => {
+  it('gives unknown, not expired, after delegateLookupMs while the final height cannot be read', async () => {
     const { rpc, relayer } = setup();
     rpc.onSend = async () => {
       rpc.blockError = new TypeError('fetch failed');
@@ -6162,18 +7019,18 @@ describe('RpcRelayer.relayDelegate', () => {
     };
     const { signed } = await buyerDelegate();
     const result = await relayer.relayDelegate(signed, 1_100n);
-    expect(result).toEqual({ kind: 'unknown', txHash: rpc.sent[0]?.hash });
+    expect(result).toEqual({ kind: 'unknown', txHash: rpc.sent[0]?.hash, expired: false });
     expect(rpc.lookups.map((lookup) => lookup.atMs)).toEqual(lookupTimes(DELEGATE_LOOKUP_MS));
   });
 
-  it('gives unknown after delegateLookupMs while the final height stays below maxBlockHeight', async () => {
+  it('gives unknown, not expired, after delegateLookupMs while the final height stays below maxBlockHeight', async () => {
     const { rpc, relayer } = setup();
     rpc.onSend = async () => {
       throw new TransactionTimeoutError();
     };
     const { signed } = await buyerDelegate(1_000_000n);
     const result = await relayer.relayDelegate(signed, 1_000_000n);
-    expect(result.kind).toBe('unknown');
+    expect(result).toEqual({ kind: 'unknown', txHash: rpc.sent[0]?.hash, expired: false });
     expect(rpc.lookups.map((lookup) => lookup.atMs)).toEqual(lookupTimes(DELEGATE_LOOKUP_MS));
   });
 
@@ -6203,8 +7060,36 @@ describe('RpcRelayer.relayDelegate', () => {
     rpc.onSend = async () => UNREADABLE;
     const { signed } = await buyerDelegate(1_008n);
     const result = await relayer.relayDelegate(signed, 1_008n);
-    expect(result).toEqual({ kind: 'unknown', txHash: rpc.sent[0]?.hash });
+    expect(result).toEqual({ kind: 'unknown', txHash: rpc.sent[0]?.hash, expired: true });
     expect(rpc.sent).toHaveLength(1);
+  });
+
+  it.each(['INCLUDED', 'INCLUDED_FINAL'] as const)(
+    'looks up a send that returns at %s, before its receipts have run, without sending it again',
+    async (status) => {
+      const { rpc, relayer } = setup();
+      rpc.onSend = async (tx) => notExecutedResponse(tx, status);
+      rpc.onLookup = async () => executedResponse(rpc.sent[0]!);
+      const { signed } = await buyerDelegate();
+      const result = await relayer.relayDelegate(signed, 1_100n);
+      expect(result).toMatchObject({
+        kind: 'executed',
+        outcome: { txHash: rpc.sent[0]?.hash, receipts: [{ executorId: RELAYER }, { executorId: BUYER }] },
+      });
+      expect(rpc.sent).toHaveLength(1);
+      expect(rpc.lookups).toHaveLength(1);
+    },
+  );
+
+  it('gives unknown after delegateLookupMs when no lookup gets past INCLUDED', async () => {
+    const { rpc, relayer } = setup();
+    rpc.onSend = async (tx) => notExecutedResponse(tx, 'INCLUDED');
+    rpc.onLookup = async () => notExecutedResponse(rpc.sent[0]!, 'INCLUDED');
+    const { signed } = await buyerDelegate(1_000_000n);
+    const result = await relayer.relayDelegate(signed, 1_000_000n);
+    expect(result).toEqual({ kind: 'unknown', txHash: rpc.sent[0]?.hash, expired: false });
+    expect(rpc.sent).toHaveLength(1);
+    expect(rpc.lookups.map((lookup) => lookup.atMs)).toEqual(lookupTimes(DELEGATE_LOOKUP_MS));
   });
 
   it('treats a lookup response that cannot be read as not found and keeps looking', async () => {
@@ -6227,7 +7112,7 @@ describe('RpcRelayer.relayDelegate', () => {
     rpc.onLookup = async () => UNREADABLE;
     const { signed } = await buyerDelegate(1_008n);
     const result = await relayer.relayDelegate(signed, 1_008n);
-    expect(result).toEqual({ kind: 'unknown', txHash: rpc.sent[0]?.hash });
+    expect(result).toEqual({ kind: 'unknown', txHash: rpc.sent[0]?.hash, expired: true });
     expect(rpc.sent).toHaveLength(1);
   });
 
@@ -6246,6 +7131,9 @@ describe('RpcRelayer.relayDelegate', () => {
   it.each([
     ['a server error', new InternalRpcError('internal error')],
     ['a routed request', new RequestRoutedError('tx')],
+    ['an unrecognised RpcError', new RpcError('Unknown RPC error')],
+    ['a DelegateActionInvalidNonce action error', new DelegateActionInvalidNonceActionError(42, 42, 0, '', '')],
+    ['a DelegateActionMustBeOnlyOne validation error', new DelegateActionMustBeOnlyOneActionError(null, '', '')],
   ])('treats %s from the RPC like a timeout, not a rejection', async (_, error) => {
     const { rpc, relayer } = setup();
     rpc.onSend = async () => {
@@ -6274,6 +7162,24 @@ describe('RpcRelayer.relayDelegate', () => {
     expect(next.kind).toBe('executed');
     expect(rpc.sent[1]?.nonce).toBe(10n);
     expect(rpc.accessKeyReads).toBe(2);
+  });
+
+  it.each([
+    ['an invalid transaction with no details', new InvalidTransactionError()],
+    ['a request it cannot parse', new RpcRequestParseError('invalid base64')],
+    ['an unknown method', new RpcMethodNotFoundError('send_tx')],
+    ['a congested shard', new ShardCongestedError(1, 0, '', '')],
+    ['a stuck shard', new ShardStuckError(10, 0, '', '')],
+  ])('rejects on %s, looking nothing up', async (_, error) => {
+    const { rpc, relayer } = setup();
+    rpc.onSend = async () => {
+      throw error;
+    };
+    const { signed } = await buyerDelegate();
+    const result = await relayer.relayDelegate(signed, 1_100n);
+    expect(result).toEqual({ kind: 'rejected', txHash: rpc.sent[0]?.hash, error: String(error) });
+    expect(rpc.sent).toHaveLength(1);
+    expect(rpc.lookups).toHaveLength(0);
   });
 
   it('throws an RPC failure that happens before anything is sent', async () => {
@@ -6451,13 +7357,13 @@ describe('RpcRelayer.callPools', () => {
     expect(JSON.parse(new TextDecoder().decode(Uint8Array.from(call!.args)))).toEqual({ pool_id: 7, limit: 10 });
   });
 
-  it('looks a timed-out call up for callLookupMs, then gives unknown', async () => {
+  it('looks a timed-out call up for callLookupMs, then gives unknown, not expired', async () => {
     const { rpc, relayer } = setup();
     rpc.onSend = async () => {
       throw new TransactionTimeoutError();
     };
     const result = await relayer.callPools('settle', { pool_id: 7 }, 100n * TGAS);
-    expect(result).toEqual({ kind: 'unknown', txHash: rpc.sent[0]?.hash });
+    expect(result).toEqual({ kind: 'unknown', txHash: rpc.sent[0]?.hash, expired: false });
     expect(rpc.sent).toHaveLength(1);
     expect(rpc.lookups.map((lookup) => lookup.atMs)).toEqual(lookupTimes(CALL_LOOKUP_MS));
   });
@@ -6579,7 +7485,7 @@ export interface RpcRelayerOptions {
 
 /**
  * When a lookup by hash gives up: after `lookupMs`, or, for a delegate, once the final height passes
- * its `maxBlockHeight`, whichever comes first.
+ * its `maxBlockHeight` (the result is then `unknown` and `expired`), whichever comes first.
  */
 interface Deadline {
   lookupMs: number;
@@ -6590,11 +7496,12 @@ type SignedDelegateParts = Parameters<typeof actions.signedDelegate>[0];
 
 /**
  * True when the RPC refused the transaction while validating it (a bad nonce, an expired block hash,
- * a congested shard, a malformed request), so it never ran. A timeout, a routed request, a server error
- * or a network failure leaves its fate open.
+ * a congested or stuck shard, a malformed request), so it never ran. A timeout, a routed request, a
+ * server error, an error it does not recognise or a network failure leaves its fate open.
  */
 function refused(error: unknown): boolean {
-  // An action error comes from a transaction that ran.
+  // An action error is what a transaction that ran raises. near-api-js also gives one to a transaction
+  // refused for an invalid action; that one is looked up too, which only delays its answer.
   if (error instanceof ActionExecutionError) return false;
   return (
     error instanceof TransactionExecutionError ||
@@ -6603,7 +7510,10 @@ function refused(error: unknown): boolean {
   );
 }
 
-/** The outcome in a transaction response, or null when the response cannot be read as one. */
+/**
+ * The outcome in a transaction response, or null when the response cannot be read as one, including a
+ * response from before every non-refund receipt had run.
+ */
 function readOutcome(response: unknown): TxOutcome | null {
   try {
     return toTxOutcome(response);
@@ -6617,10 +7527,15 @@ function readOutcome(response: unknown): TxOutcome | null {
  * key, sends it once and waits for `EXECUTED_OPTIMISTIC`. A delegate is first checked against the
  * final height and refused with DelegateExpiredError, before anything is built or signed, when it is
  * about to expire. If the send times out, the network fails, the RPC cannot say whether it took the
- * transaction (a routed request, a server error) or its response cannot be read, it looks the
- * transaction up by hash (never re-signing or re-sending) until a readable outcome is found or the
- * deadline passes. An RPC error that refuses the transaction is a rejection: nothing ran, and the
- * key's cached nonce is dropped. Nothing throws once a transaction has been sent.
+ * transaction (a routed request, a server error) or its response cannot be read (or comes back below
+ * `EXECUTED_OPTIMISTIC`), it looks the transaction up by hash (never re-signing or re-sending) until a
+ * readable outcome is found or the deadline passes. An RPC error that refuses the transaction is a
+ * rejection: nothing ran, and the key's cached nonce is dropped. Nothing throws once a transaction
+ * has been sent.
+ *
+ * The key goes back to the pool once a result is returned, even an `unknown` one whose transaction
+ * may still be pending. Nonces are ordered, so the key's next transaction cannot clash with it: if
+ * the next one lands first, the pending one can no longer land.
  */
 export class RpcRelayer implements ChainWriter {
   readonly #relayer: string;
@@ -6705,26 +7620,21 @@ export class RpcRelayer implements ChainWriter {
     }
   }
 
-  async #lookUp(txHash: string, deadline: Deadline): Promise<RelayResult> {
-    const passed = this.#deadlineCheck(deadline);
+  /**
+   * Looks the transaction up every `lookupIntervalMs` until an outcome is found or the deadline passes.
+   * The clock is checked first, so no block is read once the time is up.
+   */
+  async #lookUp(txHash: string, { lookupMs, maxBlockHeight }: Deadline): Promise<RelayResult> {
+    const end = this.#now() + lookupMs;
     for (;;) {
       // Read the deadline before looking, so the last lookup is made after the deadline has passed.
-      const expired = await passed();
+      const timeUp = this.#now() >= end;
+      const expired = !timeUp && maxBlockHeight !== undefined && (await this.#finalHeightAbove(maxBlockHeight));
       const outcome = readOutcome(await this.#find(txHash));
       if (outcome !== null) return { kind: 'executed', outcome };
-      if (expired) return { kind: 'unknown', txHash };
+      if (timeUp || expired) return { kind: 'unknown', txHash, expired };
       await this.#sleep(this.#lookupIntervalMs);
     }
-  }
-
-  /**
-   * True once `lookupMs` has passed or, for a delegate, once the final height is above its
-   * `maxBlockHeight`. The clock is checked first, so no block is read once the time is up.
-   */
-  #deadlineCheck({ lookupMs, maxBlockHeight }: Deadline): () => Promise<boolean> {
-    const end = this.#now() + lookupMs;
-    return async () =>
-      this.#now() >= end || (maxBlockHeight !== undefined && (await this.#finalHeightAbove(maxBlockHeight)));
   }
 
   /** False while the final height cannot be read: the lookup goes on. */
@@ -6756,7 +7666,7 @@ export class RpcRelayer implements ChainWriter {
 
 Run: `pnpm --filter @quorum-on-near/gateway exec vitest run test/relayer.test.ts`
 
-Expected: PASS, 44 tests (`test/relayer.test.ts` 44).
+Expected: PASS, 55 tests (`test/relayer.test.ts` 55).
 
 Run: `pnpm --filter @quorum-on-near/gateway typecheck`
 
@@ -6774,7 +7684,7 @@ git commit -m "relay transactions with leased keys, sending each once"
 
 ### Task 9: Activity feed, guards and served pools
 
-The activity feed (spec section 6.7) is a JSON-lines file under `data/`, which is gitignored; it exists to give transaction links, and the money state is always read from the contract. `InFlight` allows one payment in flight per buyer (spec section 6.4). `NonceCache` remembers redemption nonces. The gateway serves only its provider's pools (spec section 6.1).
+The activity feed (spec section 6.7) is a JSON-lines file under `data/`, which is gitignored; it exists to give transaction links, and the money state is always read from the contract. `ActivityLog.open` ends a line cut short by a stop mid-write with a newline, so the next record is not lost. `keeperCallProgressed` says whether a keeper call moved its pool (Task 13 backs off from those that did not), and `keeperRecords` writes no failure row for a call that did. `InFlight` allows one payment in flight per buyer (spec section 6.4), and holds a buyer whose payment's result is unknown and may still land until a final height above its `max_block_height` is seen. `NonceCache` remembers redemption nonces. The gateway serves only its provider's pools (spec section 6.1).
 
 **Files:**
 - Create: `apps/gateway/src/guards.ts`, `apps/gateway/src/pools.ts`, `apps/gateway/src/activity.ts`
@@ -6782,7 +7692,7 @@ The activity feed (spec section 6.7) is a JSON-lines file under `data/`, which i
 
 **Interfaces:**
 - Consumes: `ChainReader`, `TxOutcome` (Task 7); `poolsEvents` (Task 7); `MAX_PAGE`, `minBonusPerSeat`, `PoolView` from the protocol package.
-- Produces: `class InFlight {begin(buyer): boolean; end(buyer); has(buyer)}`, `class NonceCache` (`new NonceCache(ttlMs)`, `seen(key, nowMs): boolean`); `listServedPools(chain, provider): Promise<PoolView[]>`, `interface PoolListing`, `openPoolListings(chain, provider): Promise<PoolListing[]>`, `servedPool(chain, provider, poolId): Promise<PoolView | null>`; `type ActivityKind`, `interface ActivityRecord {at, poolId, kind, account, seats, amount, txHash, ok}`, `class ActivityLog` (`ActivityLog.open(file)`, `append(record)`, `list(poolId?)`, `lastRefund(poolId, account)`), `keeperRecords(kind, pool, outcome, poolsContract, at): ActivityRecord[]`.
+- Produces: `class InFlight {begin(buyer): boolean; end(buyer); has(buyer); hold(buyer, maxBlockHeight: bigint); held(buyer): boolean; passed(finalHeight: bigint)}`, `class NonceCache` (`new NonceCache(ttlMs)`, `seen(key, nowMs): boolean`); `listServedPools(chain, provider): Promise<PoolView[]>`, `interface PoolListing`, `openPoolListings(chain, provider): Promise<PoolListing[]>`, `servedPool(chain, provider, poolId): Promise<PoolView | null>`; `type ActivityKind`, `interface ActivityRecord {at, poolId, kind, account, seats, amount, txHash, ok}`, `class ActivityLog` (`ActivityLog.open(file)`, `append(record)`, `list(poolId?)`, `lastRefund(poolId, account)`), `keeperCallProgressed(kind: 'settle' | 'refund', pool: PoolView, outcome: TxOutcome, poolsContract: string): boolean`, `keeperRecords(kind, pool, outcome, poolsContract, at): ActivityRecord[]`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -6825,6 +7735,43 @@ describe('InFlight', () => {
     const inFlight = new InFlight();
     inFlight.end('alice.testnet');
     expect(inFlight.has('alice.testnet')).toBe(false);
+  });
+
+  it('keeps a held buyer in flight after end, so begin is refused', () => {
+    const inFlight = new InFlight();
+    inFlight.begin('alice.testnet');
+    inFlight.hold('alice.testnet', 1_100n);
+    inFlight.end('alice.testnet');
+    expect(inFlight.held('alice.testnet')).toBe(true);
+    expect(inFlight.has('alice.testnet')).toBe(true);
+    expect(inFlight.begin('alice.testnet')).toBe(false);
+  });
+
+  it('lifts a hold once a final height above its maxBlockHeight is passed, not at it', () => {
+    const inFlight = new InFlight();
+    inFlight.hold('alice.testnet', 1_100n);
+    inFlight.passed(1_100n);
+    expect(inFlight.held('alice.testnet')).toBe(true);
+    inFlight.passed(1_101n);
+    expect(inFlight.held('alice.testnet')).toBe(false);
+    expect(inFlight.begin('alice.testnet')).toBe(true);
+  });
+
+  it('lifts every passed hold at once, so holds do not accumulate', () => {
+    const inFlight = new InFlight();
+    inFlight.hold('alice.testnet', 1_100n);
+    inFlight.hold('bob.testnet', 1_300n);
+    inFlight.hold('carol.testnet', 1_200n);
+    inFlight.passed(1_250n);
+    const held = ['alice.testnet', 'bob.testnet', 'carol.testnet'].map((buyer) => inFlight.held(buyer));
+    expect(held).toEqual([false, true, false]);
+  });
+
+  it('does not block other buyers while one is held', () => {
+    const inFlight = new InFlight();
+    inFlight.hold('alice.testnet', 1_100n);
+    expect(inFlight.has('bob.testnet')).toBe(false);
+    expect(inFlight.begin('bob.testnet')).toBe(true);
   });
 });
 
@@ -6981,9 +7928,10 @@ describe('servedPool', () => {
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import type { PoolView, QuorumEvent } from '@quorum-on-near/protocol';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { ActivityLog, keeperRecords, type ActivityRecord } from '../src/activity.ts';
-import { NOW_MS, POOLS, PROVIDER, TOKEN, eventLog, outcome, poolView } from './fake-chain.ts';
+import { ActivityLog, keeperCallProgressed, keeperRecords, type ActivityRecord } from '../src/activity.ts';
+import { NOW_MS, POOLS, PROVIDER, TOKEN, eventLog, outcome, poolView, type ReceiptSpec } from './fake-chain.ts';
 
 const ALICE = 'alice.testnet';
 const BOB = 'bob.testnet';
@@ -7070,6 +8018,25 @@ describe('ActivityLog', () => {
     await writeFile(file, lines.join('\n'));
     const log = await ActivityLog.open(file);
     expect(log.list()).toEqual(good);
+  });
+
+  it('keeps a record appended after a line cut short when the process stopped mid-write', async () => {
+    const kept = record({ txHash: 'Tx1' });
+    const appended = record({ kind: 'refund', txHash: 'Tx3' });
+    await mkdir(dirname(file), { recursive: true });
+    await writeFile(file, `${JSON.stringify(kept)}\n{"at":1799999000000,"poolId":7,"ki`);
+    await (await ActivityLog.open(file)).append(appended);
+    const reopened = await ActivityLog.open(file);
+    expect(reopened.list()).toEqual([kept, appended]);
+    expect(reopened.lastRefund(7, ALICE)?.txHash).toBe('Tx3');
+  });
+
+  it('adds nothing to a file that already ends with a newline', async () => {
+    const line = `${JSON.stringify(record())}\n`;
+    await mkdir(dirname(file), { recursive: true });
+    await writeFile(file, line);
+    await ActivityLog.open(file);
+    expect(await readFile(file, 'utf8')).toBe(line);
   });
 
   it('lists every record, oldest first', async () => {
@@ -7177,6 +8144,20 @@ describe('keeperRecords', () => {
     ]);
   });
 
+  it('gives no record for a refund batch that only passed buyers who had claimed their own refunds', () => {
+    const pool = poolView({ status: 'expired', buyer_count: 10, refund_cursor: 0 });
+    const tx = outcome('SkippedTx', [{ executorId: POOLS }]);
+    expect(keeperRecords('refund', pool, tx, POOLS, AT)).toEqual([]);
+  });
+
+  it('gives one failed refund record for a call that only retried the dust, whose transfer failed', () => {
+    const pool = poolView({ status: 'expired', buyer_count: 10, refund_cursor: 10, dust_sent: false });
+    const tx = outcome('DustTx', [{ executorId: POOLS }, { executorId: TOKEN, failed: true }, { executorId: POOLS }]);
+    expect(keeperRecords('refund', pool, tx, POOLS, AT)).toEqual([
+      { at: AT, poolId: 7, kind: 'refund', account: PROVIDER, seats: 0, amount: '0', txHash: 'DustTx', ok: false },
+    ]);
+  });
+
   it('ignores events logged by an account other than the pools contract', () => {
     const pool = poolView({ status: 'expired', taken: 3, bonus_per_seat: '576' });
     const tx = outcome('RefundTx', [
@@ -7218,6 +8199,40 @@ describe('keeperRecords', () => {
     ]);
   });
 });
+
+describe('keeperCallProgressed', () => {
+  const FILLED: Partial<PoolView> = { status: 'filled', taken: 192 };
+  /** Buyers left to visit: the call advances the cursor. */
+  const BUYERS_LEFT: Partial<PoolView> = { status: 'expired', buyer_count: 10, refund_cursor: 3 };
+  /** Every buyer visited and the dust not sent: the call only retries the dust. */
+  const DUST_ONLY: Partial<PoolView> = { status: 'expired', buyer_count: 10, refund_cursor: 10, dust_sent: false };
+  const settledEvent = (poolId: number): QuorumEvent => ({
+    event: 'pool_settled',
+    data: { pool_id: poolId, seller: PROVIDER, amount: '36288' },
+  });
+  const refundedEvent = (poolId: number): QuorumEvent => ({ event: 'pool_refunded', data: { pool_id: poolId, dust: '3' } });
+
+  type Case = [string, 'settle' | 'refund', Partial<PoolView>, ReceiptSpec[]];
+
+  it.each<Case>([
+    ['a settle call that logged pool_settled', 'settle', FILLED, [{ executorId: POOLS }, { executorId: TOKEN }, { executorId: POOLS, events: [settledEvent(7)] }]],
+    ['a refund batch over buyers who had all claimed their own refunds, which logged nothing', 'refund', BUYERS_LEFT, [{ executorId: POOLS }]],
+    ['a dust retry that logged pool_refunded', 'refund', DUST_ONLY, [{ executorId: POOLS }, { executorId: TOKEN }, { executorId: POOLS, events: [refundedEvent(7)] }]],
+  ])('counts %s as progress', (_label, kind, pool, receipts) => {
+    expect(keeperCallProgressed(kind, poolView(pool), outcome('KeeperTx', receipts), POOLS)).toBe(true);
+  });
+
+  it.each<Case>([
+    ['a settle call whose payout failed', 'settle', FILLED, [{ executorId: POOLS }, { executorId: TOKEN, failed: true }, { executorId: POOLS }]],
+    ["a settle call that logged another pool's pool_settled", 'settle', FILLED, [{ executorId: POOLS, events: [settledEvent(8)] }]],
+    ['a refund call with buyers left whose receipt failed', 'refund', BUYERS_LEFT, [{ executorId: POOLS, failed: true }]],
+    ['a refund call that never reached the pools contract', 'refund', BUYERS_LEFT, []],
+    ['a dust retry whose transfer failed', 'refund', DUST_ONLY, [{ executorId: POOLS }, { executorId: TOKEN, failed: true }, { executorId: POOLS }]],
+    ["a dust retry that logged another pool's pool_refunded", 'refund', DUST_ONLY, [{ executorId: POOLS, events: [refundedEvent(8)] }]],
+  ])('does not count %s as progress', (_label, kind, pool, receipts) => {
+    expect(keeperCallProgressed(kind, poolView(pool), outcome('KeeperTx', receipts), POOLS)).toBe(false);
+  });
+});
 ```
 
 - [ ] **Step 2: Run them to see them fail**
@@ -7231,23 +8246,46 @@ Expected: FAIL. vitest cannot load `../src/guards.ts`, `../src/pools.ts` and `..
 `apps/gateway/src/guards.ts`:
 
 ```typescript
-/** Buyers with a payment in flight: at most one each (spec section 6.4). */
+/**
+ * Buyers with a payment in flight: at most one each (spec section 6.4). A buyer is busy from `begin`
+ * to `end`, and held after `end` while a payment whose result is unknown may still execute.
+ */
 export class InFlight {
   readonly #busy = new Set<string>();
+  /** Held buyers, each with its payment's `maxBlockHeight`. */
+  readonly #held = new Map<string, bigint>();
 
-  /** Marks the buyer busy. Returns false, changing nothing, if it already was. */
+  /** Marks the buyer busy. Returns false, changing nothing, if it already was busy or is held. */
   begin(buyer: string): boolean {
-    if (this.#busy.has(buyer)) return false;
+    if (this.#busy.has(buyer) || this.#held.has(buyer)) return false;
     this.#busy.add(buyer);
     return true;
   }
 
+  /** Ends the buyer's busy time. A hold outlasts it. */
   end(buyer: string): void {
     this.#busy.delete(buyer);
   }
 
+  /** Keeps the buyer in flight until `passed` is given a final height above `maxBlockHeight`. */
+  hold(buyer: string, maxBlockHeight: bigint): void {
+    this.#held.set(buyer, maxBlockHeight);
+  }
+
+  held(buyer: string): boolean {
+    return this.#held.has(buyer);
+  }
+
+  /** Lifts every hold whose `maxBlockHeight` is below `finalHeight`: those payments can no longer execute. */
+  passed(finalHeight: bigint): void {
+    for (const [buyer, maxBlockHeight] of this.#held) {
+      if (finalHeight > maxBlockHeight) this.#held.delete(buyer);
+    }
+  }
+
+  /** True while the buyer is busy or held. */
   has(buyer: string): boolean {
-    return this.#busy.has(buyer);
+    return this.#busy.has(buyer) || this.#held.has(buyer);
   }
 }
 
@@ -7333,7 +8371,7 @@ export async function servedPool(chain: ChainReader, provider: string, poolId: n
 ```typescript
 import { appendFile, mkdir, readFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import type { PoolView } from '@quorum-on-near/protocol';
+import type { PoolView, QuorumEvent } from '@quorum-on-near/protocol';
 import type { TxOutcome } from './chain.ts';
 import { poolsEvents } from './outcome.ts';
 
@@ -7401,10 +8439,16 @@ export class ActivityLog {
     this.#records = records;
   }
 
-  /** Loads `file` if it exists (skipping lines that do not parse) and creates its folder if needed. */
+  /**
+   * Loads `file` if it exists (skipping lines that do not parse) and creates its folder if needed. A
+   * file that does not end with a newline (the process stopped mid-write) gets one, so that the next
+   * record starts on a line of its own.
+   */
   static async open(file: string): Promise<ActivityLog> {
     await mkdir(dirname(file), { recursive: true });
-    return new ActivityLog(file, parseLines(await readIfExists(file)));
+    const text = await readIfExists(file);
+    if (text !== '' && !text.endsWith('\n')) await appendFile(file, '\n');
+    return new ActivityLog(file, parseLines(text));
   }
 
   async append(record: ActivityRecord): Promise<void> {
@@ -7424,11 +8468,36 @@ export class ActivityLog {
 }
 
 /**
+ * Whether a keeper call moved its pool on. `pool` is the view read before the call.
+ * - `settle`: the pools contract logged `pool_settled` for the pool.
+ * - `refund`: the call's receipt at the pools contract did not fail, and either the pool had buyers
+ *   left to visit (`refund_cursor < buyer_count`), so the call advanced the cursor, even past buyers
+ *   that had claimed on their own and so logged nothing; or the pools contract logged
+ *   `pool_refunded` for the pool (the dust arrived, or was 0). A call that only retried the dust, and
+ *   whose transfer failed, moved nothing.
+ */
+export function keeperCallProgressed(
+  kind: 'settle' | 'refund',
+  pool: PoolView,
+  outcome: TxOutcome,
+  poolsContract: string,
+): boolean {
+  const logged = (event: QuorumEvent['event']): boolean =>
+    poolsEvents(outcome, poolsContract).some((e) => e.event === event && e.data.pool_id === pool.id);
+  if (kind === 'settle') return logged('pool_settled');
+  const call = outcome.receipts.find((receipt) => receipt.executorId === poolsContract);
+  if (call === undefined || call.failed) return false;
+  return pool.refund_cursor < pool.buyer_count || logged('pool_refunded');
+}
+
+/**
  * The records a keeper call produced, from the pools contract's events:
  * - `settle`: `pool_settled` gives one `settle` record (account = seller, seats = pool.taken).
  * - `refund`: each `seat_refunded` gives a `refund` record (ok), each `refund_failed` a `refund` record
  *   (not ok, seats 0), and `pool_refunded` a `dust` record (account = seller, seats 0).
- * A call that produced none of these gives one record of `kind` with `ok: false`, `amount: "0"`.
+ * A call that produced none of these gives one record of `kind` with `ok: false`, `amount: "0"`,
+ * unless it moved its pool on (keeperCallProgressed), as a refund batch that only passed buyers who
+ * had claimed on their own does: that gives no record.
  */
 export function keeperRecords(
   kind: 'settle' | 'refund',
@@ -7460,7 +8529,8 @@ export function keeperRecords(
       records.push(record('dust', pool.seller, 0, e.data.dust, true));
     }
   }
-  return records.length > 0 ? records : [record(kind, pool.seller, 0, '0', false)];
+  if (records.length > 0 || keeperCallProgressed(kind, pool, outcome, poolsContract)) return records;
+  return [record(kind, pool.seller, 0, '0', false)];
 }
 ```
 
@@ -7468,7 +8538,7 @@ export function keeperRecords(
 
 Run: `pnpm --filter @quorum-on-near/gateway exec vitest run test/guards.test.ts test/pools.test.ts test/activity.test.ts`
 
-Expected: PASS, 38 tests (`test/guards.test.ts` 11, `test/pools.test.ts` 9, `test/activity.test.ts` 18).
+Expected: PASS, 55 tests (`test/guards.test.ts` 15, `test/pools.test.ts` 9, `test/activity.test.ts` 31).
 
 Run: `pnpm --filter @quorum-on-near/gateway typecheck`
 
@@ -7477,7 +8547,8 @@ Expected: no errors.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add apps/gateway/src apps/gateway/test
+git add apps/gateway/src/guards.ts apps/gateway/src/pools.ts apps/gateway/src/activity.ts \
+  apps/gateway/test/guards.test.ts apps/gateway/test/pools.test.ts apps/gateway/test/activity.test.ts
 git commit -m "keep the activity feed, the in-flight guard and the served pools"
 ```
 
@@ -7877,7 +8948,8 @@ Expected: no errors.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add apps/gateway/src apps/gateway/test
+git add apps/gateway/src/reply.ts apps/gateway/src/deps.ts apps/gateway/src/handle-offer.ts \
+  apps/gateway/test/handler-deps.ts apps/gateway/test/handle-offer.test.ts
 git commit -m "answer offer requests with the 402 offer"
 ```
 
@@ -7886,7 +8958,7 @@ git commit -m "answer offer requests with the 402 offer"
 
 ### Task 11: Payments
 
-The payment flow of spec sections 6.3 and 6.4: the static checks, the in-flight guard, checks 4 to 8 on the chain, the relay, then the response table. Nothing is relayed until every check passes. Two checks go beyond the spec's table, as Task 1 recorded in the spec: a nonce at or above the final height × 10^6 (which the chain refuses without using it up, so the same payment could be relayed again and again) is `nonce_too_large`, and a payment from the seller or over the per-buyer cap is refused before the relayer pays gas for a commit the contract would refuse. Once the relay has returned, nothing is answered 503: the payment may have landed, so an unreadable result is 502 `result_unknown` with the transaction hash. A failed write to the activity feed is logged and never changes the reply.
+The payment flow of spec sections 6.3 and 6.4: the static checks, the in-flight guard, checks 4 to 8 on the chain, the relay, then the response table. Nothing is relayed until every check passes. Two checks go beyond the spec's table, as Task 1 recorded in the spec: a nonce at or above the final height × 10^6 (which the chain refuses without using it up, so the same payment could be relayed again and again) is `nonce_too_large`, and a payment from the seller or over the per-buyer cap is refused before the relayer pays gas for a commit the contract would refuse. Once the relay has returned, nothing is answered 503: the payment may have landed, so an unreadable result is 502 `result_unknown` with the transaction hash, and if the payment may still land, the buyer stays held until a final height above its `max_block_height` is seen. A commit that took no seats is judged by the pool's state and the final block's time, never the gateway's clock: `410` past the deadline, `502 relay_failed` if the pool is still open with a seat left (the contract takes what is left, so something else refused it), otherwise `409` (the pool filled first). A failed write to the activity feed is logged and never changes the reply.
 
 **Files:**
 - Create: `apps/gateway/src/handle-payment.ts`
@@ -7908,6 +8980,7 @@ import {
   decodeHeader,
   encodeSignedDelegate,
   maxBlockHeightFor,
+  type ExpectedOffer,
   type Offer,
   type PaymentPayload,
   type PoolView,
@@ -7942,12 +9015,26 @@ const KEY_NONCE = 10n;
 const BALANCE = 1_000_000n;
 const TX_HASH = 'RelayTx111';
 const DEADLINE_MS = 1_800_000_000_000;
+/**
+ * The buyer's own configuration, the network and contracts it pays on, and its request: 2 seats of
+ * pool 7, for at most 1000, more than any payment here (5 seats at 180 is 900).
+ */
+const BUYER_CONFIG: ExpectedOffer = {
+  network: 'near:testnet',
+  token: TOKEN,
+  poolsContract: POOLS,
+  poolId: POOL_ID,
+  maxSeats: 2,
+  maxAmount: 1_000n,
+};
 
 interface PaymentOptions {
+  /** The seats the buyer asks for and its offer is made for; 2 by default. */
   seats?: number;
   nonce?: bigint;
   maxBlockHeight?: bigint;
-  offer?: Partial<Offer>;
+  /** Changes to the pool as the buyer sees it, which its offer is built from. */
+  pool?: Partial<PoolView>;
 }
 
 /**
@@ -7965,13 +9052,14 @@ async function scenario(opts: { pool?: Partial<PoolView>; buyer?: string; config
   fake.balances.set(buyer, BALANCE);
 
   const header = (p: PaymentOptions = {}): Promise<string> => {
-    const offer = buildOffer(currentPool(fake), p.seats ?? 2, offerContext(config));
+    const seats = p.seats ?? 2;
     return buildPaymentHeader({
       keyPair,
       senderId: buyer,
       nonce: p.nonce ?? KEY_NONCE + 1n,
       maxBlockHeight: p.maxBlockHeight ?? maxBlockHeightFor(fake.block.height, config.maxTimeoutSeconds, config.blockTimeMs),
-      offer: { ...offer, ...p.offer },
+      offer: buildOffer({ ...currentPool(fake), ...p.pool }, seats, offerContext(config)),
+      expected: { ...BUYER_CONFIG, maxSeats: seats },
     });
   };
   return { deps, fake, config, buyer, publicKey, header };
@@ -8051,7 +9139,8 @@ describe('handlePayment: requests it cannot check', () => {
 describe('handlePayment: static checks', () => {
   it('answers 402 wrong_amount with the current offer when the amount is not the price of the seats', async () => {
     const s = await scenario();
-    const header = await s.header({ offer: { maxAmountRequired: '359' } });
+    // A buyer that has the seat price as 179 pays 358 for 2 seats; the pool's price is 180.
+    const header = await s.header({ pool: { seat_price: '179' } });
     const result = await handlePayment(s.deps, POOL_ID, '2', header);
     expectRefused(s, result, 'wrong_amount', [offerFor(currentPool(s.fake), 2)]);
   });
@@ -8284,6 +9373,7 @@ describe('handlePayment: gateway checks', () => {
       nonce: 1n,
       maxBlockHeight: s.fake.block.height + 100n,
       offer: offerFor(currentPool(s.fake), 2),
+      expected: BUYER_CONFIG,
     });
     expect((await handlePayment(s.deps, POOL_ID, '2', otherHeader)).status).toBe(202);
 
@@ -8358,45 +9448,62 @@ describe('handlePayment: responses', () => {
     expect(payload).toMatchObject({ pool: POOL_ID, seats: 8, terms: TERMS, simulated: true });
   });
 
-  it('answers 409 no_seats_taken with a fresh offer for the seats left when the commit took no seats', async () => {
-    const s = await scenario();
-    s.fake.onRelay = () => {
-      updatePool(s.fake, { taken: 191 });
-      return NO_SEATS;
-    };
-    const result = await handlePayment(s.deps, POOL_ID, '2', await s.header());
-    expect(result).toEqual({
-      status: 409,
-      body: { x402Version: 1, error: 'no_seats_taken', accepts: [offerFor(currentPool(s.fake), 1)] },
-    });
-  });
+  it.each(['filled', 'settled'] as const)(
+    'answers 409 no_seats_taken with no offer when the pool is %s after a commit that took no seats',
+    async (status) => {
+      const s = await scenario();
+      s.fake.onRelay = () => {
+        updatePool(s.fake, { status, taken: 192 });
+        return NO_SEATS;
+      };
+      const result = await handlePayment(s.deps, POOL_ID, '2', await s.header());
+      expect(result).toEqual({ status: 409, body: { x402Version: 1, error: 'no_seats_taken', accepts: [] } });
+    },
+  );
 
-  it('answers 409 no_seats_taken with no offer when the pool filled before the commit landed', async () => {
+  it("answers 409, not 410, for a pool that filled, even once the final block's time is past its deadline", async () => {
     const s = await scenario();
     s.fake.onRelay = () => {
       updatePool(s.fake, { status: 'filled', taken: 192 });
+      s.fake.block = { ...s.fake.block, timestampMs: DEADLINE_MS + 1 };
       return NO_SEATS;
     };
     const result = await handlePayment(s.deps, POOL_ID, '2', await s.header());
     expect(result).toEqual({ status: 409, body: { x402Version: 1, error: 'no_seats_taken', accepts: [] } });
   });
 
-  it('answers 409 no_seats_taken when the pool is open but past its deadline after a commit that took no seats', async () => {
+  // The contract takes min(seats, target - taken) seats of an open pool, so it took none for another
+  // reason, such as the buyer's limit, and the same payment would be refused again.
+  it.each([
+    ['room for every seat paid for', 148],
+    ['one seat left of the two paid for', 191],
+  ])('answers 502 relay_failed when a commit took no seats while the pool was open with %s', async (_label, taken) => {
     const s = await scenario();
     s.fake.onRelay = () => {
-      updatePool(s.fake, { deadline_ms: NOW_MS });
+      updatePool(s.fake, { taken });
       return NO_SEATS;
     };
     const result = await handlePayment(s.deps, POOL_ID, '2', await s.header());
-    expect(result).toEqual({
-      status: 409,
-      body: { x402Version: 1, error: 'no_seats_taken', accepts: [offerFor(currentPool(s.fake), 2)] },
-    });
+    expect(result).toEqual({ status: 502, body: { error: 'relay_failed', txHash: TX_HASH } });
   });
 
-  it('answers 502 relay_failed when a commit took no seats and the pool still has room for it', async () => {
+  it("answers 410 pool_expired when the final block's time has reached the deadline of a pool the view still shows open", async () => {
     const s = await scenario();
-    s.fake.relayResults.push(NO_SEATS);
+    s.fake.onRelay = () => {
+      s.fake.block = { ...s.fake.block, timestampMs: DEADLINE_MS };
+      return NO_SEATS;
+    };
+    const result = await handlePayment(s.deps, POOL_ID, '2', await s.header());
+    expect(result).toEqual({ status: 410, body: { error: 'pool_expired', poolId: POOL_ID, txHash: TX_HASH } });
+  });
+
+  it("judges the deadline by the final block's time, not the gateway's clock, after a commit that took no seats", async () => {
+    const s = await scenario();
+    s.deps.now = () => DEADLINE_MS + 60_000;
+    s.fake.onRelay = () => {
+      s.fake.block = { ...s.fake.block, timestampMs: DEADLINE_MS - 1 };
+      return NO_SEATS;
+    };
     const result = await handlePayment(s.deps, POOL_ID, '2', await s.header());
     expect(result).toEqual({ status: 502, body: { error: 'relay_failed', txHash: TX_HASH } });
   });
@@ -8442,7 +9549,7 @@ describe('handlePayment: responses', () => {
 
   it('answers 502 result_unknown with the transaction hash when the result is not known in time', async () => {
     const s = await scenario();
-    s.fake.relayResults.push({ kind: 'unknown', txHash: TX_HASH });
+    s.fake.relayResults.push({ kind: 'unknown', txHash: TX_HASH, expired: false });
     const result = await handlePayment(s.deps, POOL_ID, '2', await s.header());
     expect(result).toEqual({ status: 502, body: { error: 'result_unknown', txHash: TX_HASH } });
   });
@@ -8465,6 +9572,16 @@ describe('handlePayment: responses', () => {
     const s = await scenario();
     s.fake.onRelay = () => {
       vi.spyOn(s.fake, 'getPool').mockRejectedValue(new Error('connect ECONNREFUSED'));
+      return NO_SEATS;
+    };
+    const result = await handlePayment(s.deps, POOL_ID, '2', await s.header());
+    expect(result).toEqual({ status: 502, body: { error: 'result_unknown', txHash: TX_HASH } });
+  });
+
+  it('answers 502 result_unknown with the transaction hash when the final block cannot be read after a commit that took no seats', async () => {
+    const s = await scenario();
+    s.fake.onRelay = () => {
+      vi.spyOn(s.fake, 'finalBlock').mockRejectedValue(new Error('connect ECONNREFUSED'));
       return NO_SEATS;
     };
     const result = await handlePayment(s.deps, POOL_ID, '2', await s.header());
@@ -8523,7 +9640,7 @@ describe('handlePayment: activity feed', () => {
 
   it.each<[string, RelayResult]>([
     ['the relay is rejected', { kind: 'rejected', txHash: TX_HASH, error: 'InvalidNonceError' }],
-    ['the result is unknown', { kind: 'unknown', txHash: TX_HASH }],
+    ['the result is unknown', { kind: 'unknown', txHash: TX_HASH, expired: false }],
     ['the delegate action fails', { kind: 'executed', outcome: outcome(TX_HASH, [{ executorId: BUYER, failed: true }]) }],
   ])('records nothing when %s', async (_, relayResult) => {
     const s = await scenario();
@@ -8562,7 +9679,10 @@ describe('handlePayment: in-flight slot', () => {
     ['the commit takes seats', (s) => s.fake.relayResults.push(committed(2, 150))],
     ['the commit takes no seats', (s) => s.fake.relayResults.push(NO_SEATS)],
     ['the relay is rejected', (s) => s.fake.relayResults.push({ kind: 'rejected', txHash: TX_HASH, error: 'x' })],
-    ['the result is unknown', (s) => s.fake.relayResults.push({ kind: 'unknown', txHash: TX_HASH })],
+    [
+      'the result is unknown and the delegate has expired',
+      (s) => s.fake.relayResults.push({ kind: 'unknown', txHash: TX_HASH, expired: true }),
+    ],
     ['a gateway check fails', (s) => s.fake.balances.set(BUYER, 0n)],
     ['a chain read throws', (s) => vi.spyOn(s.fake, 'ftBalanceOf').mockRejectedValue(new Error('rpc down'))],
     [
@@ -8593,6 +9713,75 @@ describe('handlePayment: in-flight slot', () => {
     expect(begin).toHaveBeenCalledWith(BUYER);
     expect(begin).toHaveReturnedWith(true);
     expect(s.deps.inFlight.has(BUYER)).toBe(false);
+  });
+});
+
+describe('handlePayment: a payment whose result is unknown', () => {
+  /** The 402 a payment gets while another from the same buyer is in flight. */
+  function inFlightReply(s: Scenario): Reply {
+    const accepts = [offerFor(currentPool(s.fake), 2)];
+    return { status: 402, body: { x402Version: 1, error: 'payment_in_flight', accepts } };
+  }
+
+  /** Relays a payment whose delegate expires at block 1100 and whose result is unknown. */
+  async function relayUnknown(s: Scenario, expired: boolean): Promise<void> {
+    s.fake.relayResults.push({ kind: 'unknown', txHash: TX_HASH, expired });
+    const result = await handlePayment(s.deps, POOL_ID, '2', await s.header({ maxBlockHeight: 1_100n }));
+    expect(result).toEqual({ status: 502, body: { error: 'result_unknown', txHash: TX_HASH } });
+  }
+
+  it('keeps the buyer in flight when the delegate may still land, so its next payment is refused', async () => {
+    const s = await scenario();
+    await relayUnknown(s, false);
+    const next = await handlePayment(s.deps, POOL_ID, '2', await s.header({ nonce: KEY_NONCE + 2n }));
+    expect(next).toEqual(inFlightReply(s));
+    expect(s.fake.relayed).toHaveLength(1);
+  });
+
+  it("frees the buyer once a final block above the delegate's max_block_height is seen, not at it", async () => {
+    const s = await scenario();
+    await relayUnknown(s, false);
+    s.fake.block = { ...s.fake.block, height: 1_100n };
+    const atHeight = await handlePayment(s.deps, POOL_ID, '2', await s.header({ nonce: KEY_NONCE + 2n }));
+    expect(atHeight).toEqual(inFlightReply(s));
+
+    s.fake.block = { ...s.fake.block, height: 1_101n };
+    s.fake.relayResults.push(committed(2, 150));
+    expect((await handlePayment(s.deps, POOL_ID, '2', await s.header({ nonce: KEY_NONCE + 2n }))).status).toBe(202);
+    expect(s.fake.relayed).toHaveLength(2);
+  });
+
+  it('frees the buyer at once when the delegate can no longer execute', async () => {
+    const s = await scenario();
+    await relayUnknown(s, true);
+    s.fake.relayResults.push(committed(2, 150));
+    expect((await handlePayment(s.deps, POOL_ID, '2', await s.header({ nonce: KEY_NONCE + 2n }))).status).toBe(202);
+  });
+
+  it('answers 503 chain_unavailable, relaying nothing, when the final block cannot be read for a held buyer', async () => {
+    const s = await scenario();
+    await relayUnknown(s, false);
+    vi.spyOn(s.fake, 'finalBlock').mockRejectedValue(new Error('connect ECONNREFUSED'));
+    const next = await handlePayment(s.deps, POOL_ID, '2', await s.header({ nonce: KEY_NONCE + 2n }));
+    expect(next).toEqual({ status: 503, body: { error: 'chain_unavailable' } });
+    expect(s.fake.relayed).toHaveLength(1);
+    expect(s.deps.inFlight.held(BUYER)).toBe(true);
+  });
+
+  it('does not block another buyer while one is held', async () => {
+    const s = await scenario();
+    s.deps.inFlight.hold('other-buyer.testnet', 1_100n);
+    s.fake.relayResults.push(committed(2, 150));
+    expect((await handlePayment(s.deps, POOL_ID, '2', await s.header())).status).toBe(202);
+    expect(s.deps.inFlight.held('other-buyer.testnet')).toBe(true);
+  });
+
+  it("lifts another buyer's hold once a payment's final block is above that delegate's max_block_height", async () => {
+    const s = await scenario();
+    s.deps.inFlight.hold('other-buyer.testnet', 999n);
+    s.fake.relayResults.push(committed(2, 150));
+    await handlePayment(s.deps, POOL_ID, '2', await s.header());
+    expect(s.deps.inFlight.has('other-buyer.testnet')).toBe(false);
   });
 });
 ```
@@ -8642,12 +9831,15 @@ type ChainCheck = { ok: true; held: number } | { ok: false; code: GatewayErrorCo
  * - 402 paymentRequired(current offer, code) for a failed check, a payment already in flight for
  *   the buyer, or a delegate the relayer finds too close to its expiry to send (`expired`). Nothing
  *   is relayed. The `over_buyer_cap` offer is for the seats the buyer may still take, if any.
+ *   A payment whose result is unknown keeps its buyer in flight, while its delegate may still land,
+ *   until a final block above its `max_block_height` is read.
  * - 202 `{status: "pending", receipt, pool}` or, when the commit filled the pool, 200 `{status:
  *   "filled", credential, poolId, seats, terms}`; both carry `X-PAYMENT-RESPONSE`.
- * - When no seats were taken: 410 `{error: "pool_expired", poolId, txHash}` if the pool has expired;
- *   502 `{error: "relay_failed", txHash}` if the transfer never reached the pools contract or the
- *   pool still has room for the payment; otherwise 409 `{x402Version: 1, error: "no_seats_taken",
- *   accepts}`, with a fresh offer if seats are left.
+ * - When no seats were taken: 410 `{error: "pool_expired", poolId, txHash}` if the pool is past its
+ *   deadline (its view says Expired or Refunded, or says Open while the latest final block's time is
+ *   at or past the deadline); 502 `{error: "relay_failed", txHash}` if the transfer never reached the
+ *   pools contract or the pool is still Open with a seat left; otherwise (the pool filled) 409
+ *   `{x402Version: 1, error: "no_seats_taken", accepts: []}`.
  * - 502 `{error: "relay_failed" | "result_unknown", txHash}` when the relay was refused, the delegate
  *   failed, or the result is unknown or cannot be read.
  * - 503 `{error: "chain_unavailable"}` when the chain cannot be read before the relay.
@@ -8691,6 +9883,8 @@ async function checkAndRelay(deps: Deps, poolId: number, seats: number, header: 
   if (!checked.ok) return refuse(checked.code);
   const { payment } = checked;
 
+  // A held buyer is freed once the final height passes its earlier payment's max_block_height.
+  if (inFlight.held(payment.senderId)) inFlight.passed((await chain.finalBlock()).height);
   if (!inFlight.begin(payment.senderId)) return refuse('payment_in_flight');
   try {
     const check = await checkOnChain(deps, pool, payment);
@@ -8719,6 +9913,8 @@ async function checkOnChain(deps: Deps, pool: PoolView, payment: CheckedPayment)
   if (key === null || !key.fullAccess) return refused('not_full_access');
   if (payment.nonce <= key.nonce) return refused('stale_nonce');
   const block = await chain.finalBlock();
+  // Frees every held buyer whose payment can no longer execute, so holds do not pile up.
+  deps.inFlight.passed(block.height);
   if (payment.nonce >= block.height * NONCE_RANGE_MULTIPLIER) return refused('nonce_too_large');
   const maxAhead = BigInt(Math.ceil((config.maxTimeoutSeconds * 1000) / config.blockTimeMs));
   const ahead = payment.maxBlockHeight - block.height;
@@ -8745,7 +9941,11 @@ async function answerRelay(
   result: RelayResult,
 ): Promise<Reply> {
   if (result.kind === 'rejected') return reply(502, { error: 'relay_failed', txHash: result.txHash });
-  if (result.kind === 'unknown') return reply(502, { error: 'result_unknown', txHash: result.txHash });
+  if (result.kind === 'unknown') {
+    // The delegate may still land: the buyer stays in flight until it no longer can.
+    if (!result.expired) deps.inFlight.hold(payment.senderId, payment.maxBlockHeight);
+    return reply(502, { error: 'result_unknown', txHash: result.txHash });
+  }
   try {
     return await answerCommit(deps, pool, payment, held, result.outcome);
   } catch {
@@ -8777,7 +9977,7 @@ async function answerCommit(
     txHash,
     ok: commit.seats > 0,
   });
-  if (commit.seats === 0) return await answerNoSeats(deps, pool.id, payment, outcome);
+  if (commit.seats === 0) return await answerNoSeats(deps, pool.id, outcome);
 
   const response: PaymentResponse = { success: true, transaction: txHash, network: config.network, payer: buyer };
   const headers = { [PAYMENT_RESPONSE_HEADER]: encodeHeader(response) };
@@ -8798,28 +9998,33 @@ async function answerCommit(
 }
 
 /**
- * A commit that took no seats, so the token has returned the payment. Offering again helps only
- * when the payment lost a race for the pool's last seats.
+ * A commit that took no seats, so the token has returned the payment. The contract takes
+ * `min(seats, target − taken)` seats of an Open pool before its deadline, so a payment lost a race
+ * only if the pool filled or expired before it landed.
  */
-async function answerNoSeats(deps: Deps, poolId: number, payment: CheckedPayment, outcome: TxOutcome): Promise<Reply> {
-  const { config } = deps;
+async function answerNoSeats(deps: Deps, poolId: number, outcome: TxOutcome): Promise<Reply> {
   const { txHash } = outcome;
   const latest = await deps.chain.getPool(poolId);
-  if (latest?.status === 'expired' || latest?.status === 'refunded') {
+  if (latest !== null && (await pastDeadline(deps, latest))) {
     return reply(410, { error: 'pool_expired', poolId, txHash });
   }
-  const reachedPools = outcome.receipts.some((receipt) => receipt.executorId === config.poolsContract);
-  const roomLeft =
-    latest !== null &&
-    latest.status === 'open' &&
-    deps.now() < latest.deadline_ms &&
-    latest.target - latest.taken >= payment.seats;
-  if (!reachedPools || roomLeft) {
-    // The refusal had another cause, so the same payment would be refused again.
+  const reachedPools = outcome.receipts.some((receipt) => receipt.executorId === deps.config.poolsContract);
+  const seatLeft = latest?.status === 'open' && latest.taken < latest.target;
+  if (!reachedPools || seatLeft) {
+    // The refusal had another cause, such as the buyer's limit, so the same payment would be refused again.
     return reply(502, { error: 'relay_failed', txHash });
   }
-  const accepts = latest === null ? [] : currentAccepts(latest, payment.seats, config);
-  return reply(409, paymentRequired(accepts, 'no_seats_taken'));
+  // The pool filled before the payment landed, so there is nothing left to offer.
+  return reply(409, paymentRequired([], 'no_seats_taken'));
+}
+
+/**
+ * Whether a pool is past its deadline: its view says Expired or Refunded, or says Open while the
+ * latest final block's time is at or past the deadline. A Filled or Settled pool never is.
+ */
+async function pastDeadline(deps: Deps, pool: PoolView): Promise<boolean> {
+  if (pool.status === 'expired' || pool.status === 'refunded') return true;
+  return pool.status === 'open' && (await deps.chain.finalBlock()).timestampMs >= pool.deadline_ms;
 }
 
 /** Appends to the activity feed, logging a failure: the feed never changes a reply. */
@@ -8836,7 +10041,7 @@ async function appendActivity(deps: Deps, record: ActivityRecord): Promise<void>
 
 Run: `pnpm --filter @quorum-on-near/gateway exec vitest run test/handle-payment.test.ts`
 
-Expected: PASS, 70 tests (`test/handle-payment.test.ts` 70).
+Expected: PASS, 80 tests (`test/handle-payment.test.ts` 80).
 
 Run: `pnpm --filter @quorum-on-near/gateway typecheck`
 
@@ -9256,14 +10461,14 @@ git commit -m "redeem NEP-413 proofs for credentials and refund status"
 
 ### Task 13: The keeper
 
-Every 5 seconds the keeper calls `settle` on each served Filled pool and `refund(pool_id, limit)` on each served Expired pool, unless that pool's dust transfer is already in flight (spec section 6.7). Ticks never overlap. A pool whose call makes no progress backs off (30 s, doubling, up to 10 minutes), and only the first failure of such a streak goes to the activity feed.
+Every 5 seconds the keeper calls `settle` on each served Filled pool and `refund(pool_id, limit)` on each served Expired pool, unless that pool's dust transfer is already in flight (spec section 6.7). Ticks never overlap. A pool whose call makes no progress backs off (30 s, doubling, up to 10 minutes), and only the first failure of such a streak goes to the activity feed. A `settle` progresses when the pool settles; a `refund` when its pools receipt succeeds and the pool had buyers left to visit (even if they had all claimed their own refunds and nothing was logged), or when the dust arrives.
 
 **Files:**
 - Create: `apps/gateway/src/keeper.ts`
 - Test: `apps/gateway/test/keeper.test.ts`
 
 **Interfaces:**
-- Consumes: `ChainReader`, `ChainWriter` (Task 7); `ActivityLog`, `keeperRecords`, `listServedPools` (Task 9).
+- Consumes: `ChainReader`, `ChainWriter` (Task 7); `ActivityLog`, `keeperCallProgressed`, `keeperRecords`, `listServedPools` (Task 9).
 - Produces: `interface KeeperOptions {chain, writer, activity, provider, poolsContract, refundLimit, settleGas, refundGas, now, log?}`, `class Keeper {tick(): Promise<void>; start(intervalMs): void; stop(): Promise<void>}`.
 
 - [ ] **Step 1: Write the failing test**
@@ -9298,7 +10503,7 @@ function settled(poolId: number, txHash = 'SettleTx'): RelayResult {
   };
 }
 
-/** An executed call whose receipt at the pools contract failed, so its only record has `ok: false`. */
+/** An executed call whose receipt at the pools contract failed: it made no progress. */
 function failed(txHash = 'FailedTx'): RelayResult {
   return { kind: 'executed', outcome: outcome(txHash, [{ executorId: POOLS, failed: true }]) };
 }
@@ -9474,7 +10679,7 @@ describe('Keeper.tick', () => {
 
   it('logs a call whose result is unknown and appends nothing', async () => {
     fake.setPool(poolView({ status: 'expired' }));
-    fake.callResults.push({ kind: 'unknown', txHash: 'UnknownTx' });
+    fake.callResults.push({ kind: 'unknown', txHash: 'UnknownTx', expired: false });
     await keeper.tick();
     expect(activity.list()).toEqual([]);
     expect(messages).toEqual([expect.stringMatching(/refund.*pool 7.*UnknownTx/)]);
@@ -9539,7 +10744,7 @@ describe('Keeper.tick', () => {
 });
 
 describe('Keeper backoff', () => {
-  it('skips a pool whose call produced only failed records until 30 s have passed', async () => {
+  it('skips a filled pool whose settle call failed at the pools contract until 30 s have passed', async () => {
     fake.setPool(poolView({ status: 'filled' }));
     fake.onCall = () => failed();
     await keeper.tick();
@@ -9555,15 +10760,58 @@ describe('Keeper backoff', () => {
 
   it.each<[string, RelayResult]>([
     ['was rejected', { kind: 'rejected', txHash: 'RejectedTx', error: 'invalid nonce' }],
-    ['has an unknown result', { kind: 'unknown', txHash: 'UnknownTx' }],
-  ])('skips a pool whose call %s until 30 s have passed', async (_name, result) => {
+    ['has an unknown result', { kind: 'unknown', txHash: 'UnknownTx', expired: false }],
+    ['failed at the pools contract', failed()],
+  ])('skips an expired pool whose refund call %s until 30 s have passed', async (_name, result) => {
     fake.setPool(poolView({ status: 'expired' }));
     fake.onCall = () => result;
     await keeper.tick();
     await expectWait(30_000);
   });
 
-  it('starts again from 30 s after a call that produced a successful record', async () => {
+  it('does not back off from a refund batch that only passed buyers who had claimed their own refunds, and appends nothing', async () => {
+    fake.setPool(poolView({ status: 'expired', buyer_count: 10, refund_cursor: 0 }));
+    fake.onCall = () => ({ kind: 'executed', outcome: outcome('SkippedTx', [{ executorId: POOLS }]) });
+    await keeper.tick();
+    await keeper.tick();
+    expect(fake.calls).toHaveLength(2);
+    expect(activity.list()).toEqual([]);
+    expect(messages).toEqual([]);
+  });
+
+  it('does not back off from a refund batch whose every push failed, and appends their failed records', async () => {
+    fake.setPool(poolView({ status: 'expired', buyer_count: 10, refund_cursor: 0 }));
+    fake.onCall = () => ({
+      kind: 'executed',
+      outcome: outcome('PushesFailedTx', [
+        { executorId: POOLS },
+        { executorId: TOKEN, failed: true },
+        { executorId: POOLS, events: [{ event: 'refund_failed', data: { pool_id: 7, buyer: ALICE, amount: '360' } }] },
+      ]),
+    });
+    await keeper.tick();
+    await keeper.tick();
+    expect(fake.calls).toHaveLength(2);
+    expect(activity.list()).toEqual(
+      Array(2).fill({ at: NOW_MS, poolId: 7, kind: 'refund', account: ALICE, seats: 0, amount: '360', txHash: 'PushesFailedTx', ok: false }),
+    );
+  });
+
+  it('backs off from a refund call that only retried the dust, whose transfer failed', async () => {
+    fake.setPool(poolView({ status: 'expired', buyer_count: 10, refund_cursor: 10, dust_sent: false }));
+    fake.onCall = () => ({
+      kind: 'executed',
+      outcome: outcome('DustTx', [{ executorId: POOLS }, { executorId: TOKEN, failed: true }, { executorId: POOLS }]),
+    });
+    await keeper.tick();
+    await expectWait(30_000);
+    expect(activity.list()).toEqual([
+      { at: NOW_MS, poolId: 7, kind: 'refund', account: PROVIDER, seats: 0, amount: '0', txHash: 'DustTx', ok: false },
+    ]);
+    expect(messages[0]).toMatch(/refund on pool 7 made no progress \(transaction DustTx\); next try in 30 s/);
+  });
+
+  it('starts again from 30 s after a call that made progress', async () => {
     fake.setPool(poolView({ status: 'filled', taken: 192 }));
     fake.callResults.push(failed(), failed(), settled(7));
     fake.onCall = () => failed();
@@ -9575,7 +10823,7 @@ describe('Keeper backoff', () => {
     await expectWait(30_000);
   });
 
-  it('counts a call with a successful record among failed ones as a success', async () => {
+  it('counts a refund batch that refunded one buyer and failed to refund another as progress', async () => {
     fake.setPool(poolView({ status: 'expired' }));
     fake.onCall = (_method, args) => partlyRefunded(args.pool_id as number);
     await keeper.tick();
@@ -9766,7 +11014,7 @@ Expected: FAIL. vitest cannot load `../src/keeper.ts`, which does not exist yet.
 
 ```typescript
 import type { PoolView } from '@quorum-on-near/protocol';
-import { keeperRecords, type ActivityLog, type ActivityRecord } from './activity.ts';
+import { keeperCallProgressed, keeperRecords, type ActivityLog, type ActivityRecord } from './activity.ts';
 import type { ChainReader, ChainWriter, RelayResult } from './chain.ts';
 import { listServedPools } from './pools.ts';
 
@@ -9806,11 +11054,11 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** Why a call produced no successful record, for the log. */
+/** Why a call made no progress, for the log. */
 function failureText(result: RelayResult): string {
   switch (result.kind) {
     case 'executed':
-      return `produced no successful record (transaction ${result.outcome.txHash})`;
+      return `made no progress (transaction ${result.outcome.txHash})`;
     case 'unknown':
       return `has an unknown result (transaction ${result.txHash})`;
     case 'rejected':
@@ -9823,10 +11071,11 @@ function failureText(result: RelayResult): string {
  * Expired pool whose dust is not in flight (spec section 6.7), and records each call in the activity
  * feed. Anyone may call these methods, so the keeper is a convenience.
  *
- * A call that produces no successful record (an executed call whose records all have `ok: false`,
- * or a rejected or unknown result) starts a backoff for its pool: the pool is skipped for 30 s, twice
- * as long after each further failure in a row, at most 10 minutes. A call with a successful record
- * ends the run. Only the first failure of a run goes to the feed; every failure is logged.
+ * A call that makes no progress (an executed call that did not move its pool on, by
+ * keeperCallProgressed, or a rejected or unknown result) starts a backoff for its pool: the pool is
+ * skipped for 30 s, twice as long after each further failure in a row, at most 10 minutes. A call
+ * that makes progress ends the run. Only the first failure of a run goes to the feed; every failure
+ * is logged.
  */
 export class Keeper {
   readonly #chain: ChainReader;
@@ -9932,9 +11181,9 @@ export class Keeper {
   async #run(pool: PoolView, call: KeeperCall): Promise<void> {
     const result = await this.#writer.callPools(call.method, call.args, call.gas);
     const nowMs = this.#now();
-    const records =
-      result.kind === 'executed' ? keeperRecords(call.method, pool, result.outcome, this.#poolsContract, nowMs) : [];
-    if (records.some((record) => record.ok)) {
+    const outcome = result.kind === 'executed' ? result.outcome : null;
+    const records = outcome === null ? [] : keeperRecords(call.method, pool, outcome, this.#poolsContract, nowMs);
+    if (outcome !== null && keeperCallProgressed(call.method, pool, outcome, this.#poolsContract)) {
       this.#backoff.delete(pool.id);
       await this.#append(records);
       return;
@@ -9971,7 +11220,7 @@ export class Keeper {
 
 Run: `pnpm --filter @quorum-on-near/gateway exec vitest run test/keeper.test.ts`
 
-Expected: PASS, 39 tests (`test/keeper.test.ts` 39).
+Expected: PASS, 43 tests (`test/keeper.test.ts` 43).
 
 Run: `pnpm --filter @quorum-on-near/gateway typecheck`
 
@@ -9989,7 +11238,7 @@ git commit -m "settle and refund served pools from the keeper"
 
 ### Task 14: The app and the process
 
-The routes of spec section 6.1, plus `GET /config.json` for the live page. `POST /rpc` exists only when the pass-through is on, and forwards only `call_function` queries on the pools contract and the token. The live page's folder is served at `/` when it exists; the live page itself comes from a later plan. `main.ts` wires the real chain, relayer, credentials, feed, app and keeper, and refuses to start unless the pools contract was initialised with the configured token.
+The routes of spec section 6.1, plus `GET /config.json` for the live page. `POST /rpc` exists only when the pass-through is on, and forwards only `call_function` queries on the pools contract and the token, with a 16 KiB body limit. The live page's folder is served at `/` when it exists, never a path with a segment that starts with a dot; the live page itself comes from a later plan. `main.ts` wires the real chain, relayer, credentials, feed, app and keeper, and refuses to start unless the RPC serves the configured network's chain and the pools contract was initialised with the configured token.
 
 **Files:**
 - Create: `apps/gateway/src/app.ts`, `apps/gateway/src/main.ts`
@@ -10004,9 +11253,9 @@ The routes of spec section 6.1, plus `GET /config.json` for the live page. `POST
 `apps/gateway/test/app.test.ts`:
 
 ```typescript
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import {
   PAYMENT_HEADER,
   PAYMENT_RESPONSE_HEADER,
@@ -10017,6 +11266,7 @@ import {
   decodeHeader,
   maxBlockHeightFor,
   paymentRequired,
+  type ExpectedOffer,
 } from '@quorum-on-near/protocol';
 import { KeyPair } from 'near-api-js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -10032,6 +11282,18 @@ const BUYER = 'buyer.testnet';
 const POOL_ID = 7;
 const TX_HASH = 'RelayTx111';
 const DEADLINE_MS = 1_800_000_000_000;
+/**
+ * The buyer's own configuration, the network and contracts it pays on, and its request: 2 seats of
+ * pool 7, for at most their price at 180.
+ */
+const BUYER_CONFIG: ExpectedOffer = {
+  network: 'near:testnet',
+  token: TOKEN,
+  poolsContract: POOLS,
+  poolId: POOL_ID,
+  maxSeats: 2,
+  maxAmount: 360n,
+};
 
 /** Deps over a FakeChain holding pool 7, and the app over them. */
 async function setup(config: Partial<GatewayConfig> = {}, options: { fetch?: typeof fetch } = {}) {
@@ -10058,6 +11320,7 @@ function payment(deps: Deps & { fake: FakeChain }, keyPair: KeyPair): Promise<st
     nonce: 11n,
     maxBlockHeight: maxBlockHeightFor(fake.block.height, config.maxTimeoutSeconds, config.blockTimeMs),
     offer: buildOffer(poolView({ id: POOL_ID }), 2, offerContext(config)),
+    expected: BUYER_CONFIG,
   });
 }
 
@@ -10132,10 +11395,13 @@ function postRpc(app: Awaited<ReturnType<typeof setup>>['app'], body: unknown): 
   });
 }
 
-/** A temporary folder holding the live page's files. */
+/** A temporary folder holding the live page's files, by path within it. */
 async function webFolder(files: Record<string, string>): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'quorum-web-'));
-  for (const [name, text] of Object.entries(files)) await writeFile(join(dir, name), text);
+  for (const [name, text] of Object.entries(files)) {
+    await mkdir(dirname(join(dir, name)), { recursive: true });
+    await writeFile(join(dir, name), text);
+  }
   return dir;
 }
 
@@ -10413,6 +11679,93 @@ describe('createApp', () => {
     });
   });
 
+  describe('POST /rpc limits', () => {
+    const MAX_BODY = 16 * 1024;
+
+    /** A view call on the pools contract, padded with spaces to `size` bytes of JSON. */
+    function padded(size: number): string {
+      const json = JSON.stringify(viewCall());
+      return json + ' '.repeat(size - json.length);
+    }
+
+    it('reads a body of exactly 16 KiB', async () => {
+      const { app } = await passthrough(upstream());
+      expect(await answer(postRpc(app, padded(MAX_BODY)))).toEqual({ status: 200, body: RPC_RESULT });
+    });
+
+    it('answers 413 body_too_large for a longer body, and forwards nothing', async () => {
+      const fetch = upstream();
+      const { app } = await passthrough(fetch);
+      expect(await answer(postRpc(app, padded(MAX_BODY + 1)))).toEqual({ status: 413, body: { error: 'body_too_large' } });
+      expect(fetch).not.toHaveBeenCalled();
+    });
+
+    it('answers 413 body_too_large for a longer declared Content-Length', async () => {
+      const fetch = upstream();
+      const { app } = await passthrough(fetch);
+      const body = padded(MAX_BODY + 1);
+      const res = app.request('/rpc', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': String(body.length) },
+        body,
+      });
+      expect(await answer(res)).toEqual({ status: 413, body: { error: 'body_too_large' } });
+      expect(fetch).not.toHaveBeenCalled();
+    });
+
+    it('forwards the largest arguments a view of either contract takes', async () => {
+      // get_buyer with the largest u64 pool id and a 64-character account id: 112 bytes of JSON.
+      const args = `{"pool_id":18446744073709551615,"account_id":"${'a'.repeat(64)}"}`;
+      const call = viewCall({}, { method_name: 'get_buyer', args_base64: Buffer.from(args).toString('base64') });
+      const { app } = await passthrough(upstream());
+      expect(await answer(postRpc(app, call))).toEqual({ status: 200, body: RPC_RESULT });
+    });
+
+    it('forwards args_base64 of 1024 characters', async () => {
+      const { app } = await passthrough(upstream());
+      const call = viewCall({}, { args_base64: 'A'.repeat(1024) });
+      expect(await answer(postRpc(app, call))).toEqual({ status: 200, body: RPC_RESULT });
+    });
+
+    it('answers 403 not_allowed for longer args_base64', async () => {
+      const fetch = upstream();
+      const { app } = await passthrough(fetch);
+      const call = viewCall({}, { args_base64: 'A'.repeat(1028) });
+      expect(await answer(postRpc(app, call))).toEqual({ status: 403, body: { error: 'not_allowed' } });
+      expect(fetch).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('static files whose names start with a dot', () => {
+    const FILES = {
+      'index.html': INDEX_HTML,
+      '.env': 'QUORUM_PARENT_ACCOUNT=parent.testnet\n',
+      '.git/config': '[core]\n',
+      'sub/.hidden': 'hidden\n',
+      'sub/page.js': APP_JS,
+      '.well-known/other.json': '{}',
+    };
+
+    it.each(['/.env', '/%2Eenv', '/.git/config', '/sub/.hidden', '/.well-known/other.json'])(
+      'answers 404 not_found for %s, which the folder holds',
+      async (path) => {
+        const { app } = await setup({ webDir: await webFolder(FILES) });
+        expect(await answer(app.request(path))).toEqual({ status: 404, body: { error: 'not_found' } });
+      },
+    );
+
+    it('still serves the other files, in subfolders too', async () => {
+      const { app } = await setup({ webDir: await webFolder(FILES) });
+      const res = await app.request('/sub/page.js');
+      expect({ status: res.status, text: await res.text() }).toEqual({ status: 200, text: APP_JS });
+    });
+
+    it('still answers /.well-known/jwks.json', async () => {
+      const { deps, app } = await setup({ webDir: await webFolder(FILES) });
+      expect(await answer(app.request('/.well-known/jwks.json'))).toEqual({ status: 200, body: deps.credentials.jwks() });
+    });
+  });
+
   describe('errors', () => {
     it('answers 404 not_found for an unknown route', async () => {
       const { app } = await setup();
@@ -10446,6 +11799,7 @@ Expected: FAIL. vitest cannot load `../src/app.ts`, which does not exist yet.
 import { serveStatic } from '@hono/node-server/serve-static';
 import { PAYMENT_HEADER, PROOF_HEADER } from '@quorum-on-near/protocol';
 import { Hono, type Context } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import type { Deps } from './deps.ts';
 import { handleOffer } from './handle-offer.ts';
@@ -10455,6 +11809,15 @@ import { openPoolListings } from './pools.ts';
 import type { Reply } from './reply.ts';
 
 const POOL_ID = /^(0|[1-9][0-9]*)$/;
+/** The largest `POST /rpc` body read; a longer one is answered 413. */
+const MAX_RPC_BODY_BYTES = 16 * 1024;
+/**
+ * The longest `args_base64` forwarded. The largest arguments a view of either contract takes,
+ * `get_buyer`'s u64 pool id and 64-character account id, are 152 characters of base64.
+ */
+const MAX_ARGS_BASE64 = 1024;
+/** A path with a segment that starts with a dot, such as `/.env` or `/.git/config`. */
+const DOT_SEGMENT = /\/\./;
 
 /** A pool id as a URL writes it: decimal, no sign, no leading zero. Null otherwise. */
 function parsePoolId(param: string): number | null {
@@ -10476,7 +11839,8 @@ function hasExactKeys(value: Fields, keys: string[]): boolean {
 
 /**
  * Whether `body` is a JSON-RPC 2.0 `query` of `request_type: "call_function"` on one of `accounts`,
- * at a `finality` or a `block_id`, with no other field at either level.
+ * at a `finality` or a `block_id`, with no other field at either level, and `args_base64` of at
+ * most MAX_ARGS_BASE64 characters.
  */
 function isAllowedViewCall(body: unknown, accounts: string[]): boolean {
   if (!isFields(body) || !hasExactKeys(body, ['jsonrpc', 'id', 'method', 'params'])) return false;
@@ -10494,7 +11858,8 @@ function isAllowedViewCall(body: unknown, accounts: string[]): boolean {
     typeof params.account_id === 'string' &&
     accounts.includes(params.account_id) &&
     typeof params.method_name === 'string' &&
-    typeof params.args_base64 === 'string'
+    typeof params.args_base64 === 'string' &&
+    params.args_base64.length <= MAX_ARGS_BASE64
   );
 }
 
@@ -10509,8 +11874,9 @@ function send(c: Context, r: Reply): Response {
  * - `GET /activity?pool=:id`
  * - `GET /.well-known/jwks.json`
  * - `GET /config.json`
- * - `POST /rpc` (only when `config.rpcPassthrough`)
- * - the live page's static files at `/` (only when `config.webDir` is set)
+ * - `POST /rpc` (only when `config.rpcPassthrough`), with a body of at most 16 KiB
+ * - the live page's static files at `/` (only when `config.webDir` is set), except any whose path has
+ *   a segment that starts with a dot
  *
  * Every answer is JSON except the static files. `options.fetch` replaces the global fetch for the
  * RPC pass-through.
@@ -10564,7 +11930,8 @@ export function createApp(deps: Deps, options: { fetch?: typeof fetch } = {}): H
   if (config.rpcPassthrough) {
     const forward = options.fetch ?? fetch;
     const accounts = [config.poolsContract, config.token];
-    app.post('/rpc', async (c) => {
+    const limit = bodyLimit({ maxSize: MAX_RPC_BODY_BYTES, onError: (c) => c.json({ error: 'body_too_large' }, 413) });
+    app.post('/rpc', limit, async (c) => {
       let body: unknown;
       try {
         body = await c.req.json();
@@ -10587,7 +11954,11 @@ export function createApp(deps: Deps, options: { fetch?: typeof fetch } = {}): H
   }
 
   // After the routes, so a file never shadows one. A relative root resolves against the current folder.
-  if (config.webDir !== null) app.use('*', serveStatic({ root: config.webDir }));
+  // Nothing whose name starts with a dot is served, such as a .env file that holds keys.
+  if (config.webDir !== null) {
+    const files = serveStatic({ root: config.webDir });
+    app.use('*', (c, next) => (DOT_SEGMENT.test(c.req.path) ? next() : files(c, next)));
+  }
 
   app.notFound((c) => c.json({ error: 'not_found' }, 404));
   app.onError((error, c) => {
@@ -10609,7 +11980,7 @@ import { REDEEM_MAX_AGE_MS, REDEEM_MAX_SKEW_MS } from '@quorum-on-near/protocol'
 import { JsonRpcProvider, KeyPair, type KeyPairString } from 'near-api-js';
 import { ActivityLog } from './activity.ts';
 import { createApp } from './app.ts';
-import { ConfigError, loadConfig, type GatewayConfig } from './config.ts';
+import { checkChainId, ConfigError, loadConfig, type GatewayConfig } from './config.ts';
 import { createCredentialIssuer } from './credential.ts';
 import type { Deps } from './deps.ts';
 import { InFlight, NonceCache } from './guards.ts';
@@ -10646,11 +12017,18 @@ function liveFolder(webDir: string | null): string | null {
 
 const config = readConfig();
 // Views change nothing, so they keep near-api-js's default retries.
-const chain = new RpcChain({
-  provider: new JsonRpcProvider({ url: config.rpcUrl }),
-  poolsContract: config.poolsContract,
-  token: config.token,
-});
+const viewProvider = new JsonRpcProvider({ url: config.rpcUrl });
+const chain = new RpcChain({ provider: viewProvider, poolsContract: config.poolsContract, token: config.token });
+
+// QUORUM_NETWORK only labels offers: the RPC decides which chain the gateway pays on.
+let chainId: string;
+try {
+  chainId = (await viewProvider.viewNodeStatus()).chain_id;
+} catch (error) {
+  fail(`cannot read the chain id from ${config.rpcUrl}: ${errorMessage(error)}`);
+}
+const wrongChain = checkChainId(config.network, chainId);
+if (wrongChain !== null) fail(wrongChain);
 
 let token: string;
 try {
@@ -10723,7 +12101,7 @@ process.on('SIGTERM', shutdown);
 
 Run: `pnpm --filter @quorum-on-near/gateway exec vitest run test/app.test.ts`
 
-Expected: PASS, 45 tests (`test/app.test.ts` 45).
+Expected: PASS, 58 tests (`test/app.test.ts` 58).
 
 Run: `pnpm --filter @quorum-on-near/gateway typecheck`
 
@@ -10772,9 +12150,10 @@ needs glibc 2.38 or later, so Ubuntu 24.04 or later (`ldd --version` prints the 
 `near-sandbox` ships no Windows binary, so on Windows the suite reports itself skipped.
 
 The test drives the gateway's real `RpcChain`, `RpcRelayer` and HTTP app against a sandbox with the
-contracts deployed. It records three facts the stubbed tests cannot: which account is debited the
-1 yoctoNEAR deposit of a relayed payment (spec section 11), the gas a commit burns (for `minGas`
-and `maxGas`, spec section 6.2), and the shape of a real relayed outcome.
+contracts deployed. It records what the stubbed tests cannot: which account is debited the
+1 yoctoNEAR deposit of a relayed payment (spec section 11), the gas a commit burns and that a commit
+paid at `minGas` completes (spec section 6.2), the shape of a real relayed outcome, and a redemption
+and a startup chain check against a real chain.
 
 **Files:**
 - Create: `apps/gateway/test/sandbox/world.ts`, `apps/gateway/test/sandbox/relayed-commit.test.ts`,
@@ -10782,11 +12161,14 @@ and `maxGas`, spec section 6.2), and the shape of a real relayed outcome.
 
 **Interfaces:**
 - Consumes: `RpcChain` (Task 7), `KeyPool`, `RpcRelayer` (Task 8), `ActivityLog`, `InFlight`,
-  `NonceCache` (Task 9), `createCredentialIssuer` (Task 6), `createApp` (Task 14), `Keeper`
-  (Task 13), `toTxOutcome`, `readCommit` (Task 7); `buildPaymentHeader`, `maxBlockHeightFor` from
-  the protocol package; the contracts' wasm files.
-- Produces: `startWorld(wasm)`, `wasmFromEnv()`, `nearBalance(world, accountId)`,
-  `finalOutcome(world, txHash, signerId)` (test support); the captured fixture.
+  `NonceCache` (Task 9), `createCredentialIssuer`, `checkChainId` (Task 6), `createApp` (Task 14),
+  `Keeper` (Task 13), `toTxOutcome`, `readCommit` (Task 7); `buildPaymentHeader` (with the buyer's
+  `expected`), `buildRedeemProofHeader`, `maxBlockHeightFor`, `decodeHeader`, `PROOF_HEADER`,
+  `PAYMENT_RESPONSE_HEADER`, `type PaymentResponse` from the protocol package; the contracts' wasm
+  files.
+- Produces: `startWorld(wasm)`, `wasmFromEnv(): WasmFiles` (throws when either wasm variable is
+  unset), `nearBalance(world, accountId)`, `finalOutcome(world, txHash, signerId)` (test support);
+  the captured fixture.
 
 - [ ] **Step 1: Bring the branch up to date with `main`**
 
@@ -10866,10 +12248,15 @@ const MINTED = 1_000_000n;
 const INIT_GAS = teraToGas(30);
 const TOKEN_CALL_GAS = teraToGas(20);
 
-/** The wasm files named by QUORUM_POOLS_WASM and QUORUM_MOCK_USD_WASM, or null unless both are set. */
-export function wasmFromEnv(): WasmFiles | null {
+/** The wasm files named by QUORUM_POOLS_WASM and QUORUM_MOCK_USD_WASM. Throws, naming both, unless both are set. */
+export function wasmFromEnv(): WasmFiles {
   const { QUORUM_POOLS_WASM: pools, QUORUM_MOCK_USD_WASM: mockUsd } = process.env;
-  return pools && mockUsd ? { pools, mockUsd } : null;
+  if (!pools || !mockUsd) {
+    throw new Error(
+      'set QUORUM_POOLS_WASM and QUORUM_MOCK_USD_WASM to the absolute paths of the pools and mock-usd wasm files that `cargo near build` writes',
+    );
+  }
+  return { pools, mockUsd };
 }
 
 /**
@@ -10978,21 +12365,29 @@ async function deploy(contract: Actor, wasmFile: string, args: Record<string, un
 
 ```typescript
 // The gateway against a local sandbox running the real contracts: an offer, two relayed payments
-// that fill a pool, and the keeper's settlement. Needs Linux or macOS (near-sandbox ships no Windows
-// binary) and the wasm files from `cargo near build`, named by QUORUM_POOLS_WASM and
-// QUORUM_MOCK_USD_WASM; skipped otherwise. With QUORUM_CAPTURE_FIXTURE=1 it also writes the relayed
-// commit's raw outcome to test/fixtures/relayed-commit.json.
+// that fill a pool (the second paid at the offer's minGas), a redemption, and the keeper's
+// settlement. Needs Linux or macOS (near-sandbox ships no Windows binary, so on Windows the suite is
+// skipped) and the wasm files from `cargo near build`, named by QUORUM_POOLS_WASM and
+// QUORUM_MOCK_USD_WASM; without them the suite fails. The first run downloads the sandbox binary;
+// `pnpm --filter @quorum-on-near/gateway exec near-sandbox --version` fetches it ahead. With
+// QUORUM_CAPTURE_FIXTURE=1 it also writes the relayed commit's raw outcome to
+// test/fixtures/relayed-commit.json.
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   PAYMENT_HEADER,
+  PAYMENT_RESPONSE_HEADER,
+  PROOF_HEADER,
   REDEEM_MAX_AGE_MS,
   REDEEM_MAX_SKEW_MS,
   buildPaymentHeader,
+  buildRedeemProofHeader,
+  decodeHeader,
   maxBlockHeightFor,
   type Offer,
   type PaymentRequired,
+  type PaymentResponse,
 } from '@quorum-on-near/protocol';
 import { createLocalJWKSet, jwtVerify } from 'jose';
 import { JsonRpcProvider, KeyPair, teraToGas, type KeyPairString } from 'near-api-js';
@@ -11001,7 +12396,7 @@ import { afterAll, assert, beforeAll, describe, expect, it } from 'vitest';
 import { ActivityLog } from '../../src/activity.ts';
 import { createApp } from '../../src/app.ts';
 import type { TxOutcome } from '../../src/chain.ts';
-import { loadConfig } from '../../src/config.ts';
+import { checkChainId, loadConfig } from '../../src/config.ts';
 import { createCredentialIssuer, generateCredentialJwk } from '../../src/credential.ts';
 import type { Deps } from '../../src/deps.ts';
 import { InFlight, NonceCache } from '../../src/guards.ts';
@@ -11012,6 +12407,8 @@ import { RpcChain } from '../../src/rpc-chain.ts';
 import { finalOutcome, nearBalance, startWorld, wasmFromEnv, type Actor, type World } from './world.ts';
 
 const TIMEOUT_MS = 180_000;
+/** The setup's limit: the first run downloads the sandbox binary. */
+const SETUP_TIMEOUT_MS = 900_000;
 const FIXTURE = new URL('../fixtures/relayed-commit.json', import.meta.url);
 
 // The seller's pool is the contract's first, so its id is 0.
@@ -11095,10 +12492,8 @@ function tgas(gas: bigint): string {
   return (Number(gas) / 1e12).toFixed(2);
 }
 
-// near-sandbox ships no Windows binary, and the wasm files come from `cargo near build`.
-const wasm = process.platform === 'win32' ? null : wasmFromEnv();
-
-describe.skipIf(wasm === null)('the gateway against the sandbox', { timeout: TIMEOUT_MS }, () => {
+// near-sandbox ships no Windows binary.
+describe.skipIf(process.platform === 'win32')('the gateway against the sandbox', { timeout: TIMEOUT_MS }, () => {
   // Set by beforeAll; afterAll may find them unset if the setup failed.
   let world: World;
   let dataDir: string;
@@ -11121,8 +12516,13 @@ describe.skipIf(wasm === null)('the gateway against the sandbox', { timeout: TIM
     return offer;
   };
 
-  /** The buyer's payment for `offer`: its key's next nonce, and the expiry maxBlockHeightFor gives from the final height. */
-  const paymentFrom = async (buyer: Actor, offer: Offer): Promise<string> => {
+  /**
+   * The buyer's payment for `offer`, which answers its request for `seats` seats: its key's next
+   * nonce, the expiry maxBlockHeightFor gives from the final height, the sandbox's network and
+   * contracts as the buyer's own configuration, and the price of `seats` at SEAT_PRICE as its budget.
+   * The ft_transfer_call gets `gas`, or the offer's maxGas when it is omitted.
+   */
+  const paymentFrom = async (buyer: Actor, seats: number, offer: Offer, gas?: bigint): Promise<string> => {
     const { chain, config } = deps;
     const key = await chain.accessKey(buyer.id, buyer.keyPair.getPublicKey().toString());
     assert.isNotNull(key, `${buyer.id} has no such access key`);
@@ -11133,6 +12533,15 @@ describe.skipIf(wasm === null)('the gateway against the sandbox', { timeout: TIM
       nonce: key.nonce + 1n,
       maxBlockHeight: maxBlockHeightFor(block.height, config.maxTimeoutSeconds, config.blockTimeMs),
       offer,
+      expected: {
+        network: 'near:sandbox',
+        token: world.token.id,
+        poolsContract: world.pools.id,
+        poolId: POOL_ID,
+        maxSeats: seats,
+        maxAmount: BigInt(seats) * SEAT_PRICE,
+      },
+      gas,
     });
   };
 
@@ -11140,7 +12549,9 @@ describe.skipIf(wasm === null)('the gateway against the sandbox', { timeout: TIM
   const relayedFinal = (txHash: string): Promise<unknown> => finalOutcome(world, txHash, world.relay.id);
 
   beforeAll(async () => {
-    world = await startWorld(wasm!); // not null: the suite is skipped otherwise
+    // Throws, failing the suite, unless both wasm files are named.
+    const wasm = wasmFromEnv();
+    world = await startWorld(wasm);
     dataDir = await mkdtemp(join(tmpdir(), 'quorum-sandbox-'));
     deps = await sandboxDeps(world, dataDir);
     app = createApp(deps);
@@ -11164,12 +12575,19 @@ describe.skipIf(wasm === null)('the gateway against the sandbox', { timeout: TIM
     });
     const pool = await deps.chain.getPool(POOL_ID);
     if (pool?.status !== 'open') throw new Error(`pool ${POOL_ID} did not open: ${JSON.stringify(pool)}`);
-  }, TIMEOUT_MS);
+  }, SETUP_TIMEOUT_MS);
 
   afterAll(async () => {
     await world?.sandbox.tearDown();
     if (dataDir) await rm(dataDir, { recursive: true, force: true });
   }, TIMEOUT_MS);
+
+  it('runs on a chain whose id near:sandbox accepts', async () => {
+    const { chain_id: chainId } = await world.provider.viewNodeStatus();
+
+    console.log(`sandbox chain id: ${chainId}`);
+    expect(checkChainId('near:sandbox', chainId)).toBeNull();
+  });
 
   it('answers a request for 2 seats with no payment with 402 and an offer for 2 seats', async () => {
     const offer = await offerFor(2);
@@ -11189,7 +12607,7 @@ describe.skipIf(wasm === null)('the gateway against the sandbox', { timeout: TIM
     const buyerBefore = await nearBalance(world, buyer1.id);
     const relayerBefore = await nearBalance(world, relay.id);
 
-    const response = await access(2, await paymentFrom(buyer1, offer));
+    const response = await access(2, await paymentFrom(buyer1, 2, offer));
 
     expect(response.status).toBe(202);
     const body = (await response.json()) as Pending;
@@ -11210,7 +12628,7 @@ describe.skipIf(wasm === null)('the gateway against the sandbox', { timeout: TIM
     console.log(`relayer balance change: ${relayerChange} yoctoNEAR`);
   });
 
-  it('burns less gas in the commit than the payment attached', async () => {
+  it("burns less gas in buyer 1's commit than the offer's minGas", async () => {
     const { buyer1, token, pools } = world;
     const raw = await relayedFinal(commit.txHash);
     if (process.env.QUORUM_CAPTURE_FIXTURE === '1') {
@@ -11221,15 +12639,16 @@ describe.skipIf(wasm === null)('the gateway against the sandbox', { timeout: TIM
 
     console.log(`commit gas burnt: ${tgas(gas)} Tgas`);
     expect(gas).toBeGreaterThan(0n);
-    // The commit burns less than the gas the payment attached (the offer's maxGas). The figure printed
-    // above is what minGas and maxGas are set from.
-    expect(gas).toBeLessThan(deps.config.maxGas);
+    // Burnt gas never exceeds what was attached, so this commit, paid at maxGas, cannot show that
+    // minGas is enough. It shows that minGas covers at least the gas burnt; buyer 2's commit, paid
+    // at minGas, shows that a commit completes with it.
+    expect(gas).toBeLessThan(deps.config.minGas);
   });
 
-  it("fills the pool with buyer 2's payment for the last seat and answers 200 with a credential", async () => {
-    const { buyer2 } = world;
+  it("fills the pool with buyer 2's payment for the last seat, paid at the offer's minGas, and answers 200 with a credential", async () => {
+    const { buyer2, token, pools } = world;
 
-    const response = await access(1, await paymentFrom(buyer2, await offerFor(1)));
+    const response = await access(1, await paymentFrom(buyer2, 1, await offerFor(1), deps.config.minGas));
 
     expect(response.status).toBe(200);
     const body = (await response.json()) as Filled;
@@ -11237,6 +12656,32 @@ describe.skipIf(wasm === null)('the gateway against the sandbox', { timeout: TIM
     const jwks = createLocalJWKSet(deps.credentials.jwks());
     const { payload } = await jwtVerify(body.credential, jwks, { issuer: deps.config.publicUrl });
     expect(payload).toMatchObject({ sub: buyer2.id, pool: POOL_ID, seats: 1, simulated: true });
+
+    const header = response.headers.get(PAYMENT_RESPONSE_HEADER);
+    assert.isNotNull(header, 'the 200 carried no X-PAYMENT-RESPONSE header');
+    const { transaction } = decodeHeader(header) as PaymentResponse;
+    const gas = commitGas(toTxOutcome(await relayedFinal(transaction)), buyer2.id, [token.id, pools.id]);
+    console.log(`filling commit gas burnt at minGas: ${tgas(gas)} Tgas`);
+  });
+
+  it("answers buyer 1's redemption proof with 200 and a credential for its 2 seats once the pool has filled", async () => {
+    const { buyer1 } = world;
+    const proof = await buildRedeemProofHeader({
+      keyPair: buyer1.keyPair,
+      accountId: buyer1.id,
+      poolId: POOL_ID,
+      recipient: new URL(deps.config.publicUrl).host,
+      nowMs: deps.now(),
+    });
+
+    const response = await app.request(`/pools/${POOL_ID}/access`, { headers: { [PROOF_HEADER]: proof } });
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as Filled;
+    expect(body).toMatchObject({ status: 'filled', poolId: POOL_ID, seats: 2, terms: TERMS });
+    const jwks = createLocalJWKSet(deps.credentials.jwks());
+    const { payload } = await jwtVerify(body.credential, jwks, { issuer: deps.config.publicUrl });
+    expect(payload).toMatchObject({ sub: buyer1.id, pool: POOL_ID, seats: 2, simulated: true });
   });
 
   it("settles the filled pool on the keeper's tick and pays the seller every seat's price and the bonus", async () => {
@@ -11277,22 +12722,28 @@ describe.skipIf(wasm === null)('the gateway against the sandbox', { timeout: TIM
 QUORUM_CAPTURE_FIXTURE=1 pnpm --filter @quorum-on-near/gateway test:sandbox
 ```
 
-Expected: PASS, 6 tests. The first run downloads the sandbox binary. The output includes two lines
-that Task 16 records:
+Expected: PASS, 8 tests. The first run downloads the sandbox binary inside the setup (allowed 15
+minutes); `pnpm --filter @quorum-on-near/gateway exec near-sandbox --version` fetches it ahead. With
+`QUORUM_POOLS_WASM` or `QUORUM_MOCK_USD_WASM` unset, the suite fails and names both. The output
+includes these lines; Task 16 records the last three:
 
 ```text
+sandbox chain id: <id>
 deposit debited from: <buyer or relayer>
 commit gas burnt: <N> Tgas
+filling commit gas burnt at minGas: <M> Tgas
 ```
 
-Write both down. `test/fixtures/relayed-commit.json` now holds the relayed commit's RPC result. It
+Write them down. `test/fixtures/relayed-commit.json` now holds the relayed commit's RPC result. It
 names only sandbox accounts (`*.sandbox`) and their generated public keys, so it holds no personal
 data and no secret.
 
 If a step fails, it is the code that meets the real chain for the first time: fix names in place
-where a library call differs (the test is the specification of what must hold). If the commit
-answers 409 instead of 202, the commit ran out of gas: raise `QUORUM_COMMIT_MAX_GAS` in the test's
-configuration, run again, and carry the measured figure into Task 16.
+where a library call differs (the test is the specification of what must hold). If buyer 1's
+commit burns `minGas` or more, or buyer 2's commit (paid at `minGas`) answers `502` with `error` set
+to `relay_failed` instead of `200`, `minGas` is too low: raise `QUORUM_COMMIT_MIN_GAS` (and
+`QUORUM_COMMIT_MAX_GAS` to keep it above) in the test's configuration, run again, and carry the
+measured figures into Task 16.
 
 - [ ] **Step 6: Test the outcome parser against the captured result**
 
@@ -11346,8 +12797,9 @@ row; making these edits before it merges would conflict.
 - Modify: `docs/specs/2026-11-09-quorum-on-near-design.md` (sections 10 and 11, and section 6.2 if
   the gas measurement calls for it)
 - Modify: `CLAUDE.md` (Architecture first line, Layout, Toolchain)
-- Modify: `apps/gateway/src/config.ts` and `apps/gateway/.env.example` (only if the measured gas
-  calls for new defaults)
+- Modify: `apps/gateway/src/config.ts`, `apps/gateway/.env.example` and
+  `apps/gateway/test/config.test.ts` (only if the measured gas calls for new defaults), and `apps/gateway/test/sandbox/relayed-commit.test.ts` (only if Task 15
+  overrode `minGas` in it)
 
 - [ ] **Step 1: Check the gate**
 
@@ -11366,38 +12818,55 @@ In `docs/specs/2026-11-09-quorum-on-near-design.md`, section 10:
 2. Directly below the `Sandbox integration` row, add:
 
    ```markdown
-   | Gateway sandbox test (`near-sandbox` from npm and near-api-js, with the contracts' wasm and the mock token) | A relayed commit through the gateway's HTTP path: the `402` offer, a payment answered `202`, a second buyer's payment that fills the pool answered `200` with a credential, and the keeper's `settle`. Which account is debited the 1 yoctoNEAR deposit of a relayed payment. The gas a commit burns, against the offer's `minGas` and `maxGas` |
+   | Gateway sandbox test (`near-sandbox` from npm and near-api-js, with the contracts' wasm and the mock token) | A relayed commit through the gateway's HTTP path: the `402` offer, a payment answered `202`, a second buyer's payment that fills the pool answered `200` with a credential, and the keeper's `settle`. Which account is debited the 1 yoctoNEAR deposit of a relayed payment. The gas a commit burns, and that the filling commit, paid at the offer's `minGas`, completes. A redemption against the sandbox, and the chain-id check the gateway runs at startup, applied to the sandbox's id |
    ```
 
 - [ ] **Step 3: Record which account paid the deposit**
 
 Task 15 printed either `deposit debited from: buyer` or `deposit debited from: relayer`. In section
-11, at the end of the bullet that starts `In an NEP-366 meta transaction`, after `a sandbox test
-records which account is debited (section 10).` (it wraps across two lines in the file), add one sentence:
+11, in the bullet that starts `In an NEP-366 meta transaction`, directly after `a sandbox test
+records which account is debited (section 10).` (it wraps across two lines in the file) and before
+`The tokens moved by`, add one sentence:
 
 - if the buyer: `In the sandbox, the deposit is debited from the buyer's account.`
 - if the relayer: `In the sandbox, the deposit is debited from the relayer's account.`
 
 - [ ] **Step 4: Set the commit gas defaults from the measurement**
 
-Task 15 printed `commit gas burnt: <N> Tgas`. The defaults are `minGas` 50 Tgas and `maxGas`
-100 Tgas.
-- If `N × 1.5 ≤ 50`, change nothing in the code. In section 6.2, replace `the figures above are
-  placeholders.` with `the figures above are the defaults; a commit against the mock token burns
-  about <N> Tgas.`
-- If `N × 1.5 > 50`, set the new `minGas` to `ceil(N × 1.5)` Tgas and `maxGas` to twice that. Update
+Task 15 printed `commit gas burnt: <N> Tgas` (buyer 1, paid at `maxGas`) and `filling commit gas
+burnt at minGas: <M> Tgas` (buyer 2, which filled the pool). Let `G` be the larger of the two. The
+defaults are `minGas` 50 Tgas and `maxGas` 100 Tgas. Burnt gas understates what a commit needs
+attached (the token reserves gas for its resolver that it does not all burn), which is why the
+filling commit was paid at `minGas` rather than trusted from the figure.
+
+First, check whether Task 15 had to raise `QUORUM_COMMIT_MIN_GAS` in the test's configuration to
+pass. If it did, call that value `R` (in Tgas): set the new `minGas` to the larger of `R` and
+`ceil(G × 1.5)` Tgas and `maxGas` to twice that, remove both overrides (`QUORUM_COMMIT_MIN_GAS` and,
+if Task 15 set it, `QUORUM_COMMIT_MAX_GAS`) from the test's configuration,
+then follow the second case below from `Update the two defaults` on, with these values (it runs the
+sandbox test again at the new default). If it did not:
+- If `G × 1.5 ≤ 50`, change nothing in the code. In section 6.2, replace `the figures above are
+  placeholders.` with `the figures above are the defaults; against the mock token a commit burns
+  about <N> Tgas and the one that fills a pool about <M> Tgas, and a filling commit paid at the
+  50 Tgas minGas completes in the sandbox test.`
+- If `G × 1.5 > 50`, set the new `minGas` to `ceil(G × 1.5)` Tgas and `maxGas` to twice that. Update
   the two defaults in `apps/gateway/src/config.ts` (the `QUORUM_COMMIT_MIN_GAS` and
   `QUORUM_COMMIT_MAX_GAS` defaults) and in `apps/gateway/.env.example`, and the expected defaults in
   `apps/gateway/test/config.test.ts`. Run `pnpm --filter @quorum-on-near/gateway test`, which must
-  pass. In section 6.2, replace `the figures above are placeholders.` with `a commit against the mock
-  token burns about <N> Tgas, and the gateway's defaults are <min> and <max> Tgas.`
+  pass, then run Task 15's sandbox test again (Step 5's command without `QUORUM_CAPTURE_FIXTURE`),
+  which must pass with the filling commit paid at the new `minGas`. In section 6.2, replace `the
+  figures above are placeholders.` with `against the mock token a commit burns about <N> Tgas and the
+  one that fills a pool about <M> Tgas; the gateway's defaults are <min> and <max> Tgas, and a
+  filling commit paid at <min> Tgas completes in the sandbox test.`
 
 The swarm plan measures the same figures again against Circle's USDC on testnet.
 
 - [ ] **Step 5: Record the layout and the toolchain in `CLAUDE.md`**
 
-1. In `## Architecture (implementation-relevant facts)`, replace `Nothing is built yet.` with `What is
-   built is listed under Layout.`
+1. In `## Architecture (implementation-relevant facts)`, replace `The contracts are built and tested;
+   the protocol package, gateway, swarm, MCP server and live page are not yet.` (it wraps across two
+   lines in the file) with `The contracts, the protocol package and the gateway are built and tested;
+   the swarm, MCP server and live page are not yet.`
 2. Append these rows at the end of the Layout table:
 
    ```markdown
@@ -11415,8 +12884,10 @@ The swarm plan measures the same figures again against Circle's USDC on testnet.
    directly (type stripping), so there is no build step. `pnpm install`, then `pnpm test` and
    `pnpm typecheck`. The gateway runs with `pnpm --filter @quorum-on-near/gateway start` and reads
    `QUORUM_*` variables from `apps/gateway/.env` (see `.env.example`). Its sandbox test
-   (`pnpm --filter @quorum-on-near/gateway test:sandbox`) needs the contracts built with cargo near
-   and runs on Linux, macOS on Apple silicon or WSL2.
+   (`pnpm --filter @quorum-on-near/gateway test:sandbox`) needs the contracts built with cargo near,
+   with the absolute paths of their wasm files in `QUORUM_POOLS_WASM` and `QUORUM_MOCK_USD_WASM`. It
+   runs on macOS on Apple silicon, or on Linux or WSL2 with glibc 2.38 or later (Ubuntu 24.04 or
+   later).
    ```
 
 - [ ] **Step 6: Run everything once more**
@@ -11437,7 +12908,9 @@ git commit -m "record the gateway's sandbox results, layout and toolchain"
 ```
 
 If Step 4 changed the defaults, stage those files in the same commit:
-`git add apps/gateway/src/config.ts apps/gateway/.env.example apps/gateway/test/config.test.ts`.
+`git add apps/gateway/src/config.ts apps/gateway/.env.example apps/gateway/test/config.test.ts`,
+and, if it removed the overrides from the sandbox test's configuration,
+`git add apps/gateway/test/sandbox/relayed-commit.test.ts`.
 
 
 ---
@@ -11447,23 +12920,27 @@ If Step 4 changed the defaults, stage those files in the same commit:
 | Spec requirement | Where |
 |---|---|
 | 4: the protocol package has no network access; the gateway plays both x402 roles | Tasks 1 to 5 (no provider in the protocol package); Tasks 10 to 14 |
+| 5.6: the events, read only from receipts the pools contract executed | Task 1 (`parseEventLog`), Task 7 (`poolsEvents`) |
 | 6: the x402 v1 wire format, base64 JSON headers, `near:testnet` in CAIP-2 form | Task 2 (`encodeHeader`, `decodeHeader`), Task 6 (`QUORUM_NETWORK`) |
-| 6.1: `GET /`, `GET /pools`, `GET /pools/:id/access`, `GET /activity`, JWKS, `POST /rpc`; only the provider's pools | Task 9 (`servedPool`, `openPoolListings`), Task 14 (routes, static serving, `/config.json`) |
-| 6.2: the offer, its fields, seats capped by the seats left and `max_seats_per_buyer`, `minBonusPerSeat` | Task 2 (`buildOffer`, `offerSeats`), Task 10 (`currentAccepts`) |
-| 6.3: the payment payload, one `ft_transfer_call` with 1 yoctoNEAR, a full-access key | Task 3 (decoding), Task 5 (checks and the buyer builder) |
+| 6.1: `GET /`, `GET /pools`, `GET /pools/:id/access`, `GET /activity`, JWKS, `POST /rpc` and its limits, no dot paths; only the provider's pools | Task 9 (`servedPool`, `openPoolListings`), Task 10 (the offer's answers), Task 14 (routes, static serving, `/config.json`) |
+| 6.2: the offer, its fields, seats capped by the seats left and `max_seats_per_buyer` (as Task 1 records it), `minBonusPerSeat` | Task 2 (`buildOffer`, `offerSeats`), Task 10 (`currentAccepts`) |
+| 6.3: the payment payload, one `ft_transfer_call` with 1 yoctoNEAR; the buyer's check of the offer before signing | Task 3 (decoding), Task 5 (checks, `checkOffer` and the buyer builder) |
+| 6.3 and 6.4: a full-access key (check 4) | Task 11 (`not_full_access`) |
 | 6.4: checks 1 to 3 with every rejection code | Task 5 (`checkPaymentHeader`, one test per code) |
 | 6.4: checks 4 to 8, one payment in flight per buyer, nothing relayed until every check passes | Task 9 (`InFlight`), Task 11 |
-| 6.4: the relay with several keys, one transaction per key; never re-signed or re-sent; lookup by hash on a timeout | Task 8 |
-| 6.4: the response table (202, 200, 409, 410, 502) and `X-PAYMENT-RESPONSE` | Task 11 |
-| 6.5: redemption: NEP-413 signature, full-access key, 5-minute age, unseen nonce; the 202/200/410/404 table | Task 4, Task 9 (`NonceCache`), Task 12 |
+| 6.4: the relay with several keys, one transaction per key; never re-signed or re-sent; lookup by hash on a timeout; a result only at `EXECUTED_OPTIMISTIC` or later | Task 7 (`toTxOutcome`), Task 8 |
+| 6.4: a buyer whose result is unknown stays in flight until a final block above its `max_block_height` | Task 8 (`expired`), Task 9 (`InFlight.hold`), Task 11 |
+| 6.4: the response table (202, 200, 409, 410, 502), a commit that took no seats judged by block time, and `X-PAYMENT-RESPONSE` | Task 11 |
+| 6.5: redemption: NEP-413 signature, full-access key, 5-minute age (one minute of clock skew), unseen nonce; the 202/200/410/404 table | Task 4, Task 9 (`NonceCache`), Task 12 |
 | 6.6: the EdDSA JWS credential, its claims, the same `sub`, `pool` and `seats` for the same buyer | Task 6, Tasks 11 and 12 |
-| 6.7: the keeper every 5 seconds, `settle` and `refund`, safe to repeat | Task 13 |
+| 6.7: the keeper every 5 seconds, `settle` and `refund`, safe to repeat; progress by the pool's state, and the backoff | Task 9 (`keeperCallProgressed`), Task 13 |
 | 6.7: the activity feed, a JSON-lines file under `data/`, reloaded on restart | Task 9 (`ActivityLog`, `keeperRecords`), Task 11, Task 13 |
-| 7.6: configuration, no secret committed | Task 6 (`loadConfig`, `.env.example`) |
-| 9: error handling (failed checks, races, RPC timeouts, keeper retries, restarts, block-time deadlines) | Tasks 8, 11, 12, 13 |
+| 7.6: configuration, testnet only, gas bounds against the contract's requirements, the RPC's chain checked at startup, no secret committed | Task 6 (`loadConfig`, `checkChainId`, `.env.example`), Task 14 (`main.ts`) |
+| 9: error handling (failed checks, races, RPC timeouts, keeper retries, restarts, block-time deadlines) | Tasks 8, 9, 11, 12, 13 |
+| 12: the limits this plan adds (no rate limit on `/rpc`, credentials at optimistic execution, the in-flight hold's window) | Task 1 (recorded), Tasks 11 and 14 |
 | 10: protocol unit tests, one per rejection code, with fixture keys | Tasks 1 to 5 (keys generated at run time) |
 | 10: gateway tests against a stubbed chain: every response row, payments in flight, the RPC timeout path, the keeper's calls | Tasks 7 to 14 (`FakeChain`) |
 | 10: the relayed payment that records which account is debited its 1 yoctoNEAR deposit | Task 15, recorded in Task 16 |
-| 5.7 and 6.2: a commit's gas measured in the sandbox against the mock token | Task 15, recorded in Task 16 |
+| 5.7 and 6.2: a commit's burnt gas measured, and a commit paid at `minGas` completed, in the sandbox against the mock token | Task 15, recorded in Task 16 |
 | 11: relayed calls see the buyer as `predecessor_account_id`; full-access keys for the 1 yoctoNEAR deposit | Task 5 (the delegate is the buyer's), Task 11 (`not_full_access`), Task 15 |
 | Not here: the swarm, the MCP server, the live page, anything on testnet | Later plans |
