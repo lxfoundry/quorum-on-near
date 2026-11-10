@@ -13,7 +13,7 @@ import {
 import { createLocalJWKSet, jwtVerify } from 'jose';
 import { KeyPair } from 'near-api-js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { DelegateExpiredError, type RelayResult } from '../src/chain.ts';
+import { DelegateExpiredError, type AccessKeyInfo, type RelayResult } from '../src/chain.ts';
 import type { GatewayConfig } from '../src/config.ts';
 import { offerContext } from '../src/handle-offer.ts';
 import { EXPIRY_MARGIN_BLOCKS } from '../src/chain.ts';
@@ -125,6 +125,37 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   return { promise, resolve };
 }
 
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+/** Silences console.error, where the handler logs the error behind a reply; the spy is restored after each test. */
+function silenceErrors() {
+  return vi.spyOn(console, 'error').mockImplementation(() => {});
+}
+
+/** A well-formed payment from the buyer, signed with a key that is not on the buyer's account. */
+function throwawayHeader(s: Scenario, nonce: bigint = KEY_NONCE + 1n): Promise<string> {
+  return buildPaymentHeader({
+    keyPair: KeyPair.fromRandom('ed25519'),
+    senderId: s.buyer,
+    nonce,
+    maxBlockHeight: maxBlockHeightFor(s.fake.block.height, s.config.maxTimeoutSeconds, s.config.blockTimeMs),
+    offer: offerFor(currentPool(s.fake), 2),
+    expected: BUYER_CONFIG,
+  });
+}
+
+/** The view calls made since `before`, a copy of `fake.reads`, by method name. */
+function readsSince(fake: FakeChain, before: Map<string, number>): Record<string, number> {
+  const made: Record<string, number> = {};
+  for (const [name, count] of fake.reads) {
+    const extra = count - (before.get(name) ?? 0);
+    if (extra > 0) made[name] = extra;
+  }
+  return made;
+}
+
 /** A 402 for `code` carrying `accepts`, with nothing relayed. */
 function expectRefused(s: Scenario, result: Reply, code: string, accepts: Offer[]): void {
   expect(result).toEqual({ status: 402, body: { x402Version: 1, error: code, accepts } });
@@ -213,6 +244,28 @@ describe('handlePayment: gateway checks', () => {
     s.fake.setKey(BUYER, s.publicKey, { nonce: KEY_NONCE, fullAccess: false });
     const result = await handlePayment(s.deps, POOL_ID, '2', await s.header());
     expectRefused(s, result, 'not_full_access', [offerFor(currentPool(s.fake), 2)]);
+  });
+
+  it.each<[string, (s: Scenario) => void]>([
+    ['is not on the account', (s) => s.fake.keys.clear()],
+    ['is a function-call key', (s) => s.fake.setKey(BUYER, s.publicKey, { nonce: KEY_NONCE, fullAccess: false })],
+  ])("does not take the buyer's in-flight slot for a payment whose key %s", async (_, arrange) => {
+    const s = await scenario();
+    arrange(s);
+    const begin = vi.spyOn(s.deps.inFlight, 'begin');
+    const result = await handlePayment(s.deps, POOL_ID, '2', await s.header());
+    expectRefused(s, result, 'not_full_access', [offerFor(currentPool(s.fake), 2)]);
+    expect(begin).not.toHaveBeenCalled();
+  });
+
+  it("judges the nonce by the key as it is once the buyer's slot is taken", async () => {
+    const s = await scenario();
+    // An earlier payment of the buyer lands between the two reads of its key, so the nonce 11 is now used.
+    vi.spyOn(s.fake, 'accessKey')
+      .mockResolvedValueOnce({ nonce: KEY_NONCE, fullAccess: true })
+      .mockResolvedValueOnce({ nonce: KEY_NONCE + 1n, fullAccess: true });
+    const result = await handlePayment(s.deps, POOL_ID, '2', await s.header({ nonce: KEY_NONCE + 1n }));
+    expectRefused(s, result, 'stale_nonce', [offerFor(currentPool(s.fake), 2)]);
   });
 
   it("answers 402 stale_nonce when the nonce is not above the key's nonce", async () => {
@@ -364,15 +417,69 @@ describe('handlePayment: gateway checks', () => {
     const first = handlePayment(s.deps, POOL_ID, '2', await s.header());
     await relaying.promise;
 
+    const readsBefore = new Map(s.fake.reads);
     const second = await handlePayment(s.deps, POOL_ID, '2', await s.header({ nonce: KEY_NONCE + 2n }));
     expect(second).toEqual({
       status: 402,
       body: { x402Version: 1, error: 'payment_in_flight', accepts: [offerFor(currentPool(s.fake), 2)] },
     });
     expect(s.fake.relayed).toHaveLength(1);
+    // The refusal reads the pool and the buyer's access key, and nothing else.
+    expect(readsSince(s.fake, readsBefore)).toEqual({ get_pool: 1, view_access_key: 1 });
 
     relayed.resolve(committed(2, 150));
     expect((await first).status).toBe(202);
+  });
+
+  it("answers 402 not_full_access, not payment_in_flight, to a payment signed with another key while the buyer's own is relayed", async () => {
+    const s = await scenario();
+    const relaying = deferred<void>();
+    const relayed = deferred<RelayResult>();
+    s.fake.onRelay = () => {
+      relaying.resolve();
+      return relayed.promise;
+    };
+    const genuine = handlePayment(s.deps, POOL_ID, '2', await s.header());
+    await relaying.promise;
+
+    const forged = await handlePayment(s.deps, POOL_ID, '2', await throwawayHeader(s, KEY_NONCE + 2n));
+    expect(forged).toEqual({
+      status: 402,
+      body: { x402Version: 1, error: 'not_full_access', accepts: [offerFor(currentPool(s.fake), 2)] },
+    });
+    expect(s.fake.relayed).toHaveLength(1);
+    // The refused payment neither took the slot nor freed the genuine payment's.
+    expect(s.deps.inFlight.has(BUYER)).toBe(true);
+
+    relayed.resolve(committed(2, 150));
+    expect((await genuine).status).toBe(202);
+    expect(s.deps.inFlight.has(BUYER)).toBe(false);
+  });
+
+  it("does not let a payment signed with another key hold the buyer's slot while its key is read", async () => {
+    const s = await scenario();
+    const forgedHeader = await throwawayHeader(s);
+    const keyRead = deferred<AccessKeyInfo | null>();
+    const reading = deferred<void>();
+    const read = s.fake.accessKey.bind(s.fake);
+    vi.spyOn(s.fake, 'accessKey').mockImplementation((account, key) => {
+      if (key === s.publicKey) return read(account, key);
+      reading.resolve();
+      return keyRead.promise;
+    });
+    const forged = handlePayment(s.deps, POOL_ID, '2', forgedHeader);
+    await reading.promise;
+
+    // The forged payment is still waiting for its key, and the buyer's own is not refused for it.
+    s.fake.relayResults.push(committed(2, 150));
+    expect((await handlePayment(s.deps, POOL_ID, '2', await s.header())).status).toBe(202);
+
+    keyRead.resolve(null);
+    expect(await forged).toEqual({
+      status: 402,
+      body: { x402Version: 1, error: 'not_full_access', accepts: [offerFor(currentPool(s.fake), 2)] },
+    });
+    expect(s.fake.relayed).toHaveLength(1);
   });
 
   it('accepts a payment from another buyer while one is being relayed', async () => {
@@ -579,8 +686,9 @@ describe('handlePayment: responses', () => {
     expect(result).toEqual({ status: 502, body: { error: 'result_unknown', txHash: TX_HASH } });
   });
 
-  it('answers 502 result_unknown with the transaction hash when the outcome cannot be read', async () => {
+  it('answers 502 result_unknown with the transaction hash, and logs the error, when the outcome cannot be read', async () => {
     const s = await scenario();
+    const logged = silenceErrors();
     const malformed = eventLog({
       event: 'seats_committed',
       data: { pool_id: POOL_ID, buyer: BUYER, seats: 2, amount: '3.6e2', taken: 150, target: 192 },
@@ -591,58 +699,84 @@ describe('handlePayment: responses', () => {
     });
     const result = await handlePayment(s.deps, POOL_ID, '2', await s.header());
     expect(result).toEqual({ status: 502, body: { error: 'result_unknown', txHash: TX_HASH } });
+    expect(logged).toHaveBeenCalledOnce();
+    expect(logged).toHaveBeenCalledWith(expect.stringContaining(TX_HASH), expect.any(TypeError));
   });
 
-  it('answers 502 result_unknown with the transaction hash when the pool cannot be read again after a commit that took no seats', async () => {
+  it('answers 502 result_unknown with the transaction hash, and logs the error, when the pool cannot be read again after a commit that took no seats', async () => {
     const s = await scenario();
+    const logged = silenceErrors();
+    const failure = new Error('connect ECONNREFUSED');
     s.fake.onRelay = () => {
-      vi.spyOn(s.fake, 'getPool').mockRejectedValue(new Error('connect ECONNREFUSED'));
+      vi.spyOn(s.fake, 'getPool').mockRejectedValue(failure);
       return NO_SEATS;
     };
     const result = await handlePayment(s.deps, POOL_ID, '2', await s.header());
     expect(result).toEqual({ status: 502, body: { error: 'result_unknown', txHash: TX_HASH } });
+    expect(logged).toHaveBeenCalledOnce();
+    expect(logged).toHaveBeenCalledWith(expect.stringContaining(TX_HASH), failure);
   });
 
-  it('answers 502 result_unknown with the transaction hash when the final block cannot be read after a commit that took no seats', async () => {
+  it('answers 502 result_unknown with the transaction hash, and logs the error, when the final block cannot be read after a commit that took no seats', async () => {
     const s = await scenario();
+    const logged = silenceErrors();
+    const failure = new Error('connect ECONNREFUSED');
     s.fake.onRelay = () => {
-      vi.spyOn(s.fake, 'finalBlock').mockRejectedValue(new Error('connect ECONNREFUSED'));
+      vi.spyOn(s.fake, 'finalBlock').mockRejectedValue(failure);
       return NO_SEATS;
     };
     const result = await handlePayment(s.deps, POOL_ID, '2', await s.header());
     expect(result).toEqual({ status: 502, body: { error: 'result_unknown', txHash: TX_HASH } });
+    expect(logged).toHaveBeenCalledOnce();
+    expect(logged).toHaveBeenCalledWith(expect.stringContaining(TX_HASH), failure);
+  });
+
+  it('answers 502 result_unknown with the transaction hash, and logs the error, when the credential cannot be issued', async () => {
+    const s = await scenario({ pool: { taken: 190 } });
+    const logged = silenceErrors();
+    const failure = new Error('credential key unavailable');
+    vi.spyOn(s.deps.credentials, 'issue').mockRejectedValue(failure);
+    s.fake.relayResults.push(committed(2, 192));
+    const result = await handlePayment(s.deps, POOL_ID, '2', await s.header());
+    expect(result).toEqual({ status: 502, body: { error: 'result_unknown', txHash: TX_HASH } });
+    expect(logged).toHaveBeenCalledOnce();
+    expect(logged).toHaveBeenCalledWith(expect.stringContaining(TX_HASH), failure);
   });
 
   it.each(['getPool', 'accessKey', 'finalBlock', 'ftBalanceOf', 'getBuyer'] as const)(
-    'answers 503 chain_unavailable, relaying nothing, when %s throws',
+    'answers 503 chain_unavailable, relaying nothing, and logs the error, when %s throws',
     async (method) => {
       const s = await scenario();
-      vi.spyOn(s.fake, method).mockRejectedValue(new Error('connect ECONNREFUSED'));
+      const logged = silenceErrors();
+      const failure = new Error('connect ECONNREFUSED');
+      vi.spyOn(s.fake, method).mockRejectedValue(failure);
       const result = await handlePayment(s.deps, POOL_ID, '2', await s.header());
       expect(result).toEqual({ status: 503, body: { error: 'chain_unavailable' } });
       expect(s.fake.relayed).toEqual([]);
+      expect(logged).toHaveBeenCalledOnce();
+      expect(logged).toHaveBeenCalledWith(expect.any(String), failure);
     },
   );
 
-  it('answers 503 chain_unavailable when relayDelegate throws before sending', async () => {
+  it('answers 503 chain_unavailable and logs the error when relayDelegate throws before sending', async () => {
     const s = await scenario();
+    const logged = silenceErrors();
+    const failure = new Error('no relayer key was free within 30000 ms');
     s.fake.onRelay = () => {
-      throw new Error('no relayer key was free within 30000 ms');
+      throw failure;
     };
     const result = await handlePayment(s.deps, POOL_ID, '2', await s.header());
     expect(result).toEqual({ status: 503, body: { error: 'chain_unavailable' } });
+    expect(logged).toHaveBeenCalledOnce();
+    expect(logged).toHaveBeenCalledWith(expect.any(String), failure);
   });
 });
 
 describe('handlePayment: activity feed', () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
   /** Makes every append fail and silences the log; returns the console.error spy. */
   function failAppends(s: Scenario) {
     vi.spyOn(s.deps.activity, 'append').mockRejectedValue(new Error('ENOSPC: no space left on device'));
-    return vi.spyOn(console, 'error').mockImplementation(() => {});
+    return silenceErrors();
   }
 
   it('records a commit that took seats, with its amount and transaction hash', async () => {
@@ -700,16 +834,18 @@ describe('handlePayment: activity feed', () => {
 });
 
 describe('handlePayment: in-flight slot', () => {
-  const cases: Array<[string, (s: Scenario) => void]> = [
-    ['the commit takes seats', (s) => s.fake.relayResults.push(committed(2, 150))],
-    ['the commit takes no seats', (s) => s.fake.relayResults.push(NO_SEATS)],
-    ['the relay is rejected', (s) => s.fake.relayResults.push({ kind: 'rejected', txHash: TX_HASH, error: 'x' })],
+  /** Each case arranges the chain and says how many errors the handler then logs (a 503 or result_unknown reply logs one). */
+  const cases: Array<[string, (s: Scenario) => void, number]> = [
+    ['the commit takes seats', (s) => s.fake.relayResults.push(committed(2, 150)), 0],
+    ['the commit takes no seats', (s) => s.fake.relayResults.push(NO_SEATS), 0],
+    ['the relay is rejected', (s) => s.fake.relayResults.push({ kind: 'rejected', txHash: TX_HASH, error: 'x' }), 0],
     [
       'the result is unknown and the delegate has expired',
       (s) => s.fake.relayResults.push({ kind: 'unknown', txHash: TX_HASH, expired: true }),
+      0,
     ],
-    ['a gateway check fails', (s) => s.fake.balances.set(BUYER, 0n)],
-    ['a chain read throws', (s) => vi.spyOn(s.fake, 'ftBalanceOf').mockRejectedValue(new Error('rpc down'))],
+    ['a gateway check fails', (s) => s.fake.balances.set(BUYER, 0n), 0],
+    ['a chain read throws', (s) => vi.spyOn(s.fake, 'ftBalanceOf').mockRejectedValue(new Error('rpc down')), 1],
     [
       'relayDelegate throws',
       (s) => {
@@ -717,6 +853,7 @@ describe('handlePayment: in-flight slot', () => {
           throw new Error('no relayer key was free');
         };
       },
+      1,
     ],
     [
       'the outcome cannot be read',
@@ -727,17 +864,20 @@ describe('handlePayment: in-flight slot', () => {
         });
         s.fake.relayResults.push({ kind: 'executed', outcome: outcome(TX_HASH, [{ executorId: POOLS, logs: [malformed] }]) });
       },
+      1,
     ],
   ];
 
-  it.each(cases)('is released when %s', async (_, arrange) => {
+  it.each(cases)('is released when %s', async (_, arrange, errorsLogged) => {
     const s = await scenario();
+    const logged = silenceErrors();
     arrange(s);
     const begin = vi.spyOn(s.deps.inFlight, 'begin');
     await handlePayment(s.deps, POOL_ID, '2', await s.header());
     expect(begin).toHaveBeenCalledWith(BUYER);
     expect(begin).toHaveReturnedWith(true);
     expect(s.deps.inFlight.has(BUYER)).toBe(false);
+    expect(logged).toHaveBeenCalledTimes(errorsLogged);
   });
 });
 
@@ -783,14 +923,18 @@ describe('handlePayment: a payment whose result is unknown', () => {
     expect((await handlePayment(s.deps, POOL_ID, '2', await s.header({ nonce: KEY_NONCE + 2n }))).status).toBe(202);
   });
 
-  it('answers 503 chain_unavailable, relaying nothing, when the final block cannot be read for a held buyer', async () => {
+  it('answers 503 chain_unavailable, relaying nothing, and logs the error, when the final block cannot be read for a held buyer', async () => {
     const s = await scenario();
+    const logged = silenceErrors();
     await relayUnknown(s, false);
-    vi.spyOn(s.fake, 'finalBlock').mockRejectedValue(new Error('connect ECONNREFUSED'));
+    const failure = new Error('connect ECONNREFUSED');
+    vi.spyOn(s.fake, 'finalBlock').mockRejectedValue(failure);
     const next = await handlePayment(s.deps, POOL_ID, '2', await s.header({ nonce: KEY_NONCE + 2n }));
     expect(next).toEqual({ status: 503, body: { error: 'chain_unavailable' } });
     expect(s.fake.relayed).toHaveLength(1);
     expect(s.deps.inFlight.held(BUYER)).toBe(true);
+    expect(logged).toHaveBeenCalledOnce();
+    expect(logged).toHaveBeenCalledWith(expect.any(String), failure);
   });
 
   it('does not block another buyer while one is held', async () => {

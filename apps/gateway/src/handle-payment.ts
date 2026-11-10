@@ -32,6 +32,8 @@ type ChainCheck = { ok: true; held: number } | { ok: false; code: GatewayErrorCo
  * - 402 paymentRequired(current offer, code) for a failed check, a payment already in flight for
  *   the buyer, or a delegate the relayer finds too close to its expiry to send (`expired`). Nothing
  *   is relayed. The `over_buyer_cap` offer is for the seats the buyer may still take, if any.
+ *   A payment takes its buyer's in-flight slot only once its key is found on the buyer's account as
+ *   a full-access key, so a payment signed with another key cannot hold the slot.
  *   A payment whose result is unknown keeps its buyer in flight, while its delegate may still land,
  *   until a final block above its `max_block_height` is read.
  * - 202 `{status: "pending", receipt, pool}` or, when the commit filled the pool, 200 `{status:
@@ -45,7 +47,8 @@ type ChainCheck = { ok: true; held: number } | { ok: false; code: GatewayErrorCo
  *   failed, or the result is unknown or cannot be read.
  * - 503 `{error: "chain_unavailable"}` when the chain cannot be read before the relay.
  *
- * A failure to append to the activity feed is logged and does not change the reply.
+ * A failure to append to the activity feed, and the error behind a 503 or a `result_unknown` reply
+ * that follows a relay, are logged; none changes the reply.
  */
 export async function handlePayment(
   deps: Deps,
@@ -57,8 +60,9 @@ export async function handlePayment(
   if (seats === null) return reply(400, { error: 'invalid_seats' });
   try {
     return await checkAndRelay(deps, poolId, seats, header);
-  } catch {
+  } catch (error) {
     // A chain read failed, or relayDelegate threw before sending anything.
+    console.error('could not check or relay a payment:', error);
     return reply(503, { error: 'chain_unavailable' });
   }
 }
@@ -86,6 +90,11 @@ async function checkAndRelay(deps: Deps, poolId: number, seats: number, header: 
 
   // A held buyer is freed once the final height passes its earlier payment's max_block_height.
   if (inFlight.held(payment.senderId)) inFlight.passed((await chain.finalBlock()).height);
+  // The checks so far verify the signature only against the delegate's own key. Check 4 is the one
+  // that ties that key to sender_id, so the buyer's slot is taken only once it holds: otherwise a
+  // payment signed with any key, naming a victim as sender_id, would hold the victim's slot.
+  const key = await chain.accessKey(payment.senderId, payment.publicKey);
+  if (key === null || !key.fullAccess) return refuse('not_full_access');
   if (!inFlight.begin(payment.senderId)) return refuse('payment_in_flight');
   try {
     const check = await checkOnChain(deps, pool, payment);
@@ -104,7 +113,11 @@ async function checkAndRelay(deps: Deps, poolId: number, seats: number, header: 
   }
 }
 
-/** Checks 4 to 8: the buyer's key, its nonce and expiry, the pool, the balance and the buyer's seats. */
+/**
+ * Checks 4 to 8: the buyer's key, its nonce and expiry, the pool, the balance and the buyer's seats.
+ * The key is read again, now that the buyer's slot is taken, so that its nonce is current: an earlier
+ * payment of the buyer may have finished since `checkAndRelay` first read it.
+ */
 async function checkOnChain(deps: Deps, pool: PoolView, payment: CheckedPayment): Promise<ChainCheck> {
   const { chain, config } = deps;
   const buyer = payment.senderId;
@@ -149,9 +162,11 @@ async function answerRelay(
   }
   try {
     return await answerCommit(deps, pool, payment, held, result.outcome);
-  } catch {
+  } catch (error) {
     // The transaction ran, so the payment may have landed: the buyer finds out through redemption.
-    return reply(502, { error: 'result_unknown', txHash: result.outcome.txHash });
+    const { txHash } = result.outcome;
+    console.error(`could not answer the payment of transaction ${txHash}:`, error);
+    return reply(502, { error: 'result_unknown', txHash });
   }
 }
 
