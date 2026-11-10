@@ -132,8 +132,8 @@ function withSignatureByte(signed: DecodedSignedDelegate, index: number, value: 
 const ED25519_ORDER = ed25519.Point.Fn.ORDER;
 /** The prime 2^255 - 19 that the ed25519 coordinates are taken modulo. */
 const ED25519_FIELD = 2n ** 255n - 19n;
-/** A fixed ed25519 key and nonce for the signatures crafted below. */
-const CRAFT_SEED = new Uint8Array(32).fill(7);
+/** An ed25519 key, made at run time, and a fixed nonce for the signatures crafted below. */
+const CRAFT_SEED = ed25519.utils.randomSecretKey();
 const CRAFT_NONCE = 0x1234_5678_9abc_def0_1234_5678_9abc_def0n;
 
 function littleEndian32(value: bigint): Uint8Array {
