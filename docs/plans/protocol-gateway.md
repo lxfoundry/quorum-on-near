@@ -822,9 +822,10 @@ and 10, so the two branches merge without conflict. In
    with
 
    ```markdown
-   - for each pool past its deadline that is not yet Refunded, it calls `refund(pool_id, limit)`, with
-     `limit` 10 by default, unless the pool's dust transfer is already in flight (every buyer visited
-     and `dust_sent` set), when the call would do nothing.
+   - for each Expired pool (the views report an Open pool past its deadline as Expired; a Filled or
+     Settled pool is never refunded), it calls `refund(pool_id, limit)`, with `limit` 10 by default,
+     unless the pool's dust transfer is already in flight (every buyer visited and `dust_sent` set),
+     when the call would do nothing.
 
    A pool whose call makes no progress (no settlement, refund or dust event) is retried with a
    backoff: 30 seconds, doubling, up to 10 minutes. Only the first failure of such a streak is
