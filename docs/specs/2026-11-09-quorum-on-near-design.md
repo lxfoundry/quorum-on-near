@@ -230,13 +230,25 @@ transfer and restored by the callback if the transfer fails. **Callbacks never p
 amount is computed with checked arithmetic.
 
 **Gas and deposits.** Each transfer the contract makes is an `ft_transfer`, which needs exactly 1
-yoctoNEAR attached; the contract pays it from its own NEAR balance. Each callback gets a fixed gas
-allowance. `settle`, `refund` and `claim_refund` assert at entry that their prepaid gas covers
-every transfer and callback they are about to schedule (for `refund`, `limit` of each), and panic
-before changing any state if it does not. A callback that ran out of gas would leave a buyer marked
-`Refunded` with no transfer made, so this assertion is what makes "callbacks never panic" hold. The
-allowances, and with them the largest usable `limit`, come from gas profiling in the sandbox
-tests; `limit` is at most 10 and is further bounded by the gas assertion.
+yoctoNEAR attached; the contract pays it from its own NEAR balance. Each transfer and each callback
+gets a fixed gas allowance of 10 Tgas, and each transfer with its callback also costs about 3 Tgas
+of runtime receipt fees. `settle`, `refund` and `claim_refund` assert at entry that their remaining
+prepaid gas covers every transfer and callback they are about to schedule, with those fees, plus
+10 Tgas for their own work, and panic before changing any state if it does not:
+
+| Method | Transfers it can schedule | Gas required at entry |
+|---|---|---|
+| `settle` | 1 | 33 Tgas |
+| `claim_refund` | 1 | 33 Tgas |
+| `refund(pool_id, limit)` | up to `limit` refunds, plus the dust | 10 + 23 × (`limit` + 1) Tgas, so 263 Tgas at `limit` = 10 |
+
+A caller attaches that much plus the few Tgas the call uses before its check: a full `refund`
+batch of 10 completes with 280 Tgas, under the 300 Tgas per-transaction cap. The gas for each
+promise is reserved when the promise is scheduled, so a call that cannot reserve it fails as a whole
+and changes nothing; the entry assertion turns that into a clear refusal. What keeps a callback from
+running out of gas, which would leave a buyer marked `Refunded` with no transfer made, is its
+allowance: the sandbox tests measure about 1.5 Tgas used of the 10 reserved. The allowances, and
+with them the largest usable `limit`, come from that profiling; `limit` is at most 10.
 
 ### 5.5 Invariants
 
@@ -271,6 +283,10 @@ strings.
 | `refund_failed` | `pool_id, buyer, amount` |
 | `refund_claimed` | `pool_id, buyer, amount` |
 | `pool_refunded` | `pool_id, dust` |
+
+`pool_refunded` is logged when the pool is marked Refunded, which can happen before the callbacks
+of the last batch's refunds have run. Whether a buyer's refund arrived is recorded in its state
+(`get_buyer`, `get_seats`), not in the order of the events.
 
 ### 5.7 Tokens
 
@@ -657,7 +673,7 @@ step, and the gateway serves the folder at `/`. The page never signs anything an
 | Level | What it covers |
 |---|---|
 | Contract unit tests (near-sdk test environment) | The bonus split and the dust; every state transition; every refusal in section 5.3; checked arithmetic at the limits |
-| Sandbox integration (`near-sandbox` and `near-api`, with the real mock token) | **Fills:** open, commits, fill, settle. **Fails:** expiry, refund in batches, dust to the seller. Also: a partial last commit; a payment from the wrong token; a commit after the deadline; a seller committing to its own pool; a failed pushed refund, then a claim; a failed payout, then a retried `settle`; a claim before any `refund` call; a pool with no seats at expiry; a pool whose dust is 0 (a bonus of 0 is covered by unit tests only, because the standard token rejects a zero-amount `ft_transfer_call`); `refund` called with the least gas it accepts, and with less; a relayed payment that records which account is debited its 1 yoctoNEAR deposit. The invariants of section 5.5 are checked after every step, against `ft_balance_of` |
+| Sandbox integration (`near-sandbox` and `near-api`, with the real mock token) | **Fills:** open, commits, fill, settle. **Fails:** expiry, refund in batches, dust to the seller. Also: a partial last commit; a payment from the wrong token; a commit after the deadline; a seller committing to its own pool; a failed pushed refund, then a claim; a failed payout, then a retried `settle`; a claim before any `refund` call; a pool with no seats at expiry; a pool whose dust is 0 (a bonus of 0 is covered by unit tests only, because the standard token rejects a zero-amount `ft_transfer_call`); `refund` called with just under the gas its entry assertion requires (refused) and with just over it (a full batch of 10 completes); a relayed payment that records which account is debited its 1 yoctoNEAR deposit. The invariants of section 5.5 are checked after every step, against `ft_balance_of` |
 | `packages/protocol` unit tests | Offer and payload encoding and decoding; the static checks, one test per rejection code, with fixture keys |
 | Gateway tests against a stubbed chain | Every row of the response tables in sections 6.4 and 6.5; payments in flight; the RPC timeout path; the keeper's calls |
 | MCP unit tests | Each tool against a stubbed gateway; the spend cap |

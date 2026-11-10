@@ -12,7 +12,8 @@ prices scaled down 10,000 times.
 
 ## Architecture (implementation-relevant facts)
 
-Nothing is built yet. The design is
+The contracts are built and tested; the protocol package, gateway, swarm, MCP server and live page
+are not yet. The design is
 [`docs/specs/2026-11-09-quorum-on-near-design.md`](docs/specs/2026-11-09-quorum-on-near-design.md);
 the spec wins where this summary is shorter. In brief:
 
@@ -36,8 +37,8 @@ the spec wins where this summary is shorter. In brief:
   amount `ft_on_transfer` reports as unused).
 - **The bonus** is escrowed when the pool opens. It goes back to the seller on settlement, or is
   split among the committed seats on refund.
-- **Settlement and refunds** are promises with `#[private]` callbacks. State is zeroed before a
-  transfer and restored if the transfer fails.
+- **Settlement and refunds** are promises with `#[private]` callbacks. State is marked (Settled,
+  Refunded) before a transfer and restored if the transfer fails.
 - **HTTP flow:** `402 Payment Required` with the offer, then `202 Accepted` with a receipt while the
   pool fills, then `200` with the access credential once it has filled (a full pool is final).
 
