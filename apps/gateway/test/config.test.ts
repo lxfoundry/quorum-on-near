@@ -332,7 +332,7 @@ describe('loadConfig network', () => {
     expect(loadConfig(env({ QUORUM_NETWORK: network })).network).toBe(network);
   });
 
-  it.each(['near:mainnet', 'near:localnet'])('refuses %s: the gateway runs on testnet only', (network) => {
+  it.each(['near:mainnet', 'near:localnet'])('refuses %s: the gateway runs on testnet or a local sandbox only', (network) => {
     expect(problems(env({ QUORUM_NETWORK: network }))).toEqual([
       `QUORUM_NETWORK must be near:testnet or near:sandbox (the gateway runs on no other network), got "${network}"`,
     ]);
