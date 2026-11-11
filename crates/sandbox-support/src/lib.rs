@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, bail, Result};
 pub use near_api::AccountId;
-use near_api::{Account, Contract, NearGas, NearToken, NetworkConfig, Signer};
+use near_api::{Account, Contract, NearGas, NearToken, NetworkConfig, Reference, Signer};
 use near_sandbox::Sandbox;
 use serde_json::{json, Value};
 
@@ -51,7 +51,31 @@ impl Chain {
             .initial_balance(NearToken::from_near(near))
             .send()
             .await?;
+        self.wait_until_final(&id).await?;
         Ok(id)
+    }
+
+    /// `Sandbox::create_account` applies a state patch and returns at once, and the patch is visible
+    /// at final finality only some blocks later. The signer reads a key's nonce at final finality,
+    /// so a transaction signed for the account before then fails with "access key does not exist".
+    /// Waits until the sandbox's default key is visible on `id` at final finality.
+    async fn wait_until_final(&self, id: &AccountId) -> Result<()> {
+        let key = self.signer.get_public_key().await?;
+        let started = std::time::Instant::now();
+        loop {
+            let seen = Account(id.clone())
+                .access_key(key)
+                .at(Reference::Final)
+                .fetch_from(&self.network)
+                .await;
+            match seen {
+                Ok(_) => return Ok(()),
+                Err(error) if started.elapsed() > Duration::from_secs(30) => {
+                    bail!("{id} is not final 30 s after it was created: {error}")
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+            }
+        }
     }
 
     /// Creates `<name>.sandbox` with 20 NEAR, deploys `wasm`, and runs `init` in the same

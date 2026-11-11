@@ -1,4 +1,6 @@
 [toolchain]
-channel = "stable"
+# Pinned to the release the tests pass on, so local builds and CI use the same compiler. Change it
+# deliberately, in its own commit.
+channel = "1.99.1"
 components = ["rustfmt", "clippy"]
 targets = ["wasm32-unknown-unknown"]

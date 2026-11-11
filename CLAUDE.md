@@ -69,7 +69,7 @@ NEAR rules the design relies on (from NEAR's documentation):
 
 ## Toolchain
 
-Rust stable with the wasm32-unknown-unknown target; near-sdk 5 and near-contract-standards 5;
+Rust 1.99.1 (pinned in `rust-toolchain.toml`) with the wasm32-unknown-unknown target; near-sdk 5 and near-contract-standards 5;
 cargo-near for builds (cargo near build non-reproducible-wasm). Unit tests: cargo test --lib.
 Sandbox tests use near-sandbox and near-api and build the contracts themselves: cargo test
 --workspace (Linux or macOS on Apple silicon, or WSL2). The sandbox node that near-sandbox
@@ -88,6 +88,14 @@ directly (type stripping), so there is no build step. `pnpm install`, then `pnpm
 with the absolute paths of their wasm files in `QUORUM_POOLS_WASM` and `QUORUM_MOCK_USD_WASM`. It
 runs on macOS on Apple silicon, or on Linux or WSL2 with glibc 2.38 or later (Ubuntu 24.04 or
 later).
+
+**CI** (`.github/workflows/ci.yml`) runs on every pull request into `main` and on every push to
+`main`, except for changes that touch only `docs/`, Markdown or `.claude/`. Four jobs run in
+parallel on Ubuntu 24.04: `typescript` (typecheck and the unit tests), `rust-lint` (`cargo fmt
+--check`, `cargo clippy -D warnings`), `rust-tests` (`cargo test --workspace`, the unit and sandbox
+tests) and `gateway-sandbox` (the gateway's sandbox test against wasm built with `cargo near`).
+The jobs use no secrets. To reproduce one locally, run the commands in its steps; the Node, pnpm,
+Rust and cargo-near versions are pinned in the workflow, `package.json` and `rust-toolchain.toml`.
 
 ## Rules
 
