@@ -85,7 +85,8 @@ jobs:
       - name: Install cargo-near
         run: curl --proto '=https' --tlsv1.2 -LsSf "https://github.com/near/cargo-near/releases/download/cargo-near-v${CARGO_NEAR_VERSION}/cargo-near-installer.sh" | sh
       - run: cargo near --version
-      - run: cargo test --locked --workspace
+      # --no-fail-fast: one run reports every failing suite instead of stopping at the first.
+      - run: cargo test --locked --workspace --no-fail-fast
 
   gateway-sandbox:
     name: Gateway (sandbox test)
