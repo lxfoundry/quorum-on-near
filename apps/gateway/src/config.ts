@@ -111,7 +111,10 @@ const asHttpUrl: Rule<string> = {
   parse: (raw) => (URL.canParse(raw) && ['http:', 'https:'].includes(new URL(raw).protocol) ? raw : undefined),
 };
 
-/** Whether `url` has a user name, a password, a query or a fragment: where an endpoint's key would go. */
+/**
+ * Whether `url` has a user name, a password, a query or a fragment: where an endpoint's key would go.
+ * A key in the path cannot be told from a path, so it goes unseen: such an endpoint needs the pass-through.
+ */
 function mayHoldKey(url: string): boolean {
   const { username, password, search, hash } = new URL(url);
   return username !== '' || password !== '' || search !== '' || hash !== '';

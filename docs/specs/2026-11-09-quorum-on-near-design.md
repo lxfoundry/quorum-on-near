@@ -687,7 +687,7 @@ variables, and none of the secret ones is committed.
 | Parent account | swarm, gateway | The `<parent>` of section 7.1 |
 | Token account | swarm, gateway, MCP server, live page | The token the pools contract is initialised with; default Circle's testnet USDC (section 5.7). Changing it needs a new pools account, because `new(token)` runs once; setup detects a mismatch through `get_token` |
 | Funding account | swarm | The account that setup tops up from and reset returns to; default `funding.<parent>` (section 7.2) |
-| RPC URL | gateway, swarm, MCP server, live page | The NEAR testnet RPC endpoint. The gateway refuses to start if the RPC's `chain_id` does not fit the network: `testnet` for `near:testnet`, and neither `testnet` nor `mainnet` for `near:sandbox`. It publishes the URL to the live page in `/config.json` unless the pass-through is on, so the URL must not carry an API key |
+| RPC URL | gateway, swarm, MCP server, live page | The NEAR testnet RPC endpoint. The gateway refuses to start if the RPC's `chain_id` does not fit the network: `testnet` for `near:testnet`, and neither `testnet` nor `mainnet` for `near:sandbox`. It publishes the URL to the live page in `/config.json` unless the pass-through is on, so the URL must not carry an API key. While the pass-through is off, the gateway refuses a URL with a user name, password, query or fragment, but it cannot tell whether a path holds a key: an endpoint with a key anywhere in its URL needs the pass-through on |
 | Gateway URL | swarm, MCP server | Where the gateway is reached |
 | Provider account | gateway | The only seller whose pools the gateway serves (section 6.1) |
 | Relayer keys | gateway | The several access keys of the relayer account (secret), each listed once |
