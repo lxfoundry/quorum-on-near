@@ -328,12 +328,13 @@ network is written in CAIP-2 form: `near:testnet`.
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /` | The live page (static files from `apps/web`) |
+| `GET /` | The live page (static files from `apps/web`). No file whose path has a segment that starts with a dot, such as `/.env`, is served (`404`) |
 | `GET /pools` | The open pools: `id, terms, seat_price, target, taken, deadline_ms, bonus, min_bonus_per_seat` |
-| `GET /pools/:id/access?seats=N` | With no header: `402` with the offer (`seats` defaults to 1). With `X-PAYMENT`: process a payment. With `X-QUORUM-PROOF`: redeem (section 6.5) |
+| `GET /pools/:id/access?seats=N` | With no header: `402` with the offer (`seats` defaults to 1; `N` from 1 to 1000, otherwise `400` with `error` set to `invalid_seats`), `404` (`unknown_pool`) for a pool the gateway does not serve, `409` if the pool is filled or has no seat left, `410` if it has expired, `503` (`chain_unavailable`) if the chain cannot be read. With `X-PAYMENT`: process a payment. With `X-QUORUM-PROOF`: redeem (section 6.5) |
 | `GET /activity?pool=:id` | The activity feed (section 6.7) |
 | `GET /.well-known/jwks.json` | The public key that verifies credentials |
-| `POST /rpc` | Only if the public RPC refuses browser requests: a read-only pass-through that forwards `call_function` view calls on the pools contract and the token, and nothing else |
+| `POST /rpc` | Only if the public RPC refuses browser requests: a read-only pass-through that forwards `call_function` view calls on the pools contract and the token, and nothing else. Any other call, or `args_base64` over 1,024 characters, is answered `403` (`not_allowed`); a body over 16 KiB `413` (`body_too_large`); a body that is not JSON `400` (`invalid_json`); and an RPC that cannot be reached `503` (`chain_unavailable`) |
+| `GET /config.json` | What the live page needs: the network, the RPC URL (`/rpc` when the pass-through is on), the pools contract, the token, the provider and the explorer's transaction link prefix |
 
 **Which pools the gateway serves.** Anyone can open a pool on the contract, but the gateway serves,
 lists, relays payments for and redeems only the pools whose `seller` is its configured provider
@@ -369,11 +370,18 @@ account. It never relays a payment, or issues a credential, for any other pool.
 `asset` is the token the pools contract was initialised with (section 5.7), and every amount is in
 its base units. `minBonusPerSeat` is the least each seat receives if the pool fails (section 3),
 whatever the other buyers do. The actual share is fixed when the pool expires and can only be
-higher. If fewer seats are left than requested, the offer is made for the seats left, and
-`extra.seats` says so. From here on, "the seats" of a payment means `extra.seats`. `minGas` and
+higher. The offer is made for the seats requested, or fewer if fewer are left or the pool's
+`max_seats_per_buyer` is lower, and `extra.seats` says so. Once the gateway has read the seats the
+buyer already holds (section 6.4, check 8), the fresh offer that comes with a refused payment also
+counts them against `max_seats_per_buyer`: with an `over_buyer_cap` refusal, and with a payment the
+relayer finds too close to its expiry to send. From here on, "the seats" of a payment means the
+seats its `msg` commits to: any number from 1 to the seats of its request (`?seats=N`), so a buyer
+that pays an offer reduced to `extra.seats` at the URL it first requested is accepted. `minGas` and
 `maxGas` come from the gas profile of a commit in the sandbox tests, measured again against the
-token on testnet (section 5.7); the figures above are placeholders. The relayer prepays whatever
-gas the delegate action carries, which is why there is an upper bound.
+token on testnet (section 5.7); the figures above are the defaults; against the mock token a
+commit burns about 5.70 Tgas and the one that fills a pool about 5.79 Tgas, and a filling commit
+paid at the 50 Tgas minGas completes in the sandbox test. The relayer prepays whatever gas the
+delegate action carries, which is why there is an upper bound.
 
 ### 6.3 Payment
 
@@ -391,10 +399,25 @@ contains exactly one action, `FunctionCall`, on the token:
 - a deposit of 1 yoctoNEAR;
 - gas of at least `minGas`.
 
+Before signing, a buyer checks the offer against its own configuration, its request and a
+spending limit for this payment (not the token balance of section 7.2; the MCP server's spend cap
+of section 7.5 is a separate, running limit): the scheme is `quorum`; `network`, `asset` and `payTo` are its configured network, token
+and pools contract, never taken from the gateway; the fields it pays from are well formed;
+`extra.poolId` is the pool it requested; `extra.seats` is at most the seats it requested (fewer
+is a reduced offer, and accepted); and `maxAmountRequired` is exactly `extra.seats ×
+extra.seatPrice` and at most that spending limit. It refuses the first
+failure, in that order (`wrong_scheme`, `wrong_network`, `wrong_asset`, `wrong_pay_to`,
+`invalid_offer`, `wrong_pool`, `too_many_seats`, `wrong_amount`, `over_budget`), and signs
+nothing. The check bounds what the payment commits to and what it costs. Within the limit the
+seat price is the offer's, and what `extra` says about the pool (terms, deadline, bonus, seats
+taken) is the gateway's word; a buyer that relies on it reads the pool from the chain. A payment
+at a seat price other than the pool's own is refused by the contract, and the token returns the
+transfer.
+
 ### 6.4 Checks, then relay
 
 The gateway relays nothing until every check passes. A failed check is answered with `402`,
-carrying the same offer, and `error` set to the code shown.
+carrying the offer as it stands (section 6.2), and `error` set to the code shown.
 
 | # | Check | Done by | Code |
 |---|---|---|---|
@@ -402,13 +425,28 @@ carrying the same offer, and `error` set to the code shown.
 | 2 | `receiver_id` is the token; there is exactly one `FunctionCall`; the method is `ft_transfer_call`; the deposit is exactly 1 yoctoNEAR; the gas is between `minGas` and `maxGas` | protocol | `wrong_receiver`, `wrong_method`, `wrong_deposit`, `gas_too_low`, `gas_too_high` |
 | 3 | The arguments are exactly `receiver_id`, `amount` and `msg` (no `memo`), and match the offer: `receiver_id` is the pools contract, `amount` is the seats × price, and `msg` parses to a `commit` for this pool and the seats, with no other fields | protocol | `wrong_args`, `wrong_amount`, `wrong_pool` |
 | 4 | `public_key` is a full-access key of `sender_id` (`view_access_key`) | gateway | `not_full_access` |
-| 5 | `nonce` is above the key's current nonce; `max_block_height` is above the current height and no further ahead than `maxTimeoutSeconds` of blocks (converted with the chain's average block time) | gateway | `stale_nonce`, `expired` |
+| 5 | `nonce` is above the key's current nonce, and below the final block height × 10^6 (the chain refuses a larger delegate nonce without using it up, so the same payment could be relayed again); `max_block_height` is more than 5 blocks above the final height, and no further ahead than `maxTimeoutSeconds` of blocks (converted with the configured average block time) plus 5 | gateway | `stale_nonce`, `nonce_too_large`, `expired` |
 | 6 | The pool is Open, block time is before the deadline, and at least one seat is left. If fewer seats are left than paid for by the time the payment lands, the contract takes what is left and returns the rest | gateway | `pool_closed` |
 | 7 | `ft_balance_of(sender_id)` covers the amount | gateway | `insufficient_balance` |
+| 8 | `sender_id` is not the pool's seller, and the seats it already holds (`get_buyer`) plus the seats paid for stay within `max_seats_per_buyer`. The contract refuses both, so the gateway refuses them before the relayer pays gas | gateway | `seller_commit`, `over_buyer_cap` |
+
+The delegate action must be signed with an ed25519 or a secp256k1 key; any other key type is
+`invalid_payload`. The `ft_transfer_call` arguments must be compact JSON, as `JSON.stringify`
+writes them. The gateway reads the contract's views and access keys at optimistic finality, so it
+sees state at least as new as the results it relays; heights and deadlines are judged against the
+final block. The relayer checks the expiry again once it holds a key, and refuses a payment that
+expired while it waited with `expired`. If the chain cannot be read while the checks run, the
+gateway answers `503` and relays nothing.
 
 Each buyer has at most one payment in flight; a second one is refused with `payment_in_flight`. A
-payment is in flight from its relay until its result is known or its `max_block_height` has passed,
-whichever comes first.
+payment is in flight from the moment it has passed the checks that only the buyer's own fresh
+payment can pass (its key on the buyer's account with full access, a nonce above the key's, and a
+`max_block_height` within the accepted window: checks 4 and 5) until its result is known or a final
+block above its `max_block_height` has been seen.
+If the relay ends with the result unknown while the delegate may still land, the buyer stays in
+flight after the `502`: the gateway releases it once a final height it reads for a later payment
+(the buyer's own or any other buyer's) is above that `max_block_height`, never by its own clock.
+Until then, the buyer's payments are refused with `payment_in_flight`.
 The checks run at submission time, so a buyer can still spend its balance or use its nonce between
 a check and the relay; such a payment fails on chain and costs the relayer its gas. What the checks
 do bound is the form of what the relayer submits: one `ft_transfer_call` that matches an offer,
@@ -423,14 +461,21 @@ parallel without nonce clashes. `ft_transfer_call` returns the amount used, and
 |---|---|
 | Seats taken, pool still Open | `202 Accepted`, with `X-PAYMENT-RESPONSE`, and body `{status: "pending", receipt: {poolId, buyer, seats, txHash}, pool: {taken, target, deadlineMs}}` |
 | This payment filled the pool | `200 OK`, with `X-PAYMENT-RESPONSE`, and body `{status: "filled", credential, poolId, seats, terms}` |
-| No seats taken (the pool filled or closed in between; the token has returned the money) | `409 Conflict`, with a fresh offer if seats are left |
-| The pool had expired | `410 Gone` |
-| The relay failed, or its result is unknown after the timeout | `502 Bad Gateway`, with the transaction hash if there is one |
+| No seats taken because the pool filled in between (the token has returned the money) | `409 Conflict`, with `error` set to `no_seats_taken` and no offer |
+| No seats taken while the pool is still Open with a seat left, or the transfer never reached the pools contract | `502 Bad Gateway`, with `error` set to `relay_failed` and the transaction hash. The contract takes whatever seats are left, so something else refused the commit, and the same payment would be refused again |
+| The pool had expired: the views say Expired or Refunded, or Open with the final block's time at or past the deadline | `410 Gone` |
+| The relay failed, or its result is unknown after the timeout | `502 Bad Gateway`, with the transaction hash if there is one, and `error` set to `relay_failed` or `result_unknown` |
+
+When a commit took no seats, the first of these that applies is the answer: `410` if the pool is
+past its deadline, judged by block time; `502` with `relay_failed` if the transfer never reached
+the pools contract or the pool is still Open with a seat left; otherwise `409`.
 
 `X-PAYMENT-RESPONSE` carries `base64(JSON {success: true, transaction, network, payer})`.
 
 On an RPC timeout, the gateway looks the result up by transaction hash. It never re-signs or
-re-sends a payment.
+re-sends a payment. A response counts as the result only once its `final_execution_status` is
+`EXECUTED_OPTIMISTIC`, `EXECUTED` or `FINAL`; at a lower status its receipts may not all have run,
+so the transaction is looked up again.
 
 ### 6.5 Redemption
 
@@ -444,6 +489,14 @@ The gateway checks four things:
 2. that `publicKey` is a full-access key of `accountId`;
 3. that the proof is less than 5 minutes old;
 4. that the nonce has not been seen.
+
+The replay check is keyed by the public key and the nonce, which is what NEP-413 signs. A proof
+that fails is answered with `401` and `error` set to `invalid_proof`, `wrong_message`,
+`wrong_recipient`, `stale_proof`, `invalid_signature`, `not_full_access` or `replayed_proof`. In
+the header, `signature` and `nonce` are standard base64, `publicKey` is the key in NEAR's text
+form (`ed25519:<base58>` or `secp256k1:<base58>`), and `recipient` is the gateway's host as its
+URL writes it (`host` or `host:port`). A signing time up to one minute ahead of the gateway's
+clock is accepted, to absorb clock skew, so a nonce is remembered for six minutes.
 
 It then reads `get_buyer` and `get_pool`:
 
@@ -474,7 +527,17 @@ The same buyer always gets a credential with the same `sub`, `pool` and `seats`.
 
 **The keeper** runs every 5 seconds and signs with the relayer account:
 - for each Filled pool, it calls `settle(pool_id)`;
-- for each pool past its deadline that is not yet Refunded, it calls `refund(pool_id, 10)`.
+- for each Expired pool (the views report an Open pool past its deadline as Expired; a Filled or
+  Settled pool is never refunded), it calls `refund(pool_id, limit)`, with `limit` 10 by default,
+  unless the pool's dust transfer is already in flight (every buyer visited and `dust_sent` set),
+  when the call would do nothing.
+
+A call makes progress when `settle` settles the pool, or when the `refund` call's receipt at the
+pools contract succeeds and either the pool had buyers left to visit (the call moves the refund
+cursor, even past buyers who claimed their own refunds and log nothing) or the dust arrives
+(`pool_refunded`). A pool whose call makes no progress is retried with a backoff: 30 seconds,
+doubling, up to 10 minutes. Only the first failure of such a streak is written to the activity
+feed; a refund that could not be pushed to a buyer is always written.
 
 Both methods are open to anyone and safe to repeat, so the keeper is a convenience, not a trusted
 party.
@@ -624,15 +687,22 @@ variables, and none of the secret ones is committed.
 | Parent account | swarm, gateway | The `<parent>` of section 7.1 |
 | Token account | swarm, gateway, MCP server, live page | The token the pools contract is initialised with; default Circle's testnet USDC (section 5.7). Changing it needs a new pools account, because `new(token)` runs once; setup detects a mismatch through `get_token` |
 | Funding account | swarm | The account that setup tops up from and reset returns to; default `funding.<parent>` (section 7.2) |
-| RPC URL | gateway, swarm, MCP server, live page | The NEAR testnet RPC endpoint |
+| RPC URL | gateway, swarm, MCP server, live page | The NEAR testnet RPC endpoint. The gateway refuses to start if the RPC's `chain_id` does not fit the network: `testnet` for `near:testnet`, and neither `testnet` nor `mainnet` for `near:sandbox`. It publishes the URL to the live page in `/config.json` unless the pass-through is on, so the URL must not carry an API key. While the pass-through is off, the gateway refuses a URL with a user name, password, query or fragment, but it cannot tell whether a path holds a key: an endpoint with a key anywhere in its URL needs the pass-through on |
 | Gateway URL | swarm, MCP server | Where the gateway is reached |
 | Provider account | gateway | The only seller whose pools the gateway serves (section 6.1) |
-| Relayer keys | gateway | The several access keys of the relayer account (secret) |
+| Relayer keys | gateway | The several access keys of the relayer account (secret), each listed once |
 | Credential key | gateway | The Ed25519 key that signs credentials (section 6.6) (secret) |
 | Buyer account and key location | swarm, MCP server | One per buyer (secret) |
 | Spend cap | MCP server | The most the LLM buyer may spend between two setups, in the token's base units; default the buyer's budget (section 7.5) |
 | NEAR per buyer, NEAR for the provider and the funding account | swarm | The NEAR balances setup tops up to (section 7.2) |
 | Budget per buyer, bonus funds for the provider | swarm | The token balances setup tops up to and reset returns to, in base units; default 10,000 (0.01 USDC) each (section 7.2) |
+| Network | gateway, swarm, MCP server | `near:testnet`, the network that offers and payments name. The gateway refuses any other, except `near:sandbox`, the local chain its sandbox test runs on |
+| Pools account | gateway, swarm, MCP server | The pools contract buyers pay; default `pools.<parent>`. A buyer refuses an offer whose `payTo` is not this account (section 6.3) |
+| Commit gas bounds | gateway | The offer's `minGas` and `maxGas` (section 6.2): `minGas` at most `maxGas`, both at most 300 Tgas |
+| Average block time | gateway, swarm, MCP server | Converts `maxTimeoutSeconds` into blocks (section 6.4, check 5) |
+| Keeper settings | gateway | The keeper's interval, the refund batch `limit` (1 to 10), and the gas attached to `settle` and `refund` (section 6.7): at least what the contract requires at entry (section 5.4) plus 17 Tgas for what a call uses before that check, so 50 Tgas for `settle` and 27 + 23 × (`limit` + 1) Tgas for `refund` (280 Tgas at `limit` 10, the figure with which section 5.4 shows a full batch completing), and at most 300 Tgas. The gateway refuses less: a call that attaches only the entry figure always fails at entry |
+| RPC pass-through | gateway | Turns `POST /rpc` on (section 6.1) |
+| Live page folder | gateway | The folder served at `/` (section 8). The gateway refuses to start if it is, or contains, the gateway's own folder |
 
 ## 8. Live page
 
@@ -663,11 +733,11 @@ step, and the gateway serves the folder at `/`. The page never signs anything an
 |---|---|
 | A payment check fails | `402` with the code from section 6.4. Nothing is relayed |
 | Two buyers race for the last seats | `409`. The token's resolver has already returned the unused amount |
-| The RPC times out during a relay | The result is looked up by transaction hash; the payment is never re-signed or re-sent. If the result is still unknown, `502` with the hash, and the buyer checks through redemption |
-| A keeper call fails | It is retried on the next tick. The contract's guards make every call safe to repeat |
+| The RPC times out during a relay | The result is looked up by transaction hash; the payment is never re-signed or re-sent. If the result is still unknown, `502` with the hash, and the buyer checks through redemption. The buyer stays in flight until a final block above the delegate's `max_block_height` has been seen (section 6.4) |
+| A keeper call fails | A call that throws before it has a result is retried on the next tick. A call whose result is rejected or unknown, or shows no progress, is retried with the backoff of section 6.7. The contract's guards make every call safe to repeat |
 | A pushed refund fails (for example, the buyer is no longer registered on the token) | The buyer becomes `Claimable`; it registers again and calls `claim_refund` |
 | The payout to the seller fails | The pool goes back to Filled, and `settle` is retried |
-| The gateway restarts | All money state is on chain. The activity feed is reloaded from its file. The redemption nonce cache restarts empty, so a proof captured before the restart can be replayed once within its 5-minute life; the replay returns the credential, a bearer token (section 12) |
+| The gateway restarts | All money state is on chain. The activity feed is reloaded from its file; a line cut short by a stop mid-write is skipped, and the file is ended with a newline before the next record. The redemption nonce cache restarts empty, so a proof captured before the restart can be replayed once within its life (up to six minutes, section 6.5); the replay returns the credential, a bearer token (section 12). Payments in flight, and buyers held after an unknown result, are forgotten (section 12) |
 | Deadlines | Always judged by block time, never by a server clock |
 
 ## 10. Testing
@@ -675,7 +745,8 @@ step, and the gateway serves the folder at `/`. The page never signs anything an
 | Level | What it covers |
 |---|---|
 | Contract unit tests (near-sdk test environment) | The bonus split and the dust; every state transition; every refusal in section 5.3; checked arithmetic at the limits |
-| Sandbox integration (`near-sandbox` and `near-api`, with the real mock token) | **Fills:** open, commits, fill, settle. **Fails:** expiry, refund in batches, dust to the seller. Also: a partial last commit; a payment from the wrong token; a commit after the deadline; a seller committing to its own pool; a failed pushed refund, then a claim; a failed payout, then a retried `settle`; a claim before any `refund` call; buyers holding several seats, one of them taken in two commits, refunded by a claim and by a push; a pool with no seats at expiry; a pool whose dust is 0 (a bonus of 0 is covered by unit tests only, because the standard token rejects a zero-amount `ft_transfer_call`); `refund` called with just under the gas its entry assertion requires (refused) and with just over it (a full batch of 10 completes, each transfer and callback burning under half its allowance); a relayed payment that records which account is debited its 1 yoctoNEAR deposit. The invariants of section 5.5 are checked after every step, against `ft_balance_of` |
+| Sandbox integration (`near-sandbox` and `near-api`, with the real mock token) | **Fills:** open, commits, fill, settle. **Fails:** expiry, refund in batches, dust to the seller. Also: a partial last commit; a payment from the wrong token; a commit after the deadline; a seller committing to its own pool; a failed pushed refund, then a claim; a failed payout, then a retried `settle`; a claim before any `refund` call; buyers holding several seats, one of them taken in two commits, refunded by a claim and by a push; a pool with no seats at expiry; a pool whose dust is 0 (a bonus of 0 is covered by unit tests only, because the standard token rejects a zero-amount `ft_transfer_call`); `refund` called with just under the gas its entry assertion requires (refused) and with just over it (a full batch of 10 completes, each transfer and callback burning under half its allowance). The invariants of section 5.5 are checked after every step, against `ft_balance_of` |
+| Gateway sandbox test (`near-sandbox` from npm and near-api-js, with the contracts' wasm and the mock token) | A relayed commit through the gateway's HTTP path: the `402` offer, a payment answered `202`, a second buyer's payment that fills the pool answered `200` with a credential, and the keeper's `settle`. Which account is debited the 1 yoctoNEAR deposit of a relayed payment. The gas a commit burns, and that the filling commit, paid at the offer's `minGas`, completes. A redemption against the sandbox, and the chain-id check the gateway runs at startup, applied to the sandbox's id |
 | `packages/protocol` unit tests | Offer and payload encoding and decoding; the static checks, one test per rejection code, with fixture keys |
 | Gateway tests against a stubbed chain | Every row of the response tables in sections 6.4 and 6.5; payments in flight; the RPC timeout path; the keeper's calls |
 | MCP unit tests | Each tool against a stubbed gateway; the spend cap |
@@ -696,6 +767,7 @@ keys) and the NEP-141, NEP-145, NEP-297, NEP-366 and NEP-413 standards:
   buyer, not the relayer. The design works either way: the deposit is checked to be exactly 1
   yoctoNEAR (section 6.4), buyers keep a small NEAR balance (section 7.2), and a sandbox test
   records which account is debited (section 10).
+  In the sandbox, the deposit is debited from the relayer's account.
   The tokens moved by `ft_transfer_call` still come from the sender's own balance.
 - A delegate action has **one receiver**, and its inner actions have no atomicity or roll-back
   across receipts.
@@ -744,3 +816,15 @@ keys) and the NEP-141, NEP-145, NEP-297, NEP-366 and NEP-413 standards:
   time that money is locked until the pool resolves.
 - **The credential is a bearer token** with no expiry and no audience: whoever holds it can
   present it.
+- **`/rpc` has no rate limit.** With the pass-through on, anyone can send view calls on the pools
+  contract and the token through the gateway, up to 16 KiB each, and the RPC's own limits then
+  apply to the gateway as a whole. A production version would rate-limit it per client.
+- **Credentials are issued at optimistic execution, not finality.** The relayer waits for the
+  commit to execute optimistically, and redemption reads the pool at optimistic finality, so a
+  credential can be issued before the block holding the commit is final. If that block were not
+  finalised, the credential would stand for a seat the contract does not hold.
+- **The in-flight hold is bounded by the delegate action, not its receipts.** `max_block_height`
+  bounds when the delegate action may execute, not the token and pools receipts it starts. If
+  those were still pending when a final block passed it, the buyer is released while its commit
+  can still land, and a second payment could commit too. The hold also lives in memory, so a
+  gateway restart releases it.

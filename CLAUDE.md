@@ -12,8 +12,8 @@ prices scaled down 10,000 times.
 
 ## Architecture (implementation-relevant facts)
 
-The contracts are built and tested; the protocol package, gateway, swarm, MCP server and live page
-are not yet. The design is
+The contracts, the protocol package and the gateway are built and tested; the swarm, MCP server
+and live page are not yet. The design is
 [`docs/specs/2026-11-09-quorum-on-near-design.md`](docs/specs/2026-11-09-quorum-on-near-design.md);
 the spec wins where this summary is shorter. In brief:
 
@@ -64,8 +64,8 @@ NEAR rules the design relies on (from NEAR's documentation):
 | `contracts/mock-usd/` | The Mock USD token (NEP-141), for the sandbox tests only |
 | `contracts/pools/` | The pools escrow contract |
 | `crates/sandbox-support/` | Test helper: starts a local NEAR sandbox and wraps calls and views |
-
-The TypeScript packages and apps are added by later plans.
+| `packages/protocol/` | The `quorum` x402 scheme: types, header codecs, delegate-action and NEP-413 checks, buyer builders |
+| `apps/gateway/` | The provider's HTTP side: offers, payment checks, relay, credentials, redemption, the keeper and the activity feed |
 
 ## Toolchain
 
@@ -78,6 +78,16 @@ run on an older glibc reject the wasm current Rust emits. A bare `cargo check` s
 native-build guard, because it leaves out the dev-dependency that turns on `unit-testing`: use
 `cargo check --tests`, or `cargo check --target wasm32-unknown-unknown`. NEAR testnet only until
 the test circuit passes (rule 4).
+
+TypeScript: Node 22.22.2 or later and pnpm 10 through Corepack, in a pnpm workspace
+(`packages/*`, `apps/*`); near-api-js 7, Hono, jose, vitest. Node runs the TypeScript sources
+directly (type stripping), so there is no build step. `pnpm install`, then `pnpm test` and
+`pnpm typecheck`. The gateway runs with `pnpm --filter @quorum-on-near/gateway start` and reads
+`QUORUM_*` variables from `apps/gateway/.env` (see `.env.example`). Its sandbox test
+(`pnpm --filter @quorum-on-near/gateway test:sandbox`) needs the contracts built with cargo near,
+with the absolute paths of their wasm files in `QUORUM_POOLS_WASM` and `QUORUM_MOCK_USD_WASM`. It
+runs on macOS on Apple silicon, or on Linux or WSL2 with glibc 2.38 or later (Ubuntu 24.04 or
+later).
 
 ## Rules
 
