@@ -41,8 +41,10 @@ passed, and fix names in place if a library call differs (do not change what the
 The shipped code of Tasks 1 to 14 differs from the code blocks of this plan in the ways listed
 below. The task text is left as first written. Where it disagrees with this list, the list and the
 shipped code apply: copying a block as written brings back the behaviour the change replaced. With
-these changes Tasks 1 to 14 have 936 tests: 340 in the protocol package and 596 in the gateway. The
-per-task counts in the steps are those of the code as written.
+these changes, and with the two captured-outcome tests of Task 15, `pnpm test` runs 938 tests: 340
+in the protocol package and 598 in the gateway. The sandbox suite (8 tests in
+`apps/gateway/test/sandbox/`, run with `test:sandbox`) is not part of that total. The per-task
+counts in the steps are those of the code as written.
 
 - **nearcore's signature rules (Task 3).** `verifyDelegateSignature` keeps near-api-js's check and
   adds nearcore's: a secp256k1 signature is 65 bytes with a recovery byte of at most 3, and an
@@ -87,7 +89,8 @@ per-task counts in the steps are those of the code as written.
   slot: one key read for the full-access and nonce checks, then the final block read for the nonce
   bound and the `max_block_height` window, which also releases a held buyer. Only then does it call
   `inFlight.begin`. It then reads the key again and repeats the nonce check, and judges the pool
-  against the same final block, so a relayed payment makes the same reads as before. Taking the slot
+  against the same final block. A relayed payment therefore reads the buyer's access key twice, once
+  before the slot is taken and once after it, where the plan's code read it once. Taking the slot
   first let a delegate signed with another key, or a replay of a used or expired payment copied from
   the chain, hold the buyer's slot and refuse its own payments with `payment_in_flight`.
 - **Failed delegate in the feed (Task 11).** A relayed commit whose delegate action failed on chain

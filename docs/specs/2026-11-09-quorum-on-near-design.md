@@ -378,8 +378,10 @@ relayer finds too close to its expiry to send. From here on, "the seats" of a pa
 seats its `msg` commits to: any number from 1 to the seats of its request (`?seats=N`), so a buyer
 that pays an offer reduced to `extra.seats` at the URL it first requested is accepted. `minGas` and
 `maxGas` come from the gas profile of a commit in the sandbox tests, measured again against the
-token on testnet (section 5.7); the figures above are placeholders. The relayer prepays whatever
-gas the delegate action carries, which is why there is an upper bound.
+token on testnet (section 5.7); the figures above are the defaults; against the mock token a
+commit burns about 5.70 Tgas and the one that fills a pool about 5.79 Tgas, and a filling commit
+paid at the 50 Tgas minGas completes in the sandbox test. The relayer prepays whatever gas the
+delegate action carries, which is why there is an upper bound.
 
 ### 6.3 Payment
 
@@ -743,7 +745,8 @@ step, and the gateway serves the folder at `/`. The page never signs anything an
 | Level | What it covers |
 |---|---|
 | Contract unit tests (near-sdk test environment) | The bonus split and the dust; every state transition; every refusal in section 5.3; checked arithmetic at the limits |
-| Sandbox integration (`near-sandbox` and `near-api`, with the real mock token) | **Fills:** open, commits, fill, settle. **Fails:** expiry, refund in batches, dust to the seller. Also: a partial last commit; a payment from the wrong token; a commit after the deadline; a seller committing to its own pool; a failed pushed refund, then a claim; a failed payout, then a retried `settle`; a claim before any `refund` call; buyers holding several seats, one of them taken in two commits, refunded by a claim and by a push; a pool with no seats at expiry; a pool whose dust is 0 (a bonus of 0 is covered by unit tests only, because the standard token rejects a zero-amount `ft_transfer_call`); `refund` called with just under the gas its entry assertion requires (refused) and with just over it (a full batch of 10 completes, each transfer and callback burning under half its allowance); a relayed payment that records which account is debited its 1 yoctoNEAR deposit. The invariants of section 5.5 are checked after every step, against `ft_balance_of` |
+| Sandbox integration (`near-sandbox` and `near-api`, with the real mock token) | **Fills:** open, commits, fill, settle. **Fails:** expiry, refund in batches, dust to the seller. Also: a partial last commit; a payment from the wrong token; a commit after the deadline; a seller committing to its own pool; a failed pushed refund, then a claim; a failed payout, then a retried `settle`; a claim before any `refund` call; buyers holding several seats, one of them taken in two commits, refunded by a claim and by a push; a pool with no seats at expiry; a pool whose dust is 0 (a bonus of 0 is covered by unit tests only, because the standard token rejects a zero-amount `ft_transfer_call`); `refund` called with just under the gas its entry assertion requires (refused) and with just over it (a full batch of 10 completes, each transfer and callback burning under half its allowance). The invariants of section 5.5 are checked after every step, against `ft_balance_of` |
+| Gateway sandbox test (`near-sandbox` from npm and near-api-js, with the contracts' wasm and the mock token) | A relayed commit through the gateway's HTTP path: the `402` offer, a payment answered `202`, a second buyer's payment that fills the pool answered `200` with a credential, and the keeper's `settle`. Which account is debited the 1 yoctoNEAR deposit of a relayed payment. The gas a commit burns, and that the filling commit, paid at the offer's `minGas`, completes. A redemption against the sandbox, and the chain-id check the gateway runs at startup, applied to the sandbox's id |
 | `packages/protocol` unit tests | Offer and payload encoding and decoding; the static checks, one test per rejection code, with fixture keys |
 | Gateway tests against a stubbed chain | Every row of the response tables in sections 6.4 and 6.5; payments in flight; the RPC timeout path; the keeper's calls |
 | MCP unit tests | Each tool against a stubbed gateway; the spend cap |
@@ -764,6 +767,7 @@ keys) and the NEP-141, NEP-145, NEP-297, NEP-366 and NEP-413 standards:
   buyer, not the relayer. The design works either way: the deposit is checked to be exactly 1
   yoctoNEAR (section 6.4), buyers keep a small NEAR balance (section 7.2), and a sandbox test
   records which account is debited (section 10).
+  In the sandbox, the deposit is debited from the relayer's account.
   The tokens moved by `ft_transfer_call` still come from the sender's own balance.
 - A delegate action has **one receiver**, and its inner actions have no atomicity or roll-back
   across receipts.
