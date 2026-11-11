@@ -1,7 +1,6 @@
 import { sha256 } from '@noble/hashes/sha2.js';
 import { decodeSignedDelegate, type DecodedSignedDelegate } from '@quorum-on-near/protocol';
 import {
-  JsonRpcProvider,
   KeyPair,
   KeyPairSigner,
   actions,
@@ -31,6 +30,7 @@ import {
 } from 'near-api-js/rpc-errors';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DelegateExpiredError } from '../src/chain.ts';
+import { createRelayerProvider } from '../src/providers.ts';
 import { KeyPool, RpcRelayer, type RpcRelayerOptions } from '../src/relayer.ts';
 import { POOLS, RELAYER, TOKEN } from './fake-chain.ts';
 
@@ -221,7 +221,7 @@ async function buyerDelegate(maxBlockHeight = 1_100n): Promise<{ signed: Decoded
 }
 
 /**
- * A send provider built as main.ts builds it (near-api-js, `retries: 1`), posting to an RPC that answers
+ * A send provider built as main.ts builds it (createRelayerProvider), posting to an RPC that answers
  * every request with HTTP `status`. `posted` holds each transaction posted, decoded from the request.
  * Stubs the global fetch: unstub it after the test.
  */
@@ -241,7 +241,7 @@ function httpStatusSendProvider(status: number): { provider: Provider; posted: S
     });
     return new Response('Too Many Requests', { status });
   });
-  return { provider: new JsonRpcProvider({ url: 'http://rpc.invalid' }, { retries: 1 }), posted };
+  return { provider: createRelayerProvider('http://rpc.invalid'), posted };
 }
 
 /** Lets every pending promise callback run. */

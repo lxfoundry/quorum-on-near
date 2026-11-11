@@ -11,6 +11,7 @@ import { createCredentialIssuer } from './credential.ts';
 import type { Deps } from './deps.ts';
 import { InFlight, proofNonceCache } from './guards.ts';
 import { Keeper } from './keeper.ts';
+import { createRelayerProvider } from './providers.ts';
 import { KeyPool, RpcRelayer } from './relayer.ts';
 import { RpcChain } from './rpc-chain.ts';
 import { gracefulClose } from './shutdown.ts';
@@ -67,9 +68,8 @@ if (token !== config.token) {
   fail(`${config.poolsContract} holds ${token}, but QUORUM_TOKEN_ACCOUNT is ${config.token}`);
 }
 
-// near-api-js counts attempts: `retries: 1` posts each request once. A transaction is never posted
-// twice, and each lookup by hash is a single post, so the relayer checks its deadline between posts.
-const relayerProvider = new JsonRpcProvider({ url: config.rpcUrl }, { retries: 1 });
+// Posts each request once: a transaction is never posted twice (see providers.ts).
+const relayerProvider = createRelayerProvider(config.rpcUrl);
 const writer = new RpcRelayer({
   relayer: config.relayer,
   poolsContract: config.poolsContract,

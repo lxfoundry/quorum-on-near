@@ -34,6 +34,7 @@ import type { Deps } from '../../src/deps.ts';
 import { InFlight, proofNonceCache } from '../../src/guards.ts';
 import { Keeper } from '../../src/keeper.ts';
 import { toTxOutcome } from '../../src/outcome.ts';
+import { createRelayerProvider } from '../../src/providers.ts';
 import { KeyPool, RpcRelayer } from '../../src/relayer.ts';
 import { RpcChain } from '../../src/rpc-chain.ts';
 import { finalOutcome, nearBalance, startWorld, wasmFromEnv, type Actor, type World } from './world.ts';
@@ -86,7 +87,7 @@ async function sandboxDeps(world: World, dataDir: string): Promise<Deps> {
     QUORUM_WEB_DIR: '',
   });
   const { poolsContract } = config;
-  const relayerProvider = new JsonRpcProvider({ url: config.rpcUrl }, { retries: 1 });
+  const relayerProvider = createRelayerProvider(config.rpcUrl);
   return {
     config,
     chain: new RpcChain({ provider: new JsonRpcProvider({ url: config.rpcUrl }), poolsContract, token: config.token }),
