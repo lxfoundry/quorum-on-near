@@ -471,15 +471,15 @@ Each buyer has at most one payment in flight; a second one is refused with `paym
 payment is in flight from the moment it has passed the checks that only the buyer's own fresh
 payment can pass (its key on the buyer's account with full access, a nonce above the key's, and a
 `max_block_height` within the accepted window: checks 4 and 5) until its result is known or, if it
-stays unknown, a final block above its `max_block_height` plus 5 blocks has been seen.
+stays unknown, a final block above its `max_block_height` plus 20 blocks has been seen.
 The relayer's lookup of a payment's result stops when its time runs out, or on the first final block
 above the delegate's `max_block_height`: the delegate can then no longer be included, but one
 included by its `max_block_height` may still have receipts to run. Either way the relay ends with
 the result unknown, and the buyer stays in flight after the `502 result_unknown`: the gateway
 releases it once a final height it reads for a later payment (the buyer's own or any other buyer's)
-is above that `max_block_height` plus 5 blocks, never by its own clock, or at once if the height the
-lookup read is above that already. The 5 blocks are for the receipts: a delegate included at its
-`max_block_height` still runs the token's `ft_transfer_call` and the pools contract's
+is above that `max_block_height` plus 20 blocks, never by its own clock, or at once if the height
+the lookup read is above that already. The 20 blocks are for the receipts: a delegate included at
+its `max_block_height` still runs the token's `ft_transfer_call` and the pools contract's
 `ft_on_transfer` in the blocks after it, and a payment checked before they have run would not see
 the seats they take.
 Until then, the buyer's payments are refused with `payment_in_flight`, and nothing is relayed.
@@ -1021,7 +1021,7 @@ step, and the gateway serves the folder at `/`. The page never signs anything an
 |---|---|
 | A payment check fails | `402` with the code from section 6.4. Nothing is relayed |
 | Two buyers race for the last seats | `409`. The token's resolver has already returned the unused amount |
-| The RPC times out during a relay | The result is looked up by transaction hash; the payment is never re-signed or re-sent. If the result is still unknown, `502` with the hash, and the buyer checks through redemption. The buyer stays in flight until a final block above the delegate's `max_block_height` plus 5 blocks has been seen (section 6.4) |
+| The RPC times out during a relay | The result is looked up by transaction hash; the payment is never re-signed or re-sent. If the result is still unknown, `502` with the hash, and the buyer checks through redemption. The buyer stays in flight until a final block above the delegate's `max_block_height` plus 20 blocks has been seen (section 6.4) |
 | A buyer gets no documented answer to a payment, or a `502 result_unknown` | The scripted buyer or the MCP server signs no new payment to the pool until a final block above the payment's `max_block_height` plus 20 has been seen, then learns through redemption whether it landed (sections 6.3, 7.4 and 7.5) |
 | A keeper call fails | A call that throws before it has a result is retried on the next tick. A call whose result is rejected or unknown, or shows no progress, is retried with the backoff of section 6.7. The contract's guards make every call safe to repeat |
 | A pushed refund fails (for example, the buyer is no longer registered on the token) | The buyer becomes `Claimable`; it registers again and calls `claim_refund` |
@@ -1162,8 +1162,8 @@ keys) and the NEP-141, NEP-145, NEP-297, NEP-366 and NEP-413 standards:
   finalised, the credential would stand for a seat the contract does not hold.
 - **The in-flight hold is bounded by the delegate action, not its receipts.** `max_block_height`
   bounds when the delegate action may execute, not the token and pools receipts it starts. The
-  gateway holds the buyer 5 blocks past it, and the scripted buyers and the MCP server wait 20, for
-  those receipts. If they were still pending after that, the buyer is released while its commit
+  gateway holds the buyer 20 blocks past it, and the scripted buyers and the MCP server wait 20 too,
+  for those receipts. If they were still pending after that, the buyer is released while its commit
   can still land, and a second payment could commit too. The hold also lives in memory, so a
   gateway restart releases it.
 - **The MCP server's holds live in memory.** A restart forgets a pool held after a payment whose

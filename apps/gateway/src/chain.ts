@@ -44,11 +44,23 @@ export type RelayResult =
   | { kind: 'rejected'; txHash: string; error: string };
 
 /**
- * A payment is `expired` unless its `maxBlockHeight` is more than this many blocks past the final
- * height, so that the relayed transaction can land before the delegate expires. The upper bound,
- * the offer's timeout in blocks, allows the same margin.
+ * The send-side margin, and only that: a payment is `expired` unless its `maxBlockHeight` is more
+ * than this many blocks past the final height, so that the relayed transaction can land before the
+ * delegate expires. The upper bound, the offer's timeout in blocks, allows the same margin, and the
+ * relayer refuses to send a delegate the final height has come this close to. How long a buyer is
+ * held after an unknown result is RECEIPT_MARGIN_BLOCKS.
  */
 export const EXPIRY_MARGIN_BLOCKS = 5n;
+
+/**
+ * The blocks past a delegate's `maxBlockHeight` that its receipts may still take: a delegate
+ * included at its `maxBlockHeight` still runs the token's `ft_transfer_call` and the pools
+ * contract's `ft_on_transfer` in the blocks after it. A buyer whose payment's result is unknown is
+ * held until a final block above `maxBlockHeight` plus this many blocks has been read, so that a new
+ * payment is never checked before the seats the earlier one may take are visible. The scripted
+ * buyers and the MCP server wait at least as long before they pay again.
+ */
+export const RECEIPT_MARGIN_BLOCKS = 20n;
 
 /**
  * Thrown by `relayDelegate` when the chain's final height is already too close to the delegate's
