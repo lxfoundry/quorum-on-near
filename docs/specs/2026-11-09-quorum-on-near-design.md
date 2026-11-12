@@ -684,8 +684,9 @@ shortfall, and exits with an error.
 
 Each write waits until its transaction is final, and fails if any of its receipts failed. Calls are
 batched at most 10 to a transaction, each given 20 Tgas. A write is signed before it is sent, so a
-read that fails before then (the key's nonce, the latest block) stops setup with that error, nothing
-having been sent. A transaction the RPC refuses for its nonce (it did not run) is signed again with
+read that fails before then (the key's nonce, the latest block) is retried like any other read, since
+it changes nothing, and stops setup with its error once the retries are spent, nothing having been
+sent. A transaction the RPC refuses for its nonce (it did not run) is signed again with
 a nonce read afresh, up to 10 times. Once a write is sent, only an answer that shows the RPC refused
 it is a refusal. A write that gets no result (a timeout, a server error, a failed request, or any
 other answer), or an answer from before it was final, stops setup with an error that names the
