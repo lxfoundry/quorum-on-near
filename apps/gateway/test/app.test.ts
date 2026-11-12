@@ -463,7 +463,7 @@ describe('createApp', () => {
       expect(await answer(app.request('/missing.js'))).toEqual({ status: 404, body: { error: 'not_found' } });
     });
 
-    it('answers the API before a file with the same path', async () => {
+    it('answers /config.json from the API, never from a config.json in the folder, which is not a page file', async () => {
       const webDir = await webFolder({ 'config.json': '{"rpcUrl":"elsewhere"}' });
       const { app } = await setup({ webDir });
       const { body } = await answer(app.request('/config.json'));
