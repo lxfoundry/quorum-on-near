@@ -11,6 +11,7 @@ import {
   type PoolStatus,
   type ProofErrorCode,
 } from '@quorum-on-near/protocol';
+import { MAX_TERMS_BYTES } from './chain.ts';
 
 /** The most seats one request may ask for: the gateway's limit, the contract's largest target. */
 export const MAX_SEATS_PER_REQUEST = 1000;
@@ -572,8 +573,6 @@ const COMPACT_JWS = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
  * zero bytes (each written `1`). The alphabet also keeps control characters out of logs.
  */
 const TX_HASH = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
-/** The most UTF-8 bytes of terms the pools contract keeps for a pool. */
-const MAX_TERMS_BYTES = 280;
 /** The longest credential accepted, in characters: the gateway's are a few hundred. */
 const MAX_CREDENTIAL_LENGTH = 4096;
 
