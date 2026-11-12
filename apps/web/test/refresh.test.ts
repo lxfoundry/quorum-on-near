@@ -308,6 +308,11 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+/** The base units of an amount the page shows, `0.002268 USDC` being 2268. */
+function baseUnits(shown: string): bigint {
+  return BigInt((shown.split(' ')[0] ?? '').replace('.', ''));
+}
+
 describe('a refresh', () => {
   it('renders the pool, its buyers and the ledger', async () => {
     await openPage(worldFetch(newWorld()));
@@ -341,9 +346,19 @@ describe('a refresh', () => {
     writes = [];
     world.seats.push({ buyer: 'buyer-03.quorum.testnet', seats: 1, state: 'committed' });
     world.pools = [openPool({ taken: 3 })];
+    // The third buyer's seat has arrived in the contract's balance.
+    world.balance = '2268';
     await page.refresh();
-    expect(writes).toEqual(['pool-seats.textContent', 'paid-in.textContent', 'held-now.textContent', 'buyer-rows.replaceChildren']);
+    expect(writes).toEqual([
+      'pool-seats.textContent',
+      'paid-in.textContent',
+      'held-now.textContent',
+      'contract-balance.textContent',
+      'buyer-rows.replaceChildren',
+    ]);
     expect(el('buyer-rows').children).toHaveLength(3);
+    // Invariant 1: the contract's balance covers what it holds for the pool.
+    expect(baseUnits(el('contract-balance').textContent)).toBeGreaterThanOrEqual(baseUnits(el('held-now').textContent));
   });
 
   it('builds the buyer rows again at the next refresh when building them threw', async () => {
