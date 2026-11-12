@@ -1027,9 +1027,13 @@ answer `404`. Every value it reads is written as text or as an attribute, never 
   give way to the notice "Pool `<id>` was opened by `<seller>`, not by this gateway's provider
   `<provider>`: this page shows only the provider's pools.", with none of that pool's own text, since
   anyone can open a pool whose terms the provider never wrote. The check is made on the `get_pool`
-  result of the same refresh, so a pool opened after `list_pools` was read is caught too. A pool that
-  does not exist shows "There is no pool `<id>`.", and a provider with no pool "The provider has not
-  opened a pool yet."
+  result of the same refresh, so a pool opened after `list_pools` was read is caught too. It reads
+  only that result's id and seller, so such a pool gets its notice whatever else it holds (the
+  contract bounds `deadline_ms` only from below, so it may be beyond what a JavaScript number holds
+  exactly), and nothing more of it is read: not its seats, the balance or the feed. Of `list_pools`
+  too, only each row's id and seller are read, so another seller's pool in the list cannot stop the
+  provider's pools from showing. A pool that does not exist shows "There is no pool `<id>`.", and a
+  provider with no pool "The provider has not opened a pool yet."
 - **The pool card:** the terms, a bar filling seat by seat, the seat price, the bonus escrowed, a
   countdown, the seller and the status. The countdown shows `m:ss` (`h:mm:ss` from an hour), rounded
   up to the second, while the pool is Open and "closed" otherwise; it is updated every second from
@@ -1057,9 +1061,9 @@ answer `404`. Every value it reads is written as text or as an attribute, never 
   in the page's configuration. If the RPC refuses browser requests, the page uses the gateway's
   `/rpc` pass-through instead (section 6.1). It reads `/config.json` and the token's `ft_metadata`
   once, then on each refresh `list_pools` (for the selector and the newest pool) and `get_pool` at
-  final finality, then `get_seats` and the token's `ft_balance_of` for the pools contract at the
-  block of that `get_pool` answer (its `block_hash`, sent as `block_id`), and the feed. So the pool,
-  its seats and the balance are read at one block. Every view is a `call_function` query at
+  final finality, then, for one of the provider's pools only, `get_seats` and the token's
+  `ft_balance_of` for the pools contract at the block of that `get_pool` answer (its `block_hash`,
+  sent as `block_id`), and the feed. So the pool, its seats and the balance are read at one block. Every view is a `call_function` query at
   `finality: "final"` or at a `block_id`, the two forms the pass-through forwards. Every value read
   is checked for its shape, and a malformed one fails that refresh with a status line naming what
   was wrong; the configuration's explorer link prefix must be an http or https URL. Each request times out after 10 seconds, so that a hung request cannot stop

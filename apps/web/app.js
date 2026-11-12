@@ -13,7 +13,7 @@ import {
   parseActivity,
   parseBalance,
   parseConfig,
-  parsePools,
+  parsePoolRefs,
   parseSeats,
   parseToken,
   payoutLinks,
@@ -162,7 +162,7 @@ async function poll() {
   setup ??= await loadSetup();
   const { config, token } = setup;
   const pools = await readAll(async (from, limit) =>
-    parsePools((await view(config, config.poolsContract, 'list_pools', { from, limit }, FINAL)).value),
+    parsePoolRefs((await view(config, config.poolsContract, 'list_pools', { from, limit }, FINAL)).value),
   );
   const { options, selected } = poolChoices(pools, config.provider, poolParam(search));
   const found = selected === null ? null : await view(config, config.poolsContract, 'get_pool', { pool_id: selected }, FINAL);

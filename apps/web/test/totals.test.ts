@@ -10,7 +10,7 @@ import {
   parseBalance,
   parseConfig,
   parsePool,
-  parsePools,
+  parsePoolRefs,
   parseSeats,
   parseToken,
   payoutLinks,
@@ -492,17 +492,33 @@ describe('parsePool', () => {
   });
 });
 
-describe('parsePools', () => {
-  it('accepts a list_pools page', () => {
-    expect(parsePools([POOL_ROW, { ...POOL_ROW, id: 5 }]).map((pool) => pool.id)).toEqual([4, 5]);
+/** The largest u64, as JSON.parse reads it from a view: a number beyond 2^53, which isCount refuses. */
+const U64_MAX = JSON.parse('18446744073709551615') as number;
+
+describe('parsePoolRefs', () => {
+  it('keeps only the id and the seller of each list_pools row', () => {
+    expect(parsePoolRefs([POOL_ROW, { ...POOL_ROW, id: 5, seller: 'someone.testnet' }])).toStrictEqual([
+      { id: 4, seller: 'provider.quorum.testnet' },
+      { id: 5, seller: 'someone.testnet' },
+    ]);
+  });
+
+  it('accepts a row whose other fields the page could not render, such as a deadline beyond 2^53', () => {
+    const row = { ...POOL_ROW, id: 5, seller: 'someone.testnet', deadline_ms: U64_MAX, status: 'closed', terms: null };
+    expect(parsePoolRefs([row])).toStrictEqual([{ id: 5, seller: 'someone.testnet' }]);
   });
 
   it('throws a PageDataError for a page that is not a list', () => {
-    expect(() => parsePools(POOL_ROW)).toThrow(PageDataError);
+    expect(() => parsePoolRefs(POOL_ROW)).toThrow(PageDataError);
   });
 
-  it('throws a PageDataError for a page that holds a malformed row', () => {
-    expect(() => parsePools([POOL_ROW, { ...POOL_ROW, status: 'closed' }])).toThrow(PageDataError);
+  it.each([
+    ['null', null],
+    ['no seller', { ...POOL_ROW, seller: undefined }],
+    ['an id as text', { ...POOL_ROW, id: '4' }],
+    ['an id beyond 2^53', { ...POOL_ROW, id: U64_MAX }],
+  ])('throws a PageDataError for a page that holds a row with %s', (_kind, row) => {
+    expect(() => parsePoolRefs([POOL_ROW, row])).toThrow(PageDataError);
   });
 });
 
@@ -734,6 +750,43 @@ describe('poolToShow', () => {
 
   it("throws a PageDataError for one of the provider's pools that is malformed", () => {
     expect(() => poolToShow(4, answer({ ...POOL_ROW, status: 'closed' }), PROVIDER)).toThrow(PageDataError);
+  });
+
+  it.each([
+    ['that is text', 'pool 4'],
+    ['with no seller', { ...POOL_ROW, seller: undefined }],
+  ])('throws a PageDataError for a get_pool answer %s', (_kind, value) => {
+    expect(() => poolToShow(4, answer(value), PROVIDER)).toThrow(PageDataError);
+  });
+});
+
+describe('a pool another seller opened with a deadline beyond 2^53', () => {
+  const PROVIDER = 'provider.quorum.testnet';
+  // Anyone can open such a pool: the contract bounds deadline_ms only from below.
+  const hostile = { ...POOL_ROW, id: 5, seller: 'someone.testnet', deadline_ms: U64_MAX };
+  const NOTICE = "Pool 5 was opened by someone.testnet, not by this gateway's provider provider.quorum.testnet: this page shows only the provider's pools.";
+
+  it("does not stop the provider's pool from rendering when it is in the list", () => {
+    const { options, selected } = poolChoices(parsePoolRefs([POOL_ROW, hostile]), PROVIDER, null);
+    expect({ options, selected }).toEqual({ options: [4], selected: 4 });
+    expect(poolToShow(selected, { value: POOL_ROW, blockHash: BLOCK_HASH }, PROVIDER)).toEqual({
+      kind: 'pool',
+      pool: POOL_ROW,
+      blockHash: BLOCK_HASH,
+    });
+  });
+
+  it('gets the notice naming its seller when it is the selected pool', () => {
+    const { selected } = poolChoices(parsePoolRefs([POOL_ROW, hostile]), PROVIDER, 5);
+    expect(poolToShow(selected, { value: hostile, blockHash: BLOCK_HASH }, PROVIDER)).toEqual({ kind: 'notice', notice: NOTICE });
+  });
+
+  it.each([
+    ['terms that are not text', { terms: ['8×GPU'] }],
+    ['an unknown status', { status: 'closed' }],
+    ['no seat price', { seat_price: undefined }],
+  ])('gets the notice whatever else it holds, such as %s', (_kind, changes) => {
+    expect(poolToShow(5, { value: { ...hostile, ...changes }, blockHash: BLOCK_HASH }, PROVIDER)).toEqual({ kind: 'notice', notice: NOTICE });
   });
 });
 

@@ -32,6 +32,10 @@
  * }} PoolView
  */
 /**
+ * What the page reads of a pool before it knows the pool is the provider's: its id and its seller.
+ * @typedef {{ id: number, seller: string }} PoolRef
+ */
+/**
  * A `get_seats` row: one buyer of a pool, in commit order.
  * @typedef {{ buyer: string, seats: number, state: BuyerState }} SeatView
  */
@@ -418,8 +422,8 @@ const ACTIVITY_KINDS = new Set(['commit', 'settle', 'refund', 'dust']);
 const CONFIG_KEYS = ['network', 'rpcUrl', 'poolsContract', 'token', 'provider', 'explorerTxUrl'];
 
 /**
- * A `get_pool` or `list_pools` row, checked field by field. Throws a PageDataError if any field
- * the page reads is missing or of the wrong form.
+ * The `get_pool` answer of one of the provider's pools, checked field by field. Throws a
+ * PageDataError if any field the page renders is missing or of the wrong form.
  *
  * @param {unknown} value
  * @returns {PoolView}
@@ -446,13 +450,28 @@ export function parsePool(value) {
 }
 
 /**
- * A `list_pools` page. Throws a PageDataError unless it is a list of pools.
+ * The id and the seller of a `list_pools` row or a `get_pool` answer, and nothing else of it. Throws
+ * a PageDataError unless the id is a safe integer and the seller a string. A pool another seller
+ * opened is read no further, so no other field of it, such as a `deadline_ms` beyond 2^53, can fail
+ * a refresh.
  *
  * @param {unknown} value
- * @returns {PoolView[]}
+ * @returns {PoolRef}
  */
-export function parsePools(value) {
-  return parseList(value, parsePool, 'the list_pools result');
+function parsePoolRef(value) {
+  if (isObject(value) && isCount(value.id) && typeof value.seller === 'string') return { id: value.id, seller: value.seller };
+  throw new PageDataError('the pools contract returned a malformed pool');
+}
+
+/**
+ * A `list_pools` page, read for the pool selector: the id and the seller of each row. Throws a
+ * PageDataError unless it is a list of rows with both.
+ *
+ * @param {unknown} value
+ * @returns {PoolRef[]}
+ */
+export function parsePoolRefs(value) {
+  return parseList(value, parsePoolRef, 'the list_pools result');
 }
 
 /**
@@ -593,7 +612,7 @@ export function poolParam(search) {
  * shows `foreignPoolNotice` in its place. `selected` is null when the provider has no pool and none
  * is asked for.
  *
- * @param {PoolView[]} pools every pool, as `list_pools` returns them
+ * @param {PoolRef[]} pools every pool `list_pools` returns
  * @param {string} provider
  * @param {number | null} requested
  * @returns {{ options: number[], selected: number | null }}
@@ -610,7 +629,7 @@ export function poolChoices(pools, provider, requested) {
  * `?pool=` link can name a pool whose terms the provider never wrote: the page names its seller and
  * shows none of its text. The seller is compared with the provider exactly.
  *
- * @param {PoolView} pool
+ * @param {PoolRef} pool
  * @param {string} provider
  * @returns {string | null}
  */
@@ -624,10 +643,11 @@ export function foreignPoolNotice(pool, provider) {
  * answer of the same refresh, before anything of that pool is rendered or read further:
  * - no pool selected: "The provider has not opened a pool yet.";
  * - a selected pool that `get_pool` does not find: "There is no pool <id>.";
- * - a pool another seller opened: `foreignPoolNotice`, with none of the pool's own text;
- * - otherwise the provider's pool, to render with its seats and the contract's balance read at
- *   `blockHash`, the block of the `get_pool` answer.
- * Throws a PageDataError if the pool is malformed.
+ * - a pool another seller opened: `foreignPoolNotice`, with none of the pool's own text, whatever
+ *   else the pool holds, since only its id and seller are read before the seller is checked;
+ * - otherwise the provider's pool, checked field by field, to render with its seats and the
+ *   contract's balance read at `blockHash`, the block of the `get_pool` answer.
+ * Throws a PageDataError if the answer has no id or seller, or if the provider's pool is malformed.
  *
  * @param {number | null} selected
  * @param {ViewAnswer | null} found the `get_pool` answer for `selected`; null when none is selected
@@ -637,10 +657,9 @@ export function foreignPoolNotice(pool, provider) {
 export function poolToShow(selected, found, provider) {
   if (selected === null) return { kind: 'notice', notice: 'The provider has not opened a pool yet.' };
   if (found === null || found.value === null) return { kind: 'notice', notice: `There is no pool ${selected}.` };
-  const pool = parsePool(found.value);
-  const notice = foreignPoolNotice(pool, provider);
+  const notice = foreignPoolNotice(parsePoolRef(found.value), provider);
   if (notice !== null) return { kind: 'notice', notice };
-  return { kind: 'pool', pool, blockHash: found.blockHash };
+  return { kind: 'pool', pool: parsePool(found.value), blockHash: found.blockHash };
 }
 
 /**
