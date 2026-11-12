@@ -6,6 +6,7 @@
   "scripts": {
     "swarm": "node src/main.ts",
     "test": "vitest run --exclude \"test/sandbox/**\"",
+    "test:sandbox": "vitest run test/sandbox",
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
