@@ -48,6 +48,12 @@ describe('transportReason', () => {
     expect(transportReason(new TypedError(`Exceeded 12 attempts for ${RPC_URL}.`, 'RetriesExceeded'))).toBe('retries exceeded');
   });
 
+  it("names a request aborted by its timeout 'timeout', also behind a wrapping error", () => {
+    const aborted = new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+    expect(transportReason(aborted)).toBe('timeout');
+    expect(transportReason(new Error('the payment got no answer', { cause: aborted }))).toBe('timeout');
+  });
+
   it("gives the status of an answer the gateway does not document", () => {
     expect(transportReason(new GatewayResponseError('payment', '/pools/7/access?seats=2', 500, 'status 500'))).toBe('HTTP 500');
   });

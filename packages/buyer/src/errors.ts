@@ -20,7 +20,8 @@ const CODE = /^[A-Z][A-Z0-9_]{1,39}$/;
  * A short reason for a failed request that never quotes a message: `HTTP <status>` for an answer of
  * the RPC (near-api-js's provider error) or an undocumented answer of the gateway (GatewayResponseError),
  * the socket's errno or undici code behind fetch's `fetch failed` (an AggregateError's own code, or
- * its first error's), `retries exceeded` for near-api-js's RetriesExceeded, and otherwise `error`.
+ * its first error's), `retries exceeded` for near-api-js's RetriesExceeded, `timeout` for a request
+ * aborted by its timeout (AbortSignal.timeout's TimeoutError), and otherwise `error`.
  * The causes of a wrapping error are looked through.
  */
 export function transportReason(error: unknown): string {
@@ -35,6 +36,7 @@ export function transportReason(error: unknown): string {
 
 function ownReason(error: Error): string | undefined {
   if (error instanceof GatewayResponseError) return `HTTP ${error.status}`;
+  if (error instanceof DOMException && error.name === 'TimeoutError') return 'timeout';
   if (error instanceof TypedError) return error.type === 'RetriesExceeded' ? 'retries exceeded' : undefined;
   // near-api-js's provider error carries the HTTP status as its cause.
   if (isHttpStatus(error.cause)) return `HTTP ${error.cause}`;

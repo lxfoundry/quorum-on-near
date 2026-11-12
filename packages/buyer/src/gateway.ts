@@ -158,62 +158,118 @@ export class GatewayResponseError extends Error {
  * RedeemAnswer) is a bigint in the token's base units, converted once here from the gateway's decimal
  * string. The protocol's Offer keeps its amounts as the decimal strings of the wire, since the buyer
  * signs the offer as it was sent.
+ *
+ * Each request is aborted if its answer, body included, has not arrived within its time: 300 seconds
+ * for a payment, which is more than the gateway's longest relay at its defaults (a 30-second wait for
+ * a relayer key, the send, and a lookup that ends by the payment's expiry), and 30 seconds for every
+ * other request. At most 1 MiB of a body is read; a longer body is an undocumented answer.
  * Rejects with RangeError, before sending anything, for a pool id that is not a non-negative safe
  * integer or a seat count outside 1 to MAX_SEATS_PER_REQUEST; with GatewayResponseError for an answer
- * that is not documented; and with fetch's own error when no answer arrives. The client follows no
- * redirect, which would carry a payment or a proof to another server.
+ * that is not documented; with the abort's TimeoutError (a DOMException) for a request that ran out of
+ * time; and with fetch's own error when no answer arrives otherwise. The client follows no redirect,
+ * which would carry a payment or a proof to another server.
  */
 export class GatewayClient {
   readonly #url: string;
   readonly #fetch: typeof fetch;
+  readonly #payTimeoutMs: number;
+  readonly #readTimeoutMs: number;
 
-  /** `gatewayUrl` is the gateway's base URL without a trailing slash, as BuyerSettings has it. */
-  constructor(opts: { gatewayUrl: string; fetch?: typeof fetch }) {
+  /**
+   * `gatewayUrl` is the gateway's base URL without a trailing slash, as BuyerSettings has it.
+   * `payTimeoutMs` and `readTimeoutMs` replace the 300 and 30 seconds a payment and any other request
+   * are given.
+   */
+  constructor(opts: { gatewayUrl: string; fetch?: typeof fetch; payTimeoutMs?: number; readTimeoutMs?: number }) {
     this.#url = opts.gatewayUrl;
     this.#fetch = opts.fetch ?? fetch;
+    this.#payTimeoutMs = opts.payTimeoutMs ?? PAY_TIMEOUT_MS;
+    this.#readTimeoutMs = opts.readTimeoutMs ?? READ_TIMEOUT_MS;
   }
 
   /** `GET /pools`: the open pools of the gateway's provider, in id order. */
   async pools(): Promise<PoolsAnswer> {
-    return this.#get('pools', '/pools', {}, poolsAnswer);
+    return this.#get('pools', '/pools', {}, poolsAnswer, this.#readTimeoutMs);
   }
 
   /** The offer for `seats` seats of a pool. */
   async offer(poolId: number, seats: number): Promise<OfferAnswer> {
-    return this.#get('offer', accessPath(poolId, seats), {}, offerAnswer);
+    return this.#get('offer', accessPath(poolId, seats), {}, offerAnswer, this.#readTimeoutMs);
   }
 
   /**
    * Sends a payment, at the URL of the seats requested (the payment may be for fewer, as a reduced
-   * offer is). A rejected promise or a GatewayResponseError leaves it unknown whether the payment
-   * landed: redemption tells.
+   * offer is). A RangeError is a rejection before anything is sent. Any other rejection, a
+   * GatewayResponseError or a timeout included, may come after the payment reached the gateway, and
+   * leaves it unknown whether it landed: redemption tells.
    */
   async pay(poolId: number, seats: number, paymentHeader: string): Promise<PaymentAnswer> {
-    return this.#get('payment', accessPath(poolId, seats), { [PAYMENT_HEADER]: paymentHeader }, paymentAnswer);
+    const headers = { [PAYMENT_HEADER]: paymentHeader };
+    return this.#get('payment', accessPath(poolId, seats), headers, paymentAnswer, this.#payTimeoutMs);
   }
 
   /** Sends a redemption proof for a pool. */
   async redeem(poolId: number, proofHeader: string): Promise<RedeemAnswer> {
     checkPoolId(poolId);
-    return this.#get('redemption', `/pools/${poolId}/access`, { [PROOF_HEADER]: proofHeader }, redeemAnswer);
+    const headers = { [PROOF_HEADER]: proofHeader };
+    return this.#get('redemption', `/pools/${poolId}/access`, headers, redeemAnswer, this.#readTimeoutMs);
   }
 
   /** `GET /activity?pool=<id>`: the pool's records in the activity feed, oldest first. */
   async activity(poolId: number): Promise<ActivityRecord[]> {
     checkPoolId(poolId);
-    return this.#get('activity', `/activity?pool=${poolId}`, {}, activityAnswer);
+    return this.#get('activity', `/activity?pool=${poolId}`, {}, activityAnswer, this.#readTimeoutMs);
   }
 
-  async #get<T>(route: GatewayRoute, path: string, headers: Record<string, string>, read: Reader<T>): Promise<T> {
-    const response = await this.#fetch(`${this.#url}${path}`, { headers, redirect: 'error' });
-    const text = await response.text();
+  async #get<T>(
+    route: GatewayRoute,
+    path: string,
+    headers: Record<string, string>,
+    read: Reader<T>,
+    timeoutMs: number,
+  ): Promise<T> {
+    // The signal also bounds the reading of the body.
+    const signal = AbortSignal.timeout(timeoutMs);
+    const response = await this.#fetch(`${this.#url}${path}`, { headers, redirect: 'error', signal });
     try {
-      return read(response.status, parseJson(text), response.headers);
+      return read(response.status, parseJson(await readBody(response)), response.headers);
     } catch (error) {
       if (error instanceof Malformed) throw new GatewayResponseError(route, path, response.status, error.message);
       throw error;
     }
   }
+}
+
+/**
+ * The time a payment's answer is waited for: more than the gateway's longest relay at its defaults, a
+ * 30-second wait for a relayer key, the send, and a lookup that ends by the payment's expiry.
+ */
+const PAY_TIMEOUT_MS = 300_000;
+/** The time the answer to any other request is waited for. */
+const READ_TIMEOUT_MS = 30_000;
+/** The most bytes of a body read: the gateway's answers are a few kilobytes. */
+const MAX_BODY_BYTES = 1024 * 1024;
+
+/**
+ * The body as UTF-8 text, read up to MAX_BODY_BYTES: a longer body is Malformed, and the rest of it is
+ * not read.
+ */
+async function readBody(response: Response): Promise<string> {
+  if (response.body === null) return '';
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > MAX_BODY_BYTES) {
+      await reader.cancel().catch(() => undefined);
+      throw new Malformed('the body is longer than 1 MiB');
+    }
+    chunks.push(value);
+  }
+  return new TextDecoder().decode(Buffer.concat(chunks));
 }
 
 /** Reads one route's answer; throws Malformed for anything that is not documented. */

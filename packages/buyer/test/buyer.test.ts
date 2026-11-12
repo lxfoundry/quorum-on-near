@@ -286,6 +286,30 @@ describe('Buyer.pay', () => {
     expect(error.cause).toBeInstanceOf(GatewayResponseError);
   });
 
+  it("rejects with PaymentUnknownError when the gateway does not answer within the client's timeout", async () => {
+    let sent = 0;
+    // A gateway that never answers; the request ends only when the client's own signal aborts it.
+    const silent = (_input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      sent += 1;
+      return new Promise((_, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason));
+      });
+    };
+    const buyer = new Buyer({
+      settings: SETTINGS,
+      accountId: BUYER,
+      keyPair: KeyPair.fromRandom('ed25519'),
+      gateway: new GatewayClient({ gatewayUrl: GATEWAY_URL, fetch: silent, payTimeoutMs: 50 }),
+      chain: { nextNonce: async () => NONCE, finalHeight: async () => FINAL_HEIGHT },
+      now: () => NOW_MS,
+    });
+    const error = await rejection(buyer.pay(OFFER, REQUEST));
+    expect(error).toBeInstanceOf(PaymentUnknownError);
+    expect(error).toMatchObject({ signed: SIGNED, cause: { name: 'TimeoutError' } });
+    expect((error as Error).message).toContain('(timeout)');
+    expect(sent).toBe(1);
+  });
+
   it.each(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN'])(
     'rejects with PaymentNotSentError gateway_unreachable when the connection fails with %s: nothing reached the gateway',
     async (code) => {

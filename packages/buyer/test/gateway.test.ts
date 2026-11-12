@@ -1,5 +1,8 @@
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { paymentRequired } from '@quorum-on-near/protocol';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { transportReason } from '../src/errors.ts';
 import {
   GatewayClient,
   GatewayResponseError,
@@ -430,5 +433,108 @@ describe('GatewayClient answers that are not documented', () => {
     expect(message).toContain('200');
     expect(message).not.toContain(CREDENTIAL);
     expect(message).not.toContain('seven');
+  });
+});
+
+describe('GatewayClient time and size limits', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('gives a payment 300 seconds to be answered, and every other request 30 seconds', async () => {
+    const timeout = vi.spyOn(AbortSignal, 'timeout');
+    const signals: unknown[] = [];
+    const fetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      signals.push(init?.signal);
+      return String(input).includes('/activity') ? jsonResponse(200, []) : jsonResponse(503, { error: 'chain_unavailable' });
+    };
+    const gateway = new GatewayClient({ gatewayUrl: GATEWAY_URL, fetch });
+    await gateway.pools();
+    await gateway.offer(POOL_ID, 2);
+    await gateway.pay(POOL_ID, 2, PAYMENT);
+    await gateway.redeem(POOL_ID, PROOF);
+    await gateway.activity(POOL_ID);
+    expect(timeout.mock.calls).toEqual([[30_000], [30_000], [300_000], [30_000], [30_000]]);
+    expect(signals).toEqual(timeout.mock.results.map((result) => result.value));
+  });
+
+  /** A body of `chunks` chunks of 64 KiB of spaces, which records how many it gave and whether it was cancelled. */
+  function spaces(chunks: number) {
+    const chunk = new Uint8Array(64 * 1024).fill(0x20);
+    const read = { pulled: 0, cancelled: false };
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        read.pulled += 1;
+        controller.enqueue(chunk);
+        if (read.pulled === chunks) controller.close();
+      },
+      cancel() {
+        read.cancelled = true;
+      },
+    });
+    return { body, read };
+  }
+
+  it('reads at most 1 MiB of a body: a longer one is an undocumented answer, and the rest is never read', async () => {
+    const { body, read } = spaces(64);
+    const { gateway } = client(() => new Response(body, { status: 200 }));
+    const error = await rejection(gateway.pools());
+    expect(error).toBeInstanceOf(GatewayResponseError);
+    expect((error as GatewayResponseError).status).toBe(200);
+    expect((error as Error).message).toContain('the body is longer than 1 MiB');
+    expect(read.cancelled).toBe(true);
+    expect(read.pulled).toBeLessThan(20);
+  });
+
+  it('reads a body of exactly 1 MiB', async () => {
+    const body = `[]${' '.repeat(1024 * 1024 - 2)}`;
+    const { gateway } = client(() => new Response(body, { status: 200 }));
+    expect(await gateway.pools()).toEqual({ kind: 'pools', pools: [] });
+  });
+
+  it('refuses a payment answer longer than 1 MiB as undocumented, so that the payment stays unknown', async () => {
+    const { body } = spaces(17);
+    const { gateway } = client(() => new Response(body, { status: 202 }));
+    expect(await rejection(gateway.pay(POOL_ID, 2, PAYMENT))).toBeInstanceOf(GatewayResponseError);
+  });
+
+  describe('against a server on the loopback interface', () => {
+    let server: Server;
+    let url: string;
+    let handle: (request: IncomingMessage, response: ServerResponse) => void;
+
+    beforeEach(async () => {
+      server = createServer((request, response) => handle(request, response));
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    });
+
+    afterEach(async () => {
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+    });
+
+    it("aborts a payment that gets no answer within its timeout, having sent it once, with the abort's TimeoutError", async () => {
+      let received = 0;
+      handle = () => {
+        received += 1;
+      };
+      const gateway = new GatewayClient({ gatewayUrl: url, payTimeoutMs: 100 });
+      const error = await rejection(gateway.pay(POOL_ID, 2, PAYMENT));
+      expect(error).toMatchObject({ name: 'TimeoutError' });
+      expect(transportReason(error)).toBe('timeout');
+      expect(received).toBe(1);
+    });
+
+    it('aborts a read whose body has not ended within its timeout', async () => {
+      handle = (_, response) => {
+        response.writeHead(200, { 'Content-Type': 'application/json' });
+        response.write('[');
+      };
+      const gateway = new GatewayClient({ gatewayUrl: url, readTimeoutMs: 100 });
+      const error = await rejection(gateway.pools());
+      expect(error).toMatchObject({ name: 'TimeoutError' });
+      expect(transportReason(error)).toBe('timeout');
+    });
   });
 });

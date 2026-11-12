@@ -435,11 +435,14 @@ read a final block above its `max_block_height` plus 20, and only after that blo
 (section 6.5) that finds no seats show that it did not land.
 
 A buyer's client of the gateway follows no redirect, which would carry a payment or a proof to
-another server. It checks every answer field by field and keeps only the documented fields. The
-strings a buyer passes on are bounded: a pool's terms to the 280 UTF-8 bytes the contract keeps, a
-transaction hash to the 44 base58 characters of a NEAR hash, and a credential to 4096 characters. An
-offer's `resource` and `description` are kept as sent: nothing passes them on. Any answer that fails
-these checks is an undocumented answer.
+another server. It waits 300 seconds for the answer to a payment, longer than the gateway's longest
+relay at its defaults, and 30 seconds for any other answer, and reads at most 1 MiB of a body: a
+payment that runs out of time is unknown, and a longer body is an undocumented answer. It checks
+every answer field by field and keeps only the documented fields. The strings a buyer passes on are
+bounded: a pool's terms to the 280 UTF-8 bytes the contract keeps, a transaction hash to the 44
+base58 characters of a NEAR hash, and a credential to 4096 characters. An offer's `resource` and
+`description` are kept as sent: nothing passes them on. Any answer that fails these checks is an
+undocumented answer.
 
 ### 6.4 Checks, then relay
 
