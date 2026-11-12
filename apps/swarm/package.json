@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "swarm": "node src/main.ts",
     "test": "vitest run --exclude \"test/sandbox/**\"",
     "typecheck": "tsc -p tsconfig.json"
   },
