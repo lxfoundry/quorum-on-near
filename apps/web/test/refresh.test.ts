@@ -186,6 +186,11 @@ function viewValue(world: World, method: string, args: Record<string, number | s
   }
 }
 
+/** The view method an RPC request calls, or undefined for any other request. */
+function methodOf(url: string, init?: { body?: string }): string | undefined {
+  return url === '/rpc' ? (JSON.parse(init?.body ?? '{}') as { params: { method_name: string } }).params.method_name : undefined;
+}
+
 function worldFetch(world: World): FakeFetch {
   return async (url, init) => {
     if (url === '/config.json') {
@@ -394,8 +399,7 @@ describe('a request that fails', () => {
   function failing(world: World, { when, at, error }: Failure): FakeFetch {
     const base = worldFetch(world);
     return async (url, init) => {
-      const method = url === '/rpc' ? (JSON.parse(init?.body ?? '{}') as { params: { method_name: string } }).params.method_name : undefined;
-      if (!when(url, method)) return base(url, init);
+      if (!when(url, methodOf(url, init))) return base(url, init);
       if (at === 'fetch') throw error;
       return { ok: true, status: 200, json: () => Promise.reject(error) };
     };
@@ -438,5 +442,35 @@ describe('a request that fails', () => {
       url === '/rpc' ? { ok: true, status: 200, json: () => Promise.reject(new TypeError('network error')) } : base(url, init),
     );
     expect(el('status').textContent).toBe('Could not refresh (network error). Retrying every 2 seconds.');
+  });
+});
+
+describe('the pool selector', () => {
+  it("lists the provider's pools even when the pool to show is malformed", async () => {
+    const world = newWorld();
+    world.pools = [openPool({ id: 2 }), openPool({ id: 3, terms: 42 })];
+    await openPage(worldFetch(world));
+    expect(el('status').textContent).toBe('Could not refresh (the pools contract returned a malformed pool). Retrying every 2 seconds.');
+    expect(el('picker').hidden).toBe(false);
+    expect(el('pool-select').children.map((option) => (option as unknown as { value: string }).value)).toEqual(['3', '2']);
+    expect(el('pool-select').value).toBe('3');
+  });
+
+  it('is left as it was when the URL changed while the pools were read', async () => {
+    const world = newWorld();
+    const base = worldFetch(world);
+    const hooks = { onListPools: () => {} };
+    const page = await openPage(async (url, init) => {
+      if (methodOf(url, init) === 'list_pools') hooks.onListPools();
+      return base(url, init);
+    });
+    world.pools.push(openPool({ id: 4 }));
+    hooks.onListPools = () => {
+      location.search = '?pool=2';
+    };
+    writes = [];
+    await page.refresh();
+    expect(writes).toEqual([]);
+    expect(el('pool-select').children).toHaveLength(1);
   });
 });

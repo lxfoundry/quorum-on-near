@@ -1023,6 +1023,7 @@ answer `404`. Every value it reads is written as text or as an attribute, never 
 - **Which pool:** the one that `?pool=<id>` names, written as the gateway writes pool ids (decimal,
   no sign, no leading zero, a safe integer; anything else is ignored), else the provider's newest
   pool. The selector lists only the provider's pools, newest first, and choosing one sets `?pool=`.
+  It is drawn from `list_pools` alone, so it stays when the chosen pool cannot be read or shown.
   A pool whose seller is not exactly the provider is never shown: its card, ledger and buyer table
   give way to the notice "Pool `<id>` was opened by `<seller>`, not by this gateway's provider
   `<provider>`: this page shows only the provider's pools.", with none of that pool's own text, since

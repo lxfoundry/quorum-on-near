@@ -212,8 +212,9 @@ async function loadSetup() {
  * What is shown is decided by `poolToShow` from the `get_pool` answer of this refresh: a pool
  * another seller opened is not rendered, and the page shows a notice naming its seller instead.
  * `get_pool` is read at final finality, and the seats and the contract's balance of a pool to render
- * at the block of that answer, so that the three agree. Returns false, rendering nothing, when the
- * choice of pool changed while it read.
+ * at the block of that answer, so that the three agree. The selector is rendered as soon as the
+ * list of pools is read, so that a pool that cannot be read or shown does not hide it. Returns false,
+ * rendering no more, when the choice of pool changed while it read.
  *
  * @returns {Promise<boolean>}
  */
@@ -225,11 +226,13 @@ async function poll() {
     parsePoolRefs((await view(config, config.poolsContract, 'list_pools', { from, limit }, FINAL)).value),
   );
   const { options, selected } = poolChoices(pools, config.provider, poolParam(search));
+  // Before anything of the pool is read, so that a pool that cannot be shown does not hide the picker.
+  if (location.search !== search) return false;
+  renderSelector(options, selected);
   const found = selected === null ? null : await view(config, config.poolsContract, 'get_pool', { pool_id: selected }, FINAL);
   const choice = poolToShow(selected, found, config.provider);
   if (choice.kind === 'notice') {
     if (location.search !== search) return false;
-    renderSelector(options, selected);
     renderNoPool(choice.notice);
     return true;
   }
@@ -244,7 +247,6 @@ async function poll() {
     getJson(`/activity?pool=${pool.id}`).then(parseActivity),
   ]);
   if (location.search !== search) return false;
-  renderSelector(options, selected);
   renderPool(pool, token);
   renderLedger(pool, seats, activity, balance, config, token);
   renderBuyers(pool, seats, activity, config, token);
