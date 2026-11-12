@@ -570,6 +570,67 @@ describe('the status line', () => {
   });
 });
 
+describe('a failure while the viewer leaves the pool', () => {
+  /**
+   * A fetch that fails every request while `down.value` is set, and, once `leave.armed` is set,
+   * moves the page to pool 4 and fails the first `get_seats`: the viewer chose another pool while
+   * the seats of pool 3 were read, and that read failed.
+   */
+  function leaving(world: World) {
+    const down = { value: false };
+    const leave = { armed: false };
+    const base = worldFetch(world);
+    const fetch: FakeFetch = async (url, init) => {
+      if (down.value) throw new Error('offline');
+      if (leave.armed && methodOf(url, init) === 'get_seats') {
+        leave.armed = false;
+        location.search = '?pool=4';
+        throw new Error('overloaded');
+      }
+      return base(url, init);
+    };
+    return { down, leave, fetch };
+  }
+  const announcements = () => writes.filter((write) => write.startsWith('announcement.'));
+  const twoPools = () => {
+    const world = newWorld();
+    world.pools.push(openPool({ id: 4 }));
+    return world;
+  };
+
+  it('shows and announces nothing of it, and the next refresh shows the pool the viewer chose', async () => {
+    const { leave, fetch } = leaving(twoPools());
+    const page = await openPage(fetch, '?pool=3');
+    leave.armed = true;
+    writes = [];
+    await page.refresh();
+    expect(writes).toEqual([]);
+    expect(el('status').textContent).toMatch(/^Updated at /);
+    expect(el('status').classList.contains('failed')).toBe(false);
+    await page.refresh();
+    expect(el('pool-title').textContent).toBe('Pool 4');
+    expect(el('status').textContent).toMatch(/^Updated at /);
+    expect(announcements()).toEqual([]);
+  });
+
+  it('leaves a failure that stands as it was, so that the recovery from it is still announced', async () => {
+    const { down, leave, fetch } = leaving(twoPools());
+    const page = await openPage(fetch, '?pool=3');
+    down.value = true;
+    await page.refresh();
+    expect(el('status').textContent).toBe('Could not refresh (offline). Retrying every 2 seconds.');
+    down.value = false;
+    leave.armed = true;
+    writes = [];
+    await page.refresh();
+    expect(writes).toEqual([]);
+    expect(el('status').textContent).toBe('Could not refresh (offline). Retrying every 2 seconds.');
+    await page.refresh();
+    expect(el('status').textContent).toMatch(/^Updated at /);
+    expect(el('announcement').textContent).toBe('The page is up to date again.');
+  });
+});
+
 describe('a request that fails', () => {
   /** The request that `fail` makes fail, and how: before the answer, or while reading its body. */
   type Failure = { when: (url: string, method: string | undefined) => boolean; at: 'fetch' | 'body'; error: Error };

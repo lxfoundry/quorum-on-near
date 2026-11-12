@@ -412,10 +412,15 @@ function announce(text) {
   setText(ui.announcement, text);
 }
 
-/** Runs one poll, unless the previous one is still running, and reports how it went. */
+/**
+ * Runs one poll, unless the previous one is still running, and reports how it went. A poll whose
+ * pool the viewer left while it read reports nothing, whether it succeeded or failed: it says
+ * nothing of the pool now chosen, and `failing` stays as it was.
+ */
 async function tick() {
   if (polling) return;
   polling = true;
+  const search = location.search;
   try {
     if (await poll()) {
       showStatus(`Updated at ${new Date().toLocaleTimeString()}`, false);
@@ -423,6 +428,7 @@ async function tick() {
       failing = false;
     }
   } catch (error) {
+    if (location.search !== search) return;
     const reason = error instanceof Error ? error.message : String(error);
     const text = `Could not refresh (${reason}). Retrying every ${POLL_INTERVAL_MS / 1000} seconds.`;
     showStatus(text, true);
