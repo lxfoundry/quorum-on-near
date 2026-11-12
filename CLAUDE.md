@@ -12,8 +12,8 @@ prices scaled down 10,000 times.
 
 ## Architecture (implementation-relevant facts)
 
-The contracts, the protocol package and the gateway are built and tested; the swarm, MCP server
-and live page are not yet. The design is
+The contracts, the protocol package, the gateway and the live page are built and tested; the swarm
+and MCP server are not yet. The design is
 [`docs/specs/2026-11-09-quorum-on-near-design.md`](docs/specs/2026-11-09-quorum-on-near-design.md);
 the spec wins where this summary is shorter. In brief:
 
@@ -66,6 +66,7 @@ NEAR rules the design relies on (from NEAR's documentation):
 | `crates/sandbox-support/` | Test helper: starts a local NEAR sandbox and wraps calls and views |
 | `packages/protocol/` | The `quorum` x402 scheme: types, header codecs, delegate-action and NEP-413 checks, buyer builders |
 | `apps/gateway/` | The provider's HTTP side: offers, payment checks, relay, credentials, redemption, the keeper and the activity feed |
+| `apps/web/` | The live page: a static page with no build step, served by the gateway at `/`, that shows one of the provider's pools, its ledger and its buyers as the chain holds them |
 
 ## Toolchain
 
@@ -88,6 +89,10 @@ directly (type stripping), so there is no build step. `pnpm install`, then `pnpm
 with the absolute paths of their wasm files in `QUORUM_POOLS_WASM` and `QUORUM_MOCK_USD_WASM`. It
 runs on macOS on Apple silicon, or on Linux or WSL2 with glibc 2.38 or later (Ubuntu 24.04 or
 later).
+
+The live page (`apps/web`) is plain JavaScript with JSDoc types, checked by `tsc` (`checkJs`), and
+has no build step: the gateway serves its four files at `/` (`QUORUM_WEB_DIR`, by default `../web` from
+`apps/gateway`). Its tests run with `pnpm --filter @quorum-on-near/web test`, and in `pnpm test`.
 
 **CI** (`.github/workflows/ci.yml`) runs on every pull request into `main` and on every push to
 `main`, except for changes that touch only `docs/`, Markdown or `.claude/`. Four jobs run in
