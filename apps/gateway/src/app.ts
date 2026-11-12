@@ -20,8 +20,12 @@ const RPC_FORWARD_TIMEOUT_MS = 10_000;
  * `get_buyer`'s u64 pool id and 64-character account id, are 152 characters of base64.
  */
 const MAX_ARGS_BASE64 = 1024;
-/** A path with a segment that starts with a dot, such as `/.env` or `/.git/config`. */
-const DOT_SEGMENT = /\/\./;
+/**
+ * The paths of the live page's four files, the only files served from `config.webDir`: `/` serves
+ * `index.html`. The folder also holds the page's package files, tests and `node_modules`, which are
+ * never served.
+ */
+const PAGE_FILES = new Set(['/', '/index.html', '/app.js', '/totals.js', '/style.css']);
 
 /** A pool id as a URL writes it: decimal, no sign, no leading zero. Null otherwise. */
 function parsePoolId(param: string): number | null {
@@ -80,10 +84,10 @@ function send(c: Context, r: Reply): Response {
  * - `GET /config.json`
  * - `POST /rpc` (only when `config.rpcPassthrough`), with a body of at most 16 KiB, forwarded with a
  *   10-second timeout
- * - the live page's static files at `/` (only when `config.webDir` is set), except any whose path has
- *   a segment that starts with a dot
+ * - the live page's four files (only when `config.webDir` is set): `index.html` at `/` and at
+ *   `/index.html`, `/app.js`, `/totals.js` and `/style.css`; no other file of the folder
  *
- * Every answer is JSON except the static files. `options.fetch` replaces the global fetch for the
+ * Every answer is JSON except the page's files. `options.fetch` replaces the global fetch for the
  * RPC pass-through.
  */
 export function createApp(deps: Deps, options: { fetch?: typeof fetch } = {}): Hono {
@@ -162,10 +166,11 @@ export function createApp(deps: Deps, options: { fetch?: typeof fetch } = {}): H
   }
 
   // After the routes, so a file never shadows one. A relative root resolves against the current folder.
-  // Nothing whose name starts with a dot is served, such as a .env file that holds keys.
+  // Only the page's own files are served: any other path, such as /package.json or /.env, falls
+  // through to not_found.
   if (config.webDir !== null) {
     const files = serveStatic({ root: config.webDir });
-    app.use('*', (c, next) => (DOT_SEGMENT.test(c.req.path) ? next() : files(c, next)));
+    app.use('*', (c, next) => (PAGE_FILES.has(c.req.path) ? files(c, next) : next()));
   }
 
   app.notFound((c) => c.json({ error: 'not_found' }, 404));

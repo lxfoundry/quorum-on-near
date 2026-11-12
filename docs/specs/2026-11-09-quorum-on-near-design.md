@@ -329,7 +329,7 @@ network is written in CAIP-2 form: `near:testnet`.
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /` | The live page (static files from `apps/web`). No file whose path has a segment that starts with a dot, such as `/.env`, is served (`404`) |
+| `GET /` | The live page: only its four files from `apps/web`, `index.html` (at `/` and at `/index.html`), `/app.js`, `/totals.js` and `/style.css`. Any other path under that folder, such as its `package.json`, `tsconfig.json`, tests or `node_modules`, or a file such as `/.env`, is answered `404` (`not_found`) |
 | `GET /pools` | The open pools: `id, terms, seat_price, target, taken, deadline_ms, bonus, min_bonus_per_seat` |
 | `GET /pools/:id/access?seats=N` | With no header: `402` with the offer (`seats` defaults to 1; `N` from 1 to 1000, otherwise `400` with `error` set to `invalid_seats`), `404` (`unknown_pool`) for a pool the gateway does not serve, `409` if the pool is filled or has no seat left, `410` if it has expired, `503` (`chain_unavailable`) if the chain cannot be read. With `X-PAYMENT`: process a payment. With `X-QUORUM-PROOF`: redeem (section 6.5) |
 | `GET /activity?pool=:id` | The activity feed (section 6.7) |
@@ -1011,7 +1011,9 @@ access to the file, which holds the relayer's keys and the credential key.
 ## 8. Live page
 
 `apps/web` is `index.html`, `app.js` (an ES module), `totals.js` and `style.css`. There is no build
-step, and the gateway serves the folder at `/`. The page never signs anything and needs no wallet.
+step. The gateway serves only those four files, `index.html` at `/` (section 6.1), and nothing else
+of the folder, which also holds the page's package files, tests and `node_modules`. The page never
+signs anything and needs no wallet.
 It declares its icon inline, so a browser makes no `/favicon.ico` request, which the gateway would
 answer `404`. Every value it reads is written as text or as an attribute, never as HTML.
 
