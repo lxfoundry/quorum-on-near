@@ -81,7 +81,8 @@ export class PoolViewError extends Error {
 /**
  * PoolReads over near-api-js's JSON-RPC provider: `get_pool` on the pools contract at optimistic
  * finality, as the gateway reads it, so a pool the gateway has just seen open is not reported missing.
- * Every field of the view is checked, and only those fields are kept. Throws RangeError, reading
+ * Every field of the view is checked, and only those fields are kept; the terms are bounded to the
+ * MAX_TERMS_BYTES the contract keeps, as GatewayClient bounds the gateway's. Throws RangeError, reading
  * nothing, for a pool id that is not a non-negative safe integer, PoolViewError for a result that is
  * not a pool view, and the provider's error for a failed read.
  */
@@ -108,6 +109,8 @@ export class RpcPoolReads implements PoolReads {
 }
 
 const POOL_STATUSES: readonly PoolStatus[] = ['open', 'filled', 'settled', 'expired', 'refunded'];
+/** The most UTF-8 bytes of terms the pools contract keeps for a pool. */
+const MAX_TERMS_BYTES = 280;
 
 /** `value` as the view of pool `poolId`, field by field; `malformed` makes the error for one that is not. */
 function readPoolView(value: unknown, poolId: number, malformed: (detail: string) => PoolViewError): PoolView {
@@ -134,6 +137,7 @@ function readPoolView(value: unknown, poolId: number, malformed: (detail: string
     throw bad('max_seats_per_buyer', 'null or a non-negative integer');
   }
   if (typeof terms !== 'string') throw bad('terms', 'a string');
+  if (Buffer.byteLength(terms, 'utf8') > MAX_TERMS_BYTES) throw bad('terms', `at most ${MAX_TERMS_BYTES} bytes in UTF-8`);
   const known = POOL_STATUSES.find((s) => s === status);
   if (known === undefined) throw bad('status', `one of ${POOL_STATUSES.join(', ')}`);
   if (typeof dustSent !== 'boolean') throw bad('dust_sent', 'a boolean');
