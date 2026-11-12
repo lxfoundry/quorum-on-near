@@ -9,15 +9,18 @@ import { KeyPair } from 'near-api-js';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 // The apps' own loaders, from their sources: the swarm itself never imports another app.
 import { loadConfig, type GatewayConfig } from '../../gateway/src/config.ts';
+import { loadMcpConfig, type McpConfig } from '../../mcp/src/config.ts';
 import { loadSwarmConfig, type SwarmConfig } from '../src/config.ts';
 import {
   aclNotice,
   EnvFileExistsError,
   envFilePath,
   gatewayEnvText,
+  mcpEnvText,
   newCredentialJwk,
   writeEnvFile,
   writeGatewayEnv,
+  writeMcpEnv,
 } from '../src/env-files.ts';
 
 const RELAYER = 'gas.test.near';
@@ -128,6 +131,25 @@ describe('gatewayEnvText', () => {
   });
 });
 
+describe('mcpEnvText', () => {
+  it("is read by the MCP server's own loader as the swarm is configured, with the spend cap at the buyer budget", () => {
+    expect(loadMcpConfig(parseEnv(mcpEnvText(sandboxConfig())))).toEqual<McpConfig>({
+      network: 'near:sandbox',
+      rpcUrl: 'http://127.0.0.1:3030',
+      gatewayUrl: 'http://127.0.0.1:9000',
+      parent: 'test.near',
+      token: 'musd.test.near',
+      poolsContract: 'escrow.test.near',
+      blockTimeMs: 600,
+      maxTimeoutSeconds: 90,
+      mcpAccount: 'agent.test.near',
+      credentialsDir: join(dir, 'keys'),
+      spendCap: 20_000n,
+      spendFile: join(dir, 'spend.json'),
+    });
+  });
+});
+
 describe('newCredentialJwk', () => {
   it('is a private Ed25519 JWK with only kty, crv, x and d, where x is the public key of d', () => {
     const jwk = newCredentialJwk();
@@ -221,5 +243,15 @@ describe('writeGatewayEnv', () => {
     const error = await rejection(writeGatewayEnv(sandboxConfig(), join(dir, 'gateway.env')));
     expect(error).toBeInstanceOf(KeyFileError);
     expect(error).toMatchObject({ problem: 'missing' });
+  });
+});
+
+describe('writeMcpEnv', () => {
+  it('writes the text the MCP server reads, and refuses to write over it', async () => {
+    const config = sandboxConfig();
+    const path = join(dir, 'mcp.env');
+    await writeMcpEnv(config, path);
+    expect(loadMcpConfig(parseEnv(await readFile(path, 'utf8'))).mcpAccount).toBe('agent.test.near');
+    expect(await rejection(writeMcpEnv(config, path))).toBeInstanceOf(EnvFileExistsError);
   });
 });

@@ -8,6 +8,10 @@ import { describe, expect, it } from 'vitest';
 import { loadSwarmConfig, type SwarmConfig } from '../src/config.ts';
 
 const EXAMPLE = fileURLToPath(new URL('../.env.example', import.meta.url));
+const GATEWAY_EXAMPLE = fileURLToPath(new URL('../../gateway/.env.example', import.meta.url));
+const MCP_EXAMPLE = fileURLToPath(new URL('../../mcp/.env.example', import.meta.url));
+/** A variable line of an example file, set or commented out: its name is the first group. */
+const VARIABLE = /^#?(QUORUM_[A-Z_]+)=/gm;
 const PARENT = 'parent.testnet';
 
 /** The one required variable, plus `overrides` (`undefined` unsets one). */
@@ -269,6 +273,21 @@ describe('loadSwarmConfig', () => {
   it('says in its example file that every command but env and help checks the chain QUORUM_RPC_URL serves', async () => {
     const text = (await readFile(EXAMPLE, 'utf8')).replace(/\n# /g, ' ');
     expect(text).toContain('Every swarm command but env and help stops unless it serves that chain');
+  });
+
+  it('heads each section of its example file with the other apps that read its variables, and only those', async () => {
+    const text = await readFile(EXAMPLE, 'utf8');
+    const gateway = new Set([...(await readFile(GATEWAY_EXAMPLE, 'utf8')).matchAll(VARIABLE)].map((m) => m[1]));
+    const mcp = new Set([...(await readFile(MCP_EXAMPLE, 'utf8')).matchAll(VARIABLE)].map((m) => m[1]));
+    const sections = text.split(/^# --- /m).slice(1);
+    expect(sections.length).toBeGreaterThan(1);
+    for (const section of sections) {
+      const heading = section.slice(0, section.indexOf('\n'));
+      const readers = { gateway: heading.includes('the gateway'), mcp: heading.includes('the MCP server') };
+      for (const [, name] of section.matchAll(VARIABLE)) {
+        expect({ name, gateway: gateway.has(name), mcp: mcp.has(name) }).toEqual({ name, ...readers });
+      }
+    }
   });
 
   it('ships an example file that lists exactly the variables loadSwarmConfig reads', async () => {
