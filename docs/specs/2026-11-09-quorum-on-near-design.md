@@ -335,7 +335,7 @@ network is written in CAIP-2 form: `near:testnet`.
 | `GET /activity?pool=:id` | The activity feed (section 6.7) |
 | `GET /.well-known/jwks.json` | The public key that verifies credentials |
 | `POST /rpc` | Only if the public RPC refuses browser requests: a read-only pass-through that forwards `call_function` view calls on the pools contract and the token, and nothing else. Any other call, or `args_base64` over 1,024 characters, is answered `403` (`not_allowed`); a body over 16 KiB `413` (`body_too_large`); a body that is not JSON `400` (`invalid_json`); and an RPC that cannot be reached `503` (`chain_unavailable`) |
-| `GET /config.json` | What the live page needs: the network, the RPC URL (`/rpc` when the pass-through is on), the pools contract, the token, the provider and the explorer's transaction link prefix |
+| `GET /config.json` | What the live page needs: the network, the RPC URL (`/rpc` when the pass-through is on), the pools contract, the token, the provider and the explorer's transaction link prefix (section 7.6) |
 
 **Which pools the gateway serves.** Anyone can open a pool on the contract, but the gateway serves,
 lists, relays payments for and redeems only the pools whose `seller` is its configured provider
@@ -992,6 +992,7 @@ at once; their problem with a URL never quotes the URL, which may carry an API k
 | Average block time | gateway, swarm, MCP server | Converts `maxTimeoutSeconds` into blocks (section 6.4, check 5) |
 | Keeper settings | gateway | The keeper's interval, the refund batch `limit` (1 to 10), and the gas attached to `settle` and `refund` (section 6.7): at least what the contract requires at entry (section 5.4) plus 17 Tgas for what a call uses before that check, so 50 Tgas for `settle` and 27 + 23 × (`limit` + 1) Tgas for `refund` (280 Tgas at `limit` 10, the figure with which section 5.4 shows a full batch completing), and at most 300 Tgas. The gateway refuses less: a call that attaches only the entry figure always fails at entry |
 | RPC pass-through | gateway | Turns `POST /rpc` on (section 6.1) |
+| Explorer link prefix | gateway, live page | What a transaction hash is appended to, for a link to a testnet explorer; default `https://testnet.nearblocks.io/txns/`. It is an http or https URL that ends in `/` or `=` and whose links keep its origin, since a hash appended to `https://explorer.example` would become part of its host. The gateway refuses to start with any other prefix, and the live page refuses it in `/config.json` (section 8) |
 | Live page folder | gateway | The folder whose four page files are served at `/` (sections 6.1 and 8). The gateway refuses to start if it is, or contains, the gateway's own folder |
 
 **One value for every app.** `swarm env gateway` and `swarm env mcp` write the gateway's and the MCP
@@ -1069,12 +1070,13 @@ answer `404`. Every value it reads is written as text or as an attribute, never 
   is checked for its shape, and a malformed one fails that refresh with a status line naming what
   was wrong; the configuration's explorer link prefix must be an http or https URL that ends in `/`
   or `=` and whose links keep its origin (a hash appended to `https://explorer.example` would become
-  part of its host). Each request times out after 10 seconds, and the status line names the
-  request or view that timed out, so that a hung request cannot stop the refreshes, which never
-  overlap. A failed refresh shows "Could not refresh" with its reason,
-  keeps the last data on screen, and is tried again at the next 2-second tick. The status line is
-  not a live region, since it is rewritten at every refresh: a screen reader is told, through a
-  visually hidden live region, only of a failed refresh and of the recovery from one.
+  part of its host), which the gateway also checks when it starts (section 7.6). Each request times
+  out after 10 seconds, and the status line names the request or view that timed out, so that a
+  hung request cannot stop the refreshes, which never overlap. A failed refresh shows "Could not
+  refresh" with its reason, keeps the last data on screen, and is tried again at the next 2-second
+  tick. The status line is not a live region, since it is rewritten at every refresh: a screen
+  reader is told, through a visually hidden live region, only of a failed refresh and of the
+  recovery from one.
 - `totals.js` holds all the page's logic, as pure functions: the body of a view call and the
   decoding of its answer, the shape checks of everything read from the RPC, the gateway and the page
   URL, the ledger totals, the buyer rows and the explorer links, the choice of pool and what a

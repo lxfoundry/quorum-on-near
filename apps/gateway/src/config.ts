@@ -37,7 +37,7 @@ export interface GatewayConfig {
   settleGas: bigint;
   refundGas: bigint;
   dataDir: string;
-  /** The live page's folder, served at `/`, or null to serve nothing there. */
+  /** The live page's folder, whose four page files (and no other) are served from `/`, or null to serve nothing there. */
   webDir: string | null;
   rpcPassthrough: boolean;
   explorerTxUrl: string;
@@ -109,6 +109,21 @@ const asNetwork: Rule<Network> = {
 const asHttpUrl: Rule<string> = {
   expected: 'an http or https URL',
   parse: (raw) => (URL.canParse(raw) && ['http:', 'https:'].includes(new URL(raw).protocol) ? raw : undefined),
+};
+
+/**
+ * A prefix that a transaction hash is appended to, for a link to the explorer. It ends in `/` or `=`,
+ * and a link built from it keeps its origin: appended to `https://explorer.example`, a hash would
+ * become part of the host. The live page refuses the same prefixes, so a gateway that starts publishes
+ * only a prefix the page accepts.
+ */
+const asExplorerPrefix: Rule<string> = {
+  expected: `${asHttpUrl.expected} that ends in / or =, and whose links keep its origin`,
+  parse(raw) {
+    if (asHttpUrl.parse(raw) === undefined || !(raw.endsWith('/') || raw.endsWith('='))) return undefined;
+    const link = `${raw}x`;
+    return URL.canParse(link) && new URL(link).origin === new URL(raw).origin ? raw : undefined;
+  },
 };
 
 /**
@@ -360,7 +375,7 @@ export function loadConfig(env: Record<string, string | undefined>): GatewayConf
     dataDir,
     webDir,
     rpcPassthrough,
-    explorerTxUrl: optional('QUORUM_EXPLORER_TX_URL', 'https://testnet.nearblocks.io/txns/', asHttpUrl),
+    explorerTxUrl: optional('QUORUM_EXPLORER_TX_URL', 'https://testnet.nearblocks.io/txns/', asExplorerPrefix),
   };
   if (problems.length > 0) throw new ConfigError(problems.join('\n'));
   // No problem was listed, so every value in the draft is defined.
