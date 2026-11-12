@@ -58,6 +58,36 @@ function element(id, type) {
   return found;
 }
 
+/**
+ * Writes `text` as the text of `target` unless it already holds it. A refresh runs every 2 seconds
+ * and most of what it finds is unchanged: writing it anyway would replace the text node under the
+ * viewer's selection, and drop the focus from a link that is rewritten.
+ *
+ * @param {HTMLElement} target
+ * @param {string} text
+ */
+function setText(target, text) {
+  if (target.textContent !== text) target.textContent = text;
+}
+
+/** The key of what each element last had built into it by `replaceWhenChanged`. */
+const builtKeys = new WeakMap();
+
+/**
+ * Replaces the children of `parent` with the nodes `build` returns, unless `key`, which stands for
+ * everything `build` reads, is the key of the last build into `parent`. An unchanged list keeps its
+ * nodes, so a link a viewer is clicking or has focused is not replaced under them.
+ *
+ * @param {HTMLElement} parent
+ * @param {string} key
+ * @param {() => Node[]} build
+ */
+function replaceWhenChanged(parent, key, build) {
+  if (builtKeys.get(parent) === key) return;
+  builtKeys.set(parent, key);
+  parent.replaceChildren(...build());
+}
+
 const ui = {
   picker: element('picker', HTMLElement),
   select: element('pool-select', HTMLSelectElement),
@@ -143,7 +173,7 @@ async function view(config, accountId, methodName, args, block) {
 async function loadSetup() {
   const config = parseConfig(await getJson('/config.json'));
   const token = parseToken((await view(config, config.token, 'ft_metadata', {}, FINAL)).value);
-  ui.source.textContent = `Read from the pools contract ${config.poolsContract} on ${config.network}; token ${config.token}.`;
+  setText(ui.source, `Read from the pools contract ${config.poolsContract} on ${config.network}; token ${config.token}.`);
   return { config, token };
 }
 
@@ -209,7 +239,7 @@ function renderSelector(options, selected) {
 /** @param {string} message */
 function renderNoPool(message) {
   shown = null;
-  ui.noPool.textContent = message;
+  setText(ui.noPool, message);
   ui.noPool.hidden = false;
   ui.pool.hidden = true;
   ui.ledger.hidden = true;
@@ -223,24 +253,25 @@ function renderNoPool(message) {
 function renderPool(pool, token) {
   shown = pool;
   ui.noPool.hidden = true;
-  ui.poolTitle.textContent = `Pool ${pool.id}`;
-  ui.poolStatus.textContent = STATUS_TEXT[pool.status];
+  setText(ui.poolTitle, `Pool ${pool.id}`);
+  setText(ui.poolStatus, STATUS_TEXT[pool.status]);
   ui.poolStatus.dataset.status = pool.status;
-  ui.poolTerms.textContent = pool.terms;
+  setText(ui.poolTerms, pool.terms);
   ui.poolBar.max = pool.target;
   ui.poolBar.value = pool.taken;
-  ui.poolSeats.textContent = `${pool.taken} of ${pool.target} seats taken`;
-  ui.poolPrice.textContent = formatAmount(pool.seat_price, token);
-  ui.poolBonus.textContent = formatAmount(pool.bonus, token);
-  ui.poolCountdown.title = `Deadline ${new Date(pool.deadline_ms).toLocaleString()}`;
-  ui.poolSeller.textContent = pool.seller;
+  setText(ui.poolSeats, `${pool.taken} of ${pool.target} seats taken`);
+  setText(ui.poolPrice, formatAmount(pool.seat_price, token));
+  setText(ui.poolBonus, formatAmount(pool.bonus, token));
+  const deadline = `Deadline ${new Date(pool.deadline_ms).toLocaleString()}`;
+  if (ui.poolCountdown.title !== deadline) ui.poolCountdown.title = deadline;
+  setText(ui.poolSeller, pool.seller);
   renderCountdown();
   ui.pool.hidden = false;
 }
 
 function renderCountdown() {
   if (shown === null) return;
-  ui.poolCountdown.textContent = countdownText(shown.status, shown.deadline_ms, Date.now());
+  setText(ui.poolCountdown, countdownText(shown.status, shown.deadline_ms, Date.now()));
 }
 
 /**
@@ -253,13 +284,14 @@ function renderCountdown() {
  */
 function renderLedger(pool, seats, activity, balance, config, token) {
   const totals = poolTotals(pool, seats);
-  ui.paidIn.textContent = formatAmount(totals.paidIn, token);
-  ui.paidToSeller.textContent = formatAmount(totals.paidToSeller, token);
-  ui.payoutLinks.replaceChildren(...linkList(payoutLinks(pool, activity, config.explorerTxUrl)));
-  ui.refunded.textContent = formatAmount(totals.refunded, token);
-  ui.bonusPaidOut.textContent = formatAmount(totals.bonusPaidOut, token);
-  ui.heldNow.textContent = formatAmount(totals.heldNow, token);
-  ui.contractBalance.textContent = formatAmount(balance, token);
+  setText(ui.paidIn, formatAmount(totals.paidIn, token));
+  setText(ui.paidToSeller, formatAmount(totals.paidToSeller, token));
+  const payout = payoutLinks(pool, activity, config.explorerTxUrl);
+  replaceWhenChanged(ui.payoutLinks, JSON.stringify(payout), () => linkList(payout));
+  setText(ui.refunded, formatAmount(totals.refunded, token));
+  setText(ui.bonusPaidOut, formatAmount(totals.bonusPaidOut, token));
+  setText(ui.heldNow, formatAmount(totals.heldNow, token));
+  setText(ui.contractBalance, formatAmount(balance, token));
   ui.ledger.hidden = false;
 }
 
@@ -272,7 +304,8 @@ function renderLedger(pool, seats, activity, balance, config, token) {
  */
 function renderBuyers(pool, seats, activity, config, token) {
   const rows = buyerRows(pool, seats, activity, config.explorerTxUrl);
-  ui.buyerRows.replaceChildren(...rows.map((row) => buyerRow(row, token)));
+  // The rows hold everything a row shows; the token never changes once read.
+  replaceWhenChanged(ui.buyerRows, JSON.stringify(rows), () => rows.map((row) => buyerRow(row, token)));
   ui.noBuyers.hidden = rows.length > 0;
   ui.buyers.hidden = false;
 }
@@ -332,7 +365,7 @@ function linkList(links) {
  * @param {boolean} failed
  */
 function showStatus(text, failed) {
-  ui.status.textContent = text;
+  setText(ui.status, text);
   ui.status.classList.toggle('failed', failed);
 }
 
