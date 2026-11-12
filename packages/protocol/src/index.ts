@@ -8,3 +8,5 @@ export * from './delegate.ts';
 export * from './nep413.ts';
 export * from './checks.ts';
 export * from './client.ts';
+export * from './outcome.ts';
+export * from './network.ts';

@@ -6,6 +6,8 @@ import type { JWK } from 'jose';
 import { baseDecode, KeyPair, type KeyPairString } from 'near-api-js';
 import { isPrivateEd25519Jwk } from './credential.ts';
 
+export { checkChainId } from '@quorum-on-near/protocol';
+
 /** Circle's USDC on NEAR testnet. */
 export const TESTNET_USDC = '3e2210e1184b45b64c8a434c0a7e7b23cc04ea7eb7a6c3c32520d03d4afcb8af';
 
@@ -67,8 +69,6 @@ const TGAS = 1_000_000_000_000n;
  * which needs about 280 Tgas attached (spec section 5.4).
  */
 const MAX_CALL_GAS = 300n * TGAS;
-/** NEAR's public chains, by the `chain_id` their RPC nodes report. */
-const PUBLIC_CHAINS = ['mainnet', 'testnet'];
 /** The gateway's own folder, which holds its `.env` file. */
 const GATEWAY_DIR = resolve(fileURLToPath(new URL('..', import.meta.url)));
 
@@ -240,20 +240,6 @@ function isEd25519SecretKey(key: string): boolean {
   } catch {
     return false;
   }
-}
-
-/**
- * Checks the `chain_id` that the RPC at QUORUM_RPC_URL reports against QUORUM_NETWORK, which only
- * labels offers: the RPC decides which chain the gateway pays on. `near:testnet` needs `testnet`;
- * `near:sandbox` takes any chain but NEAR's public ones. Returns the problem, or null.
- */
-export function checkChainId(network: Network, chainId: string): string | null {
-  if (network === 'near:testnet') {
-    if (chainId === 'testnet') return null;
-    return `QUORUM_NETWORK is near:testnet, but QUORUM_RPC_URL serves the chain ${JSON.stringify(chainId)}, not "testnet"`;
-  }
-  if (!PUBLIC_CHAINS.includes(chainId)) return null;
-  return `QUORUM_NETWORK is ${network}, but QUORUM_RPC_URL serves NEAR's public chain ${JSON.stringify(chainId)}`;
 }
 
 /** A GatewayConfig being read: a value is undefined when its variable has a problem. */

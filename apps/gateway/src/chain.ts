@@ -1,4 +1,6 @@
-import type { BuyerView, DecodedSignedDelegate, PoolView } from '@quorum-on-near/protocol';
+import type { BuyerView, DecodedSignedDelegate, PoolView, TxOutcome } from '@quorum-on-near/protocol';
+
+export type { ReceiptOutcome, TxOutcome } from '@quorum-on-near/protocol';
 
 /** An access key as the gateway needs it. */
 export interface AccessKeyInfo {
@@ -10,20 +12,6 @@ export interface AccessKeyInfo {
 export interface BlockInfo {
   height: bigint;
   timestampMs: number;
-}
-
-/** One executed receipt (or the transaction itself) of a transaction's outcome. */
-export interface ReceiptOutcome {
-  executorId: string;
-  logs: string[];
-  failed: boolean;
-  gasBurnt: bigint;
-}
-
-/** A transaction's outcome: the transaction first, then every receipt, as the RPC lists them. */
-export interface TxOutcome {
-  txHash: string;
-  receipts: ReceiptOutcome[];
 }
 
 /** Everything the gateway reads from the chain. */
