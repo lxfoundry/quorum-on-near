@@ -12,6 +12,7 @@ import {
   type AccountKey,
   type AccountState,
   type BlockInfo,
+  type MissingOutcome,
   type NewAccount,
   type ReadAt,
   type ReceiptOutcome,
@@ -216,6 +217,8 @@ export class FakeChain implements SwarmChain {
   onTransferCall?: (call: FakeTransferCall) => TransferCallResult | Promise<TransferCallResult>;
 
   readonly #outcomes = new Map<string, TxOutcome>();
+  /** Transactions txOutcome gives `not_final` for, by `<signer> <hash>`. */
+  readonly #notFinal = new Set<string>();
   readonly #failures: Array<{ match: (write: FakeWrite) => boolean; error: Error | undefined }> = [];
   #transactions = 0;
 
@@ -260,6 +263,11 @@ export class FakeChain implements SwarmChain {
   /** Makes txOutcome(outcome.txHash, signerId) return `outcome`. */
   addOutcome(signerId: string, outcome: TxOutcome): void {
     this.#outcomes.set(`${signerId} ${outcome.txHash}`, outcome);
+  }
+
+  /** Makes txOutcome(txHash, signerId) return `not_final`, as for a transaction the RPC does not see final within its wait. */
+  markNotFinal(signerId: string, txHash: string): void {
+    this.#notFinal.add(`${signerId} ${txHash}`);
   }
 
   /**
@@ -326,8 +334,10 @@ export class FakeChain implements SwarmChain {
     return this.block;
   }
 
-  async txOutcome(txHash: string, signerId: string): Promise<TxOutcome | null> {
-    return this.#outcomes.get(`${signerId} ${txHash}`) ?? null;
+  async txOutcome(txHash: string, signerId: string): Promise<TxOutcome | MissingOutcome> {
+    const key = `${signerId} ${txHash}`;
+    if (this.#notFinal.has(key)) return 'not_final';
+    return this.#outcomes.get(key) ?? 'unknown';
   }
 
   async createAccount(signer: AccountKey, account: NewAccount): Promise<TxOutcome> {

@@ -92,7 +92,7 @@ describe.skipIf(process.platform === 'win32')('the swarm against a local sandbox
       if (seen.has(record.txHash)) continue;
       seen.add(record.txHash);
       const outcome = await chain.txOutcome(record.txHash, config.relayer);
-      if (outcome === null) continue;
+      if (typeof outcome === 'string') continue;
       if (record.kind === 'commit') {
         const gas = commitGas(outcome, record.account, [config.token, config.poolsContract]);
         if (gas !== null) commits.push(gas);
@@ -272,6 +272,6 @@ describe.skipIf(process.platform === 'win32')('the swarm against a local sandbox
     const txHash = created?.match(/ tx (\S+)$/)?.[1];
     if (txHash === undefined) throw new Error('the first setup logged no account it created');
 
-    expect(await chain.txOutcome(txHash, config.parent)).not.toBeNull();
+    expect(await chain.txOutcome(txHash, config.parent)).toMatchObject({ txHash });
   });
 });

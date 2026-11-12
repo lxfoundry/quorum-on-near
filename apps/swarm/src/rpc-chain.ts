@@ -32,6 +32,7 @@ import {
   type AccountKey,
   type AccountState,
   type BlockInfo,
+  type MissingOutcome,
   type NewAccount,
   type ReadAt,
   type SwarmChain,
@@ -179,23 +180,25 @@ export class RpcSwarmChain implements SwarmChain {
   /**
    * Looks the transaction up first without waiting (`wait_until` NONE), which the RPC answers at once,
    * with UNKNOWN_TRANSACTION for a transaction it does not know, one older than its history included:
-   * null then. A transaction it knows is converted at once when it is FINAL already, else waited for
-   * at FINAL once, through the send provider; a wait that the RPC ends unanswered (an HTTP 408 or a
-   * TIMEOUT_ERROR), or with UNKNOWN_TRANSACTION, is null too. Any other error is passed on.
+   * `unknown` then. A transaction it knows is converted at once when it is FINAL already, else waited
+   * for at FINAL once, through the send provider; a wait that the RPC ends unanswered (an HTTP 408 or a
+   * TIMEOUT_ERROR) is `not_final`, and one it ends with UNKNOWN_TRANSACTION `unknown`. Any other
+   * error is passed on.
    */
-  async txOutcome(txHash: string, signerId: string): Promise<TxOutcome | null> {
+  async txOutcome(txHash: string, signerId: string): Promise<TxOutcome | MissingOutcome> {
     let status: Awaited<ReturnType<Provider['viewTransactionStatus']>>;
     try {
       status = await this.#read.viewTransactionStatus({ txHash, accountId: signerId, waitUntil: 'NONE' });
     } catch (error) {
-      if (error instanceof UnknownTransactionError) return null;
+      if (error instanceof UnknownTransactionError) return 'unknown';
       throw error;
     }
     if (status.final_execution_status === 'FINAL') return toTxOutcome(status);
     try {
       return toTxOutcome(await this.#send.viewTransactionStatus({ txHash, accountId: signerId, waitUntil: 'FINAL' }));
     } catch (error) {
-      if (error instanceof UnknownTransactionError || timedOut(error)) return null;
+      if (error instanceof UnknownTransactionError) return 'unknown';
+      if (timedOut(error)) return 'not_final';
       throw error;
     }
   }

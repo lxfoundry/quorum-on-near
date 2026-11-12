@@ -407,26 +407,26 @@ describe('RpcSwarmChain reads', () => {
     ]);
   });
 
-  it('txOutcome is null at once for a transaction the RPC does not know, such as one older than its history', async () => {
+  it("txOutcome is 'unknown' at once for a transaction the RPC does not know, such as one older than its history", async () => {
     const { rpc, chain } = setup();
     rpc.answers.viewTransactionStatus = () => {
       throw new UnknownTransactionError('Tx1');
     };
-    expect(await chain.txOutcome('Tx1', 'relay.testnet')).toBeNull();
+    expect(await chain.txOutcome('Tx1', 'relay.testnet')).toBe('unknown');
     expect(rpc.reads).toEqual([['viewTransactionStatus', lookup('NONE')]]);
   });
 
   it.each([
-    ['a 408', () => new Error('Timeout error', { cause: 408 })],
-    ['TIMEOUT_ERROR', () => new TransactionTimeoutError()],
-    ['UNKNOWN_TRANSACTION', () => new UnknownTransactionError('Tx1')],
-  ])('txOutcome is null when the wait for the transaction to be final ends with %s', async (_, error) => {
+    ['a 408', 'not_final', () => new Error('Timeout error', { cause: 408 })],
+    ['TIMEOUT_ERROR', 'not_final', () => new TransactionTimeoutError()],
+    ['UNKNOWN_TRANSACTION', 'unknown', () => new UnknownTransactionError('Tx1')],
+  ])('txOutcome tells why it has no outcome when the wait for the transaction to be final ends with %s: %s', async (_, why, error) => {
     const { rpc, chain } = setup();
     rpc.answers.viewTransactionStatus = { final_execution_status: 'INCLUDED' };
     rpc.answers['send.viewTransactionStatus'] = () => {
       throw error();
     };
-    expect(await chain.txOutcome('Tx1', 'relay.testnet')).toBeNull();
+    expect(await chain.txOutcome('Tx1', 'relay.testnet')).toBe(why);
   });
 
   it('txOutcome passes on any other error', async () => {
@@ -894,7 +894,7 @@ describe('createRpcSwarmChain', () => {
       return new Response(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { final_execution_status: 'INCLUDED' } }), { status: 200 });
     });
     const chain = createRpcSwarmChain({ rpcUrl: 'http://rpc.invalid', token: TOKEN, poolsContract: POOLS });
-    expect(await chain.txOutcome('Tx1', 'relay.testnet')).toBeNull();
+    expect(await chain.txOutcome('Tx1', 'relay.testnet')).toBe('not_final');
     expect(waits).toEqual(['NONE', 'FINAL']);
   });
 

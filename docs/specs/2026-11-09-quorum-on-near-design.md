@@ -1090,7 +1090,8 @@ no `ok` refund record. Each such failure names the buyers, and says that the gat
 whose result was unknown and keeps its feed in its data folder. A holder the swarm does not know is
 named in a note, and does not fail the check. A transaction the RPC does not know, one older than its
 history included, is reported at once as unknown to the RPC, failing its gas check; one not yet final
-is waited for once. When the pool has not ended, the buyers, refunds and dust, and balances checks are
+is waited for once, and is reported as not yet final, failing its gas check, if the RPC's wait ends
+before it is. When the pool has not ended, the buyers, refunds and dust, and balances checks are
 left out, and solvency and both gas checks still run. Gas is shown in Tgas with 2 decimals,
 truncated, so that a figure never shows as the limit it is under (4.996 Tgas shows as 4.99). The
 check ends with `pool <id>: <n> checks passed`, or the number that failed and an exit code of 1.

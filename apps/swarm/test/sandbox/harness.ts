@@ -239,7 +239,7 @@ export class CountingChain implements SwarmChain {
     return this.#inner.finalBlock();
   }
 
-  txOutcome(txHash: string, signerId: string): Promise<TxOutcome | null> {
+  txOutcome(txHash: string, signerId: string): ReturnType<SwarmChain['txOutcome']> {
     return this.#inner.txOutcome(txHash, signerId);
   }
 

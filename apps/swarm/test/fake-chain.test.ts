@@ -139,13 +139,15 @@ describe('FakeChain reads', () => {
     expect(await chain.finalBlock()).toEqual({ height: 5n, timestampMs: 9 });
   });
 
-  it('looks an outcome up by hash and signer, and gives null for any other pair', async () => {
+  it("looks an outcome up by hash and signer, and gives 'unknown' for any other pair, or 'not_final' for one marked so", async () => {
     const chain = new FakeChain();
     const outcome: TxOutcome = { txHash: 'Hash1', receipts: [{ executorId: 'relay.testnet', logs: [], failed: false, gasBurnt: 1n }] };
     chain.addOutcome('relay.testnet', outcome);
     expect(await chain.txOutcome('Hash1', 'relay.testnet')).toEqual(outcome);
-    expect(await chain.txOutcome('Hash1', 'other.testnet')).toBeNull();
-    expect(await chain.txOutcome('Hash2', 'relay.testnet')).toBeNull();
+    expect(await chain.txOutcome('Hash1', 'other.testnet')).toBe('unknown');
+    expect(await chain.txOutcome('Hash2', 'relay.testnet')).toBe('unknown');
+    chain.markNotFinal('relay.testnet', 'Hash2');
+    expect(await chain.txOutcome('Hash2', 'relay.testnet')).toBe('not_final');
   });
 });
 

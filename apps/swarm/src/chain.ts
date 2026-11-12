@@ -135,6 +135,12 @@ export function rerunAdvice(error: unknown, command: string, rerun: string): unk
   return new OutcomeUnknownError(`${error.message}. ${advice}`, error.txHash, error.reason, { cause: error });
 }
 
+/**
+ * Why txOutcome gives no outcome: `unknown` when the RPC does not know the transaction (one older
+ * than its history included), `not_final` when the RPC did not see it final within its own wait.
+ */
+export type MissingOutcome = 'unknown' | 'not_final';
+
 /** Where `list_pools` is read: at the height of a final block, or at optimistic finality. */
 export type ReadAt = bigint | 'optimistic';
 
@@ -199,10 +205,11 @@ export interface SwarmChain {
   finalBlock(): Promise<BlockInfo>;
   /**
    * The outcome of the transaction `txHash` signed by `signerId`, once it and every receipt it caused
-   * are final; null, without a wait, when the RPC does not know the transaction (one older than the
-   * RPC's history included), and null when the RPC does not see it final within its own wait.
+   * are final; `unknown`, without a wait, when the RPC does not know the transaction (one older than
+   * the RPC's history included), and `not_final` when the RPC does not see it final within its own
+   * wait.
    */
-  txOutcome(txHash: string, signerId: string): Promise<TxOutcome | null>;
+  txOutcome(txHash: string, signerId: string): Promise<TxOutcome | MissingOutcome>;
 
   /**
    * Creates the direct sub-account `account.accountId` of the signer, with `account.balance` and

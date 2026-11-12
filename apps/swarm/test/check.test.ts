@@ -771,6 +771,20 @@ describe('checkPool', () => {
       expect(lineOf(report, 'commit gas')).toEqual({ ok: false, detail: `3 commits, limit 50.00 Tgas: ${txHash} is unknown to the RPC` });
     });
 
+    it('fails a commit whose transaction the RPC did not see final within its wait, saying so', async () => {
+      settledFills();
+      const txHash = hashOf('a commit not yet final');
+      feed.push({ at: NOW_MS, poolId: 0, kind: 'commit', account: buyer(3), seats: 1, amount: 180n, txHash, ok: true });
+      chain.markNotFinal(RELAYER, txHash);
+
+      const report = await run({ poolId: 0 });
+
+      expect(lineOf(report, 'commit gas')).toEqual({
+        ok: false,
+        detail: `3 commits, limit 50.00 Tgas: ${txHash} is not yet final (waited for once)`,
+      });
+    });
+
     it('fails a commit whose outcome has no receipt on its buyer', async () => {
       settledFills();
       const txHash = hashOf('a commit of another buyer');
@@ -959,6 +973,17 @@ describe('checkPool', () => {
       expect(lineOf(report, 'payout gas').detail).toMatch(
         /; not checked: stranger\.testnet was refunded with no refund in the activity feed, and is not one of the swarm's buyers$/,
       );
+    });
+
+    it('fails a keeper transaction the RPC did not see final within its wait, saying so', async () => {
+      settledFills();
+      const txHash = hashOf('a settle not yet final');
+      feed.push({ at: NOW_MS, poolId: 0, kind: 'settle', account: PROVIDER, seats: 3, amount: 0n, txHash, ok: false });
+      chain.markNotFinal(RELAYER, txHash);
+
+      const report = await run({ poolId: 0 });
+
+      expect(lineOf(report, 'payout gas')).toEqual({ ok: false, detail: `2 transactions: ${txHash} is not yet final (waited for once)` });
     });
 
     it('fails a keeper transaction the RPC does not know', async () => {

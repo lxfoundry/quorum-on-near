@@ -1,7 +1,7 @@
 import { transportReason, type ActivityRecord, type GatewayClient } from '@quorum-on-near/buyer';
 import { MAX_PAGE, poolsEvents, priceOf, type PoolStatus, type PoolView, type SeatView } from '@quorum-on-near/protocol';
 import { buyerIds } from './accounts.ts';
-import { allPools, TGAS, type SwarmChain, type TxOutcome } from './chain.ts';
+import { allPools, TGAS, type MissingOutcome, type SwarmChain, type TxOutcome } from './chain.ts';
 import type { SwarmConfig } from './config.ts';
 import type { Scenario } from './scenarios.ts';
 import { count } from './words.ts';
@@ -172,7 +172,7 @@ export async function checkPool(
   const { pool, records, waitedMs, lastReadError } = await awaitEnd(deps, request.poolId);
   add(statusLine(pool, request.scenario, waitedMs));
   if (lastReadError !== null) add({ name: 'reads', ok: false, detail: `the last read before the limit failed: ${lastReadError}` });
-  const outcomes = new Map<string, TxOutcome | null>();
+  const outcomes: Outcomes = new Map();
   for (const { txHash } of records) {
     if (!outcomes.has(txHash)) {
       outcomes.set(txHash, await retryRead(deps, `transaction ${txHash}`, () => chain.txOutcome(txHash, config.relayer)));
@@ -198,6 +198,14 @@ export async function checkPool(
   return { poolId: pool.id, status: pool.status, lines, failed: lines.some((line) => !line.ok) };
 }
 
+/** Each transaction looked up, by its hash: its outcome, or why it has none. */
+type Outcomes = Map<string, TxOutcome | MissingOutcome>;
+
+/** Why a transaction has no outcome, in the check's words: unknown to the RPC, or not yet final. */
+function missing(txHash: string, why: MissingOutcome): string {
+  return why === 'unknown' ? `${txHash} is unknown to the RPC` : `${txHash} is not yet final (waited for once)`;
+}
+
 /** A relayed commit, by its transaction and its buyer. */
 interface CommitTx {
   txHash: string;
@@ -213,15 +221,15 @@ interface Holders {
 /**
  * The commits of `extra` that the feed lacks and whose outcome shows the pools contract committing
  * seats in pool `poolId` to their account. Each transaction not looked up yet (every one of the feed
- * has been) is looked up into `outcomes`; one the RPC does not know, or that took no seats for its
- * account in this pool, is left out.
+ * has been) is looked up into `outcomes`; one with no outcome, or that took no seats for its account
+ * in this pool, is left out.
  */
 async function learnedCommits(
   deps: CheckDeps,
   config: Pick<SwarmConfig, 'relayer' | 'poolsContract'>,
   poolId: number,
   extra: readonly CommitTx[],
-  outcomes: Map<string, TxOutcome | null>,
+  outcomes: Outcomes,
 ): Promise<CommitTx[]> {
   const commits: CommitTx[] = [];
   for (const { txHash, account } of extra) {
@@ -229,7 +237,7 @@ async function learnedCommits(
     const outcome = await retryRead(deps, `transaction ${txHash}`, () => deps.chain.txOutcome(txHash, config.relayer));
     outcomes.set(txHash, outcome);
     const took =
-      outcome !== null &&
+      typeof outcome !== 'string' &&
       poolsEvents(outcome, config.poolsContract).some(
         (event) => event.event === 'seats_committed' && event.data.pool_id === poolId && event.data.buyer === account,
       );
@@ -490,7 +498,7 @@ function commitGasLine(
   config: Pick<SwarmConfig, 'poolsContract' | 'token' | 'commitMinGas'>,
   records: readonly ActivityRecord[],
   learned: readonly CommitTx[],
-  outcomes: ReadonlyMap<string, TxOutcome | null>,
+  outcomes: ReadonlyMap<string, TxOutcome | MissingOutcome>,
   holders: Holders | null,
 ): CheckLine {
   const fed = records.filter((record) => record.kind === 'commit');
@@ -515,9 +523,9 @@ function commitGasLine(
   }
   let most = 0n;
   for (const { txHash, account } of commits) {
-    const outcome = outcomes.get(txHash) ?? null;
-    if (outcome === null) {
-      problems.push(`${txHash} is unknown to the RPC`);
+    const outcome = outcomes.get(txHash) ?? 'unknown';
+    if (typeof outcome === 'string') {
+      problems.push(missing(txHash, outcome));
       continue;
     }
     const gas = commitGas(outcome, account, [config.token, config.poolsContract]);
@@ -543,7 +551,7 @@ function payoutGasLine(
   config: Pick<SwarmConfig, 'poolsContract' | 'token'>,
   end: EndStatus | null,
   records: readonly ActivityRecord[],
-  outcomes: ReadonlyMap<string, TxOutcome | null>,
+  outcomes: ReadonlyMap<string, TxOutcome | MissingOutcome>,
   holders: Holders | null,
 ): CheckLine {
   const calls = uniqueByHash(records.filter((record) => record.kind !== 'commit'));
@@ -572,9 +580,9 @@ function payoutGasLine(
   const most = { transfers: 0n, callbacks: 0n };
   const counted = { transfers: 0, callbacks: 0 };
   for (const { txHash } of calls) {
-    const outcome = outcomes.get(txHash) ?? null;
-    if (outcome === null) {
-      problems.push(`${txHash} is unknown to the RPC`);
+    const outcome = outcomes.get(txHash) ?? 'unknown';
+    if (typeof outcome === 'string') {
+      problems.push(missing(txHash, outcome));
       continue;
     }
     const gas = payoutGas(outcome, config.poolsContract, config.token);
