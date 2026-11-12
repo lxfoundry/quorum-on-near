@@ -1012,22 +1012,53 @@ access to the file, which holds the relayer's keys and the credential key.
 
 `apps/web` is `index.html`, `app.js` (an ES module), `totals.js` and `style.css`. There is no build
 step, and the gateway serves the folder at `/`. The page never signs anything and needs no wallet.
+It declares its icon inline, so a browser makes no `/favicon.ico` request, which the gateway would
+answer `404`. Every value it reads is written as text or as an attribute, never as HTML.
 
 - **The banner:** "The provider is simulated, and prices are scaled down 10,000 times. The money
-  flow is real: USDC on NEAR testnet."
+  flow is real: USDC on NEAR testnet." It is static, whatever the network; the footer names the
+  network, the pools contract and the token from `/config.json`.
+- **Which pool:** the one that `?pool=<id>` names, written as the gateway writes pool ids (decimal,
+  no sign, no leading zero, a safe integer; anything else is ignored), else the provider's newest
+  pool. The selector lists only the provider's pools, newest first, and choosing one sets `?pool=`.
+  A pool whose seller is not exactly the provider is never shown: its card, ledger and buyer table
+  give way to the notice "Pool `<id>` was opened by `<seller>`, not by this gateway's provider
+  `<provider>`: this page shows only the provider's pools.", with none of that pool's own text, since
+  anyone can open a pool whose terms the provider never wrote. The check is made on the `get_pool`
+  result of the same refresh, so a pool opened after `list_pools` was read is caught too. A pool that
+  does not exist shows "There is no pool `<id>`.", and a provider with no pool "The provider has not
+  opened a pool yet."
 - **The pool card:** the terms, a bar filling seat by seat, the seat price, the bonus escrowed, a
-  countdown and the status.
+  countdown, the seller and the status. The countdown shows `m:ss` (`h:mm:ss` from an hour), rounded
+  up to the second, while the pool is Open and "closed" otherwise; it is updated every second from
+  the last read, and its tooltip gives the deadline in local time.
 - **The buyer table:** buyer, seats, amount paid, and state (committed; refunded with its bonus
   share; claimable; settled, which is derived from the pool's status and is not a buyer state in the
-  contract), with a testnet explorer link for each transaction.
+  contract), with a testnet explorer link for each transaction. A bonus share is shown only for a
+  refunded buyer: a claimable one has been paid nothing yet, and its refund counts in *held now*. The
+  links are those of the buyer's `commit` and `refund` records in the activity feed; a record that is
+  not `ok` is still linked, labelled as failed, and a hash that is not a base58 transaction hash is
+  never linked.
 - **The ledger totals:** paid in, paid to the seller, refunded, bonus paid out, and held now.
   *Held now* is shown beside `ft_balance_of(pools contract)`, so the solvency invariant can be seen.
+  Held now is what the contract still owes for this pool (invariant 1), and the balance covers every
+  pool together, so the balance is never below held now. The dust counts as paid to the seller as
+  soon as the pool's `dust_sent` is set, while its transfer may still be in flight, and leaves held
+  now at the same moment, so paid in plus the bonus always equals the four other totals together.
+  The links of the pool's `settle` and dust records are shown beside *paid to the seller*.
 - **Amounts** are shown with all 6 of the token's decimals (read from its `ft_metadata`), since the
-  scaled prices are fractions of a cent.
+  scaled prices are fractions of a cent, followed by its symbol, as in `0.000180 USDC`.
 - **Data:** every 2 seconds, it reads pool state from the contract's views (`get_pool`,
   `get_seats`) with RPC `call_function`, and transaction links from `/activity`. The RPC URL is set
   in the page's configuration. If the RPC refuses browser requests, the page uses the gateway's
-  `/rpc` pass-through instead (section 6.1).
+  `/rpc` pass-through instead (section 6.1). It reads `/config.json` and the token's `ft_metadata`
+  once, then on each refresh `list_pools` (for the selector and the newest pool), `get_pool`,
+  `get_seats`, the token's `ft_balance_of` for the pools contract and the feed, every view at
+  optimistic finality. Every value read is checked for its shape, and a malformed one fails that
+  refresh with a status line naming what was wrong; the configuration's explorer link prefix must be
+  an http or https URL. Each request times out after 10 seconds, so that a hung request cannot stop
+  the refreshes, which never overlap. A failed refresh shows "Could not refresh" with its reason,
+  keeps the last data on screen, and is tried again at the next 2-second tick.
 - `totals.js` is a pure module that computes the totals from the contract's data. It is the one
   piece of logic on the page, and it is unit-tested.
 
