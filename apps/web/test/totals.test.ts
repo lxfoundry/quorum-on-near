@@ -213,6 +213,16 @@ describe('poolTotals', () => {
     });
   });
 
+  it('holds the dust of 72 again, paid to the seller 0, when its transfer failed after every refund (dust_sent back to false)', () => {
+    expect(poolTotals(failsPool({ dust_sent: false }), failsSeats('refunded'))).toEqual({
+      paidIn: '32000',
+      paidToSeller: '0',
+      refunded: '32000',
+      bonusPaidOut: '3000',
+      heldNow: '72',
+    });
+  });
+
   it('pays every seat its price and 30 of the bonus, and the dust of 72 to the seller, once refunded', () => {
     expect(poolTotals(failsPool({ status: 'refunded', dust_sent: true }), failsSeats('refunded'))).toEqual({
       paidIn: '32000',
@@ -246,6 +256,7 @@ describe('poolTotals', () => {
     ['settled', fillsPool({ status: 'settled' }), FILLS_SEATS],
     ['expired', failsPool(), failsSeats('committed', { 'buyer-02.quorum.testnet': 'refunded' })],
     ['expired, dust sent', failsPool({ dust_sent: true }), failsSeats('refunded', { 'buyer-04.quorum.testnet': 'claimable' })],
+    ['expired, dust transfer failed', failsPool(), failsSeats('refunded')],
     ['refunded', failsPool({ status: 'refunded', dust_sent: true }), failsSeats('refunded')],
   ])('accounts for every unit paid in and every unit of the bonus when %s', (_status, pool, seats) => {
     const t = poolTotals(pool, seats);
