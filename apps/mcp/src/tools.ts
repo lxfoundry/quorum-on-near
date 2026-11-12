@@ -188,8 +188,8 @@ async function poolOnChain(deps: ToolDeps, tool: string, pool: number): Promise<
  * `signal` is the client's cancellation of the call, after which the MCP SDK sends no answer. A call
  * cancelled when it leaves the queue, or before its payment goes through the spend ledger, signs and
  * spends nothing (`cancelled`). One cancelled once the payment was handed over runs to its answer;
- * the pool is then held whatever the answer, as for a payment whose result is unknown, and the answer
- * goes to the log, since no client receives it.
+ * the pool is then held whatever the answer, once a payment was signed, as for a payment whose result
+ * is unknown, and the answer goes to the log, since no client receives it.
  */
 export function quorumCommit(deps: ToolDeps, request: SeatsInput, signal?: AbortSignal): Promise<ToolResult<CommitOutput>> {
   return deps.commits.serial(() => commit(deps, request, signal));
@@ -275,7 +275,11 @@ function cancelled(pool: number): ToolResult<never> {
 function cancelledAfterPaying(deps: ToolDeps, pool: number, signed: SignedPayment | null, result: ToolResult<CommitOutput>): void {
   const answer = `the answer: ${answerLine(result)}`;
   if (signed === null) {
-    deps.log(`quorum_commit: the call for pool ${pool} was cancelled once it reached the spend cap, and no payment was signed; ${answer}`);
+    // Whether anything was signed is for the answer to say: a payment can have been signed and never sent.
+    deps.log(
+      `quorum_commit: the call for pool ${pool} was cancelled once its payment had reached the spend ledger, ` +
+        `and no signed payment is known, so pool ${pool} is not held; ${answer}`,
+    );
     return;
   }
   const untilHeight = signed.maxBlockHeight + SETTLE_MARGIN_BLOCKS;

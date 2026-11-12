@@ -652,10 +652,12 @@ function payoutGasLine(
   }
   const most = { transfers: 0n, callbacks: 0n };
   const counted = { transfers: 0, callbacks: 0 };
+  let unread = 0;
   for (const { txHash } of calls) {
     const outcome = outcomes.get(txHash) ?? 'unknown';
     if (typeof outcome === 'string') {
       problems.push(missing(txHash, outcome));
+      unread += 1;
       continue;
     }
     const gas = payoutGas(outcome, config.poolsContract, config.token);
@@ -668,8 +670,11 @@ function payoutGasLine(
     }
   }
   // A batch that only passed buyers who had claimed may transfer nothing, so this counts every keeper
-  // transaction of the pool, not only the one that ended it.
-  if (end !== null && calls.length > 0 && counted.transfers === 0) problems.push('none of the keeper transactions made an ft_transfer');
+  // transaction of the pool, not only the one that ended it. It is said only when every outcome was
+  // read: one that was not may hold the transfer, and its own problem is listed.
+  if (end !== null && calls.length > 0 && unread === 0 && counted.transfers === 0) {
+    problems.push('none of the keeper transactions made an ft_transfer');
+  }
   const transactions = calls.length === 0 ? 'no keeper transactions' : count(calls.length, 'transaction');
   if (problems.length > 0) return { name: 'payout gas', ok: false, detail: [`${transactions}: ${problems.join('; ')}`, ...notes].join('; ') };
   const detail =

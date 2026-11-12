@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { loadSwarmConfig } from '../src/config.ts';
+import { defaultLockDir } from '../src/lock.ts';
 import { swarmCliEnv } from './sandbox/harness.ts';
 
 const EXAMPLE = new URL('../.env.example', import.meta.url);
@@ -21,6 +22,7 @@ const SWARM_ENV: Record<string, string> = {
   QUORUM_POOLS_WASM: join(ROOT, 'quorum_pools.wasm'),
   QUORUM_CREDENTIALS_DIR: join(ROOT, 'keys'),
   QUORUM_MCP_SPEND_FILE: join(ROOT, 'mcp-spend.json'),
+  QUORUM_SWARM_LOCK_DIR: join(ROOT, 'swarm-lock'),
   QUORUM_SCENARIO_DEADLINE_SECONDS: '30',
   QUORUM_SWARM_SPREAD_SECONDS: '5',
   QUORUM_REDEEM_INTERVAL_MS: '1000',
@@ -59,6 +61,19 @@ describe("the sandbox harness's environment for the swarm's command line", () =>
 
     expect([env.QUORUM_POOLS_WASM, env.QUORUM_SCENARIO_DEADLINE_SECONDS]).toEqual(['', '']);
     expect(loadSwarmConfig(env)).toMatchObject({ poolsWasm: null, deadlineSeconds: null });
+  });
+
+  it('gives the command line a lock folder inside the world’s temporary root, never the repository’s', () => {
+    const env = swarmCliEnv(world());
+
+    expect(env.QUORUM_SWARM_LOCK_DIR).toBe(join(ROOT, 'swarm-lock'));
+    expect(env.QUORUM_SWARM_LOCK_DIR).not.toBe(defaultLockDir());
+  });
+
+  it('refuses a world whose lock folder is the repository’s, so that no command line takes its lock there', () => {
+    const { QUORUM_SWARM_LOCK_DIR: _lockDir, ...rest } = SWARM_ENV;
+
+    expect(() => swarmCliEnv(world(rest))).toThrow(/QUORUM_SWARM_LOCK_DIR/);
   });
 
   it('keeps the world’s own values as written, and sets a test’s variables over them', () => {

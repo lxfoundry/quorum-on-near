@@ -1048,6 +1048,33 @@ describe('checkPool', () => {
       expect(lineOf(report, 'payout gas')).toEqual({ ok: false, detail: '1 transaction: none of the keeper transactions made an ft_transfer' });
     });
 
+    it.each([
+      ['unknown to the RPC', false, 'is unknown to the RPC'],
+      ['not yet final within its wait', true, 'is not yet final (waited for once)'],
+    ])('does not say that no keeper transaction made an ft_transfer when the only one is %s, since its outcome was not read', async (_case, notFinal, why) => {
+      settledFills();
+      feed = feed.filter((record) => record.kind !== 'settle');
+      const txHash = hashOf(`a settle ${_case}`);
+      feed.push({ at: NOW_MS, poolId: 0, kind: 'settle', account: PROVIDER, seats: 3, amount: 2268n, txHash, ok: true });
+      if (notFinal) chain.markNotFinal(RELAYER, txHash);
+
+      const report = await run({ poolId: 0 });
+
+      expect(lineOf(report, 'payout gas')).toEqual({ ok: false, detail: `1 transaction: ${txHash} ${why}` });
+    });
+
+    it('does not say that no keeper transaction made an ft_transfer when one of them made none and another was not read', async () => {
+      settledFills();
+      feed = feed.filter((record) => record.kind !== 'settle');
+      keeperTx(0, [{ kind: 'settle', account: PROVIDER, seats: 3, amount: 2268n }], []);
+      const txHash = hashOf('a second keeper transaction, unknown');
+      feed.push({ at: NOW_MS, poolId: 0, kind: 'settle', account: PROVIDER, seats: 3, amount: 0n, txHash, ok: false });
+
+      const report = await run({ poolId: 0 });
+
+      expect(lineOf(report, 'payout gas')).toEqual({ ok: false, detail: `2 transactions: ${txHash} is unknown to the RPC` });
+    });
+
     it('takes the ft_transfers of earlier keeper transactions when the one that ended the pool made none', async () => {
       // A last batch that only passed buyers who had claimed, with a dust of 0, transfers nothing.
       refundedFails({ bonus: '3000' });

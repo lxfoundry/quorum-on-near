@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from 'node:net';
 import { paymentRequired } from '@quorum-on-near/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { MAX_TERMS_BYTES } from '../src/chain.ts';
 import { transportReason } from '../src/errors.ts';
 import {
   GatewayClient,
@@ -346,8 +347,8 @@ describe('GatewayClient answers that are not documented', () => {
   });
   const filled = { status: 'filled', credential: CREDENTIAL, poolId: POOL_ID, seats: 2, terms: POOL.terms };
   /** 281 bytes of terms, one more than the pools contract keeps, and 282 bytes in 141 characters. */
-  const LONG_TERMS = 'x'.repeat(281);
-  const WIDE_TERMS = 'é'.repeat(141);
+  const LONG_TERMS = 'x'.repeat(MAX_TERMS_BYTES + 1);
+  const WIDE_TERMS = 'é'.repeat(MAX_TERMS_BYTES / 2 + 1);
   /** A compact JWS of 4097 characters. */
   const LONG_CREDENTIAL = `${'a'.repeat(4000)}.${'b'.repeat(48)}.${'c'.repeat(47)}`;
   const offerWithTerms = (terms: string) => paymentRequired([{ ...OFFER, extra: { ...OFFER.extra, terms } }]);
@@ -409,7 +410,7 @@ describe('GatewayClient answers that are not documented', () => {
   });
 
   it('accepts terms of exactly 280 bytes, a credential of 4096 characters, and hashes of 32 and 44 characters', async () => {
-    const terms = `${'é'.repeat(139)}xx`;
+    const terms = `${'é'.repeat(MAX_TERMS_BYTES / 2 - 1)}xx`;
     const credential = `${'a'.repeat(4000)}.${'b'.repeat(48)}.${'c'.repeat(46)}`;
     expect(await ask('pools', { status: 200, body: [{ ...LISTING, terms }] })).toEqual({ kind: 'pools', pools: [{ ...LISTED, terms }] });
     expect(await ask('redemption', { status: 200, body: { ...filled, credential } })).toMatchObject({ kind: 'filled', credential });

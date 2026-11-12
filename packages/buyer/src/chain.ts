@@ -109,8 +109,8 @@ export class RpcPoolReads implements PoolReads {
 }
 
 const POOL_STATUSES: readonly PoolStatus[] = ['open', 'filled', 'settled', 'expired', 'refunded'];
-/** The most UTF-8 bytes of terms the pools contract keeps for a pool. */
-const MAX_TERMS_BYTES = 280;
+/** The most UTF-8 bytes of terms the pools contract keeps for a pool: the bound of a pool view's terms and of the gateway's. */
+export const MAX_TERMS_BYTES = 280;
 
 /** `value` as the view of pool `poolId`, field by field; `malformed` makes the error for one that is not. */
 function readPoolView(value: unknown, poolId: number, malformed: (detail: string) => PoolViewError): PoolView {

@@ -19,7 +19,7 @@ import { checkChain, type SwarmChain } from './chain.ts';
 import { checkPool, snapshot, type CheckReport } from './check.ts';
 import { loadSwarmConfig, type SwarmConfig } from './config.ts';
 import { aclNotice, envFilePath, writeGatewayEnv, writeMcpEnv, type EnvApp } from './env-files.ts';
-import { defaultLockDir, lockFilePath, takeLock } from './lock.ts';
+import { lockFilePath, takeLock, type SwarmLock } from './lock.ts';
 import { assertNoPoolOpen, openPool } from './provider.ts';
 import { runReset } from './reset.ts';
 import { createRpcSwarmChain } from './rpc-chain.ts';
@@ -177,8 +177,6 @@ export interface Cli {
   platform: NodeJS.Platform;
   /** The name of the user the process runs as, read only for aclNotice on Windows. */
   userName: () => string;
-  /** The folder of the swarm's lock files: the repository's data/ folder (defaultLockDir). */
-  lockDir: string;
 }
 
 /**
@@ -193,9 +191,10 @@ const LOCKED: ReadonlySet<SwarmCommand['name']> = new Set(['setup', 'open', 'run
  * QUORUM_NETWORK names, the command threw, a check failed, or (`run`, `demo`) a buyer did not end as
  * the scenario expects (unexpectedOutcomes); 2 for a usage error, with the usage.
  * `setup`, `open`, `run`, `demo` and `reset` first take the lock of the network and the parent
- * (lockFilePath in `cli.lockDir`), and remove it when they end, whatever the outcome; while another
- * process holds it, they run nothing and exit with 1, saying that another swarm is running. `demo`
- * holds its one lock across its steps. `check`, `env` and `help` take none.
+ * (lockFilePath in QUORUM_SWARM_LOCK_DIR), and remove it when they end, whatever the outcome; while
+ * another process holds it, they run nothing and exit with 1, saying that another swarm is running.
+ * A lock that cannot be removed is reported on stderr, and does not change the command's result or
+ * error. `demo` holds its one lock across its steps. `check`, `env` and `help` take none.
  * Every command but `env` and `help` checks the RPC's chain before it runs. An error is printed as
  * its message and its causes', never with a stack, with QUORUM_RPC_URL written in place of the RPC
  * URL.
@@ -235,11 +234,23 @@ async function execute(command: SwarmCommand, cli: Cli): Promise<boolean> {
   }
 
   if (!LOCKED.has(command.name)) return executeOnChain(command, cli, config);
-  const lock = await takeLock(lockFilePath(cli.lockDir, config.network, config.parent));
+  const lock = await takeLock(lockFilePath(config.lockDir, config.network, config.parent));
   try {
     return await executeOnChain(command, cli, config);
   } finally {
+    await releaseLock(lock, cli);
+  }
+}
+
+/**
+ * Releases the lock. A lock that cannot be removed is printed on stderr, with what to do about it,
+ * instead of thrown: the command's own result or error stands.
+ */
+async function releaseLock(lock: SwarmLock, cli: Cli): Promise<void> {
+  try {
     await lock.release();
+  } catch (error) {
+    cli.err(`could not remove the lock ${lock.path}: ${errorText(error, cli.env.QUORUM_RPC_URL)}; remove it by hand before running another swarm`);
   }
 }
 
@@ -364,7 +375,6 @@ if (import.meta.main) {
         modules: { runSetup, snapshot, openPool, runSwarm, checkPool, runReset, writeGatewayEnv, writeMcpEnv },
         platform: process.platform,
         userName: () => userInfo().username,
-        lockDir: defaultLockDir(),
       })
     : 1;
 }

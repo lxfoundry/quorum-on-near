@@ -2,7 +2,7 @@ import type { PoolView } from '@quorum-on-near/protocol';
 import { JsonRpcProvider, KeyPair } from 'near-api-js';
 import { UnknownBlockError } from 'near-api-js/rpc-errors';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AccessKeyNotFoundError, PoolViewError, RpcBuyerChain, RpcPoolReads } from '../src/chain.ts';
+import { AccessKeyNotFoundError, MAX_TERMS_BYTES, PoolViewError, RpcBuyerChain, RpcPoolReads } from '../src/chain.ts';
 
 const BUYER = 'buyer-01.parent.testnet';
 const AT = { block_height: 245_000_100, block_hash: 'FakeBkHash' };
@@ -160,6 +160,14 @@ describe('RpcPoolReads.getPool', () => {
     expect((error as Error).message).toContain('terms');
     expect((error as Error).message).toContain('280');
     expect((error as Error).message).not.toContain('IGNORE');
+  });
+
+  it('bounds the terms at MAX_TERMS_BYTES, the 280 UTF-8 bytes the contract keeps, which the gateway client bounds them at too', async () => {
+    expect(MAX_TERMS_BYTES).toBe(280);
+    const atLimit = { ...POOL, terms: 'x'.repeat(MAX_TERMS_BYTES) };
+    expect(await stubPools(atLimit).pools.getPool(7)).toEqual(atLimit);
+    const error = await stubPools({ ...POOL, terms: 'x'.repeat(MAX_TERMS_BYTES + 1) }).pools.getPool(7).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(PoolViewError);
   });
 
   it('returns terms of exactly 280 UTF-8 bytes', async () => {

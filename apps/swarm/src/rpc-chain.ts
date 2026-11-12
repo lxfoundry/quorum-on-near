@@ -57,12 +57,15 @@ const NONCE_RESIGNS = 10;
 type TransactionResponse = Awaited<ReturnType<Account['signAndSendTransaction']>>;
 
 export interface RpcSwarmChainOptions {
-  /** Views, accounts, blocks and transaction lookups. */
+  /**
+   * Views, accounts, blocks and transaction lookups, and the nonce and block reads near-api-js makes
+   * to build a write, which change nothing and so keep its default retries.
+   */
   readProvider: Provider;
   /**
-   * Writes, with the nonce and block reads near-api-js makes to build them, and txOutcome's wait for a
-   * transaction to be final. Construct it with `retries: 1`: near-api-js counts attempts, so each
-   * signed transaction is then posted once, and a wait that the RPC ends with a 408 is not repeated.
+   * The send of each signed transaction, and txOutcome's wait for a transaction to be final.
+   * Construct it with `retries: 1`: near-api-js counts attempts, so each signed transaction is then
+   * posted once, and a wait that the RPC ends with a 408 is not repeated.
    */
   sendProvider: Provider;
   token: string;
@@ -70,9 +73,10 @@ export interface RpcSwarmChainOptions {
 }
 
 /**
- * An RpcSwarmChain on `settings.rpcUrl`: its reads keep near-api-js's default retries, since they
- * change nothing; its writes, and its wait for a transaction to be final, go through a provider with
- * `retries: 1`, which posts each signed transaction once and asks for each wait once.
+ * An RpcSwarmChain on `settings.rpcUrl`: its reads, and the nonce and block reads that build a write,
+ * keep near-api-js's default retries, since they change nothing; the send of each signed transaction,
+ * and the wait for a transaction to be final, go through a provider with `retries: 1`, which posts
+ * each signed transaction once and asks for each wait once.
  */
 export function createRpcSwarmChain(settings: Pick<BuyerSettings, 'rpcUrl' | 'token' | 'poolsContract'>): RpcSwarmChain {
   return new RpcSwarmChain({
@@ -92,10 +96,11 @@ export function createRpcSwarmChain(settings: Pick<BuyerSettings, 'rpcUrl' | 'to
  * outcome: near-api-js's own check reads only the transaction's final status, which reports success
  * when a later receipt, such as a receiver's callback, failed.
  *
- * Each write is built and signed here, its nonce and block read first, so that its hash is known
- * before it is sent, and a read that fails then is passed on as it is: nothing was sent. Once it is
- * sent, only an error that shows the RPC refused the transaction (an invalid transaction, a
- * transaction error other than an action error, a request that does not validate, an HTTP 429) is
+ * Each write is built and signed here, its nonce and block read first, through the read provider
+ * (the Account only builds and signs, and never sends), so that those reads are retried and its hash
+ * is known before it is sent, and a read that still fails is passed on as it is: nothing was sent.
+ * Once it is sent, only an error that shows the RPC refused the transaction (an invalid transaction,
+ * a transaction error other than an action error, a request that does not validate, an HTTP 429) is
  * passed on as it is; any other error, a response that is not FINAL, and a FINAL response that cannot
  * be read reject OutcomeUnknownError naming the transaction, which may still run, or have run.
  * Every write but ftTransferCall is signed again on an InvalidNonce answer, which means the
@@ -338,9 +343,13 @@ export class RpcSwarmChain implements SwarmChain {
     return { txHash: baseEncode(txHash), signedTransaction };
   }
 
-  /** A new Account of the signer, on the send provider, with an empty nonce cache. */
+  /**
+   * A new Account of the signer, with an empty nonce cache, on the read provider: it only builds and
+   * signs transactions, so that its nonce and block reads are retried. Each transaction is sent by
+   * the send provider, once.
+   */
   #account(signer: AccountKey): Account {
-    return new Account(signer.accountId, this.#send, new KeyPairSigner(signer.keyPair));
+    return new Account(signer.accountId, this.#read, new KeyPairSigner(signer.keyPair));
   }
 
   /** The key's Account and latest write, created on its first write. */

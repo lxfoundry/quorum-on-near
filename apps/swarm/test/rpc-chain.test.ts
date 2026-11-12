@@ -81,8 +81,9 @@ const successValue = (value: unknown) => ({ SuccessValue: Buffer.from(JSON.strin
 const PANIC = { Failure: { ActionError: { index: 0, kind: { FunctionCallError: { ExecutionError: 'Smart contract panicked: no' } } } } };
 
 /**
- * A scripted RPC node: reads through `readProvider`, which has no send method, and sends (with the
- * nonce and block reads near-api-js makes for them) through `sendProvider`.
+ * A scripted RPC node: reads through `readProvider`, which has no send method, the nonce and block
+ * reads near-api-js makes to build a write included, and sends through `sendProvider`, which has no
+ * read but the wait for a transaction to be final.
  */
 class FakeRpc {
   chainNonce = 40n;
@@ -93,8 +94,11 @@ class FakeRpc {
   reads: Array<[method: string, params: unknown]> = [];
   /** The send's response; by default the transaction and one receipt at its receiver succeed. */
   onSend: (tx: SentTx) => Promise<unknown> = async (tx) => finalResponse(tx, [{ executorId: tx.receiverId }]);
-  /** What a read answers, by provider method; a function is called, and may throw. */
-  answers: Record<string, unknown> = {};
+  /**
+   * What a read answers, by provider method; a function is called, and may throw. The latest final
+   * block is the one a transaction is built on, unless a test gives another.
+   */
+  answers: Record<string, unknown> = { viewBlock: { header: { height: 1_000, hash: BLOCK_HASH } } };
 
   /** Records a read and gives what `answers` holds for its method. */
   async answer(method: string, params: unknown): Promise<unknown> {
@@ -111,6 +115,11 @@ class FakeRpc {
       callFunction: (params: unknown) => answer('callFunction', params),
       viewBlock: (params: unknown) => answer('viewBlock', params),
       viewTransactionStatus: (params: unknown) => answer('viewTransactionStatus', params),
+      viewAccessKey: async () => {
+        this.accessKeyReads += 1;
+        if (this.accessKeyError !== undefined) throw this.accessKeyError;
+        return { nonce: this.chainNonce, permission: 'FullAccess', block_height: 1_000, block_hash: BLOCK_HASH };
+      },
     };
     return read as unknown as Provider;
   }
@@ -119,12 +128,6 @@ class FakeRpc {
   sendProvider(): Provider {
     const send = {
       viewTransactionStatus: (params: unknown) => this.answer('send.viewTransactionStatus', params),
-      viewAccessKey: async () => {
-        this.accessKeyReads += 1;
-        if (this.accessKeyError !== undefined) throw this.accessKeyError;
-        return { nonce: this.chainNonce, permission: 'FullAccess', block_height: 1_000, block_hash: BLOCK_HASH };
-      },
-      viewBlock: async () => ({ header: { height: 1_000, hash: BLOCK_HASH } }),
       sendTransactionUntil: async (signed: SignedTransaction, waitUntil: string) => {
         const { transaction } = signed;
         const tx: SentTx = {
@@ -948,7 +951,7 @@ describe('createRpcSwarmChain', () => {
   });
 
   it.each<[string, (method: string) => Response | undefined]>([
-    ["the key's nonce read answered 503", (method) => (method === 'query' ? new Response('unavailable', { status: 503 }) : undefined)],
+    ["the key's nonce read answered 502", (method) => (method === 'query' ? new Response('bad gateway', { status: 502 }) : undefined)],
     [
       'the block read refused',
       (method) => {
@@ -962,5 +965,44 @@ describe('createRpcSwarmChain', () => {
     expect(rejected).toBeInstanceOf(Error);
     expect(rejected).not.toBeInstanceOf(OutcomeUnknownError);
     expect(methods).not.toContain('send_tx');
+  });
+
+  it.each([
+    ["the key's nonce read", 'query'],
+    ['the block read', 'block'],
+  ])('asks the RPC for %s again when it answers 503 once, then posts the signed transaction once', async (_, failing) => {
+    let answered503 = 0;
+    const done = (id: string): Response => {
+      const tx = { hash: rpc.hashes[0] ?? '', signerId: PARENT, publicKey: '', nonce: 41n, receiverId: BUYER, actions: [], waitUntil: 'FINAL' };
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id, result: finalResponse(tx, [{ executorId: BUYER }]) }), { status: 200 });
+    };
+    const rpc = stubRpc(done, (method) => {
+      if (method !== failing || answered503 > 0) return undefined;
+      answered503 += 1;
+      return new Response('unavailable', { status: 503 });
+    });
+
+    const outcome = await rpc.chain.transferNear(signer(PARENT), BUYER, 1n);
+
+    expect(outcome.txHash).toBe(rpc.hashes[0]);
+    expect(rpc.methods.filter((method) => method === failing)).toHaveLength(2);
+    expect(rpc.methods.filter((method) => method === 'send_tx')).toHaveLength(1);
+  });
+
+  it("posts a signed transaction once even after a read before it was retried, and does not repeat it when the RPC then gives no result", async () => {
+    let answered503 = 0;
+    const rpc = stubRpc(
+      () => new Response('unavailable', { status: 503 }),
+      (method) => {
+        if (method !== 'query' || answered503 > 0) return undefined;
+        answered503 += 1;
+        return new Response('unavailable', { status: 503 });
+      },
+    );
+
+    const rejected = await rpc.chain.transferNear(signer(PARENT), BUYER, 1n).catch((e: unknown) => e);
+
+    expect(rejected).toBeInstanceOf(OutcomeUnknownError);
+    expect(rpc.methods.filter((method) => method === 'send_tx')).toHaveLength(1);
   });
 });

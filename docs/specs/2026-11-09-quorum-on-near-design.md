@@ -684,8 +684,9 @@ shortfall, and exits with an error.
 
 Each write waits until its transaction is final, and fails if any of its receipts failed. Calls are
 batched at most 10 to a transaction, each given 20 Tgas. A write is signed before it is sent, so a
-read that fails before then (the key's nonce, the latest block) stops setup with that error, nothing
-having been sent. A transaction the RPC refuses for its nonce (it did not run) is signed again with
+read that fails before then (the key's nonce, the latest block) is retried like any other read, since
+it changes nothing, and stops setup with its error once the retries are spent, nothing having been
+sent. A transaction the RPC refuses for its nonce (it did not run) is signed again with
 a nonce read afresh, up to 10 times. Once a write is sent, only an answer that shows the RPC refused
 it is a refusal. A write that gets no result (a timeout, a server error, a failed request, or any
 other answer), or an answer from before it was final, stops setup with an error that names the
@@ -769,9 +770,11 @@ opens, as the baseline of the check, and stops at the first step that fails.
 (section 7.4), `swarm check <pool-id> <scenario>` makes the final check alone (section 10), and
 `swarm env` writes the other apps' configuration (section 7.6). Every command that reads the chain
 first checks that the RPC serves the configured network, and runs nothing if not. `setup`, `open`,
-`run`, `demo` and `reset` hold the swarm's lock while they run (section 12): while another swarm
-holds it, they run nothing, say that another swarm is running and name the lock; `demo` holds one
-lock across its steps, and `check`, `env` and `help` take none. A command exits
+`run`, `demo` and `reset` hold the swarm's lock while they run (section 12), a file in the lock
+folder that configuration sets (section 7.6): while another swarm holds it, they run nothing, say
+that another swarm is running and name the lock; `demo` holds one lock across its steps, and
+`check`, `env` and `help` take none. A lock that cannot be removed when the command ends is reported
+on standard error, and does not change the command's result or error. A command exits
 with 0 when done; with 1 for an invalid configuration, an RPC on another chain, a command that
 failed or a check that failed; and with 2 for a usage error. `swarm run` and `swarm demo` also exit
 with 1 when a buyer did not end as the scenario expects: in `fills`, a buyer whose top price is at
@@ -909,9 +912,10 @@ are kept in memory (section 12).
 **A cancelled commit.** An MCP client may cancel a call, and the server then sends it no answer. A
 `quorum_commit` cancelled while it waits its turn, or before its payment goes through the spend cap,
 signs nothing and spends nothing. Once its payment has gone through the spend cap, the call runs to
-its answer: the server holds the pool whatever the answer, as after a payment whose result is
-unknown, and writes the answer to its log. The server's instructions and the tool's description say
-that a call that ends without an answer may have paid: call `quorum_status` before committing again.
+its answer: the server holds the pool whatever the answer, once a payment was signed, as after a
+payment whose result is unknown, and writes the answer to its log. The server's instructions and the
+tool's description say that a call that ends without an answer may have paid: call `quorum_status`
+before committing again.
 
 `quorum_commit` refuses, in this order: `payment_unsettled`; then, on its fresh offer,
 `offer_mismatch` or `pool_closed`; `over_spend_cap`; then the buyer's own checks of section 6.3.
@@ -986,6 +990,7 @@ at once; their problem with a URL never quotes the URL, which may carry an API k
 | Budget per buyer, bonus funds for the provider | swarm | The token balances setup tops up to and reset returns to, in base units; default 10,000 (0.01 USDC) each (section 7.2) |
 | Scenario deadline and arrival spread | swarm | When set, they replace every scenario's own (section 7.3): the seconds from opening to the deadline, and the seconds over which the buyers arrive, 0 making every buyer arrive at once |
 | Redemption interval | swarm | How often a scripted buyer polls its redemption; default 5 seconds (section 7.4) |
+| Swarm lock folder | swarm | The absolute path of the folder that holds the swarm's lock files (sections 7.3 and 12); default `data/` at the repository root, which is gitignored. Setting it, as the swarm's sandbox test does with a temporary folder, keeps a lock left by a process stopped by force out of the repository |
 | Network | gateway, swarm, MCP server | `near:testnet`, the network that offers and payments name. The gateway refuses any other, except `near:sandbox`, the local chain its sandbox test runs on |
 | Pools account | gateway, swarm, MCP server | The pools contract buyers pay; default `pools.<parent>`. A buyer refuses an offer whose `payTo` is not this account (section 6.3) |
 | Commit gas bounds | gateway, swarm | The offer's `minGas` and `maxGas` (section 6.2): `minGas` at most `maxGas`, both at most 300 Tgas. The final check fails a commit that burns more than `minGas` (section 10) |
@@ -1152,7 +1157,9 @@ seconds apart. It then prints one line per check:
 - **payout gas**: each `ft_transfer` and each callback of the keeper's `settle`, `refund` and dust
   transactions, a failed transfer included, burns under 5 Tgas, the feed holds the record that ended
   the pool, and the pool's keeper transactions made at least one `ft_transfer` between them (a last
-  refund batch that only passed buyers who had claimed their own refunds may make none).
+  refund batch that only passed buyers who had claimed their own refunds may make none). That last
+  is judged only when the outcome of every keeper transaction was read: one that was unknown to the
+  RPC or not yet final fails the check on its own, and may hold the transfer.
 
 Once the pool has ended, the commit gas check also fails for every buyer of the swarm (the 20
 scripted buyers and the MCP server's) that holds seats with neither an `ok` commit record nor a
@@ -1256,15 +1263,18 @@ keys) and the NEP-141, NEP-145, NEP-297, NEP-366 and NEP-413 standards:
   result is unknown (section 7.5), so `quorum_commit` could pay for that pool again while the earlier
   payment can still take seats; the gateway's own hold (section 6.4) and the spend cap still apply.
 - **One swarm at a time for a network and a parent.** The swarm commands that write to the chain
-  take a lock file, `data/swarm-<network>-<parent>.lock` at the repository's root (the network by
-  its chain name, such as `testnet`), holding their process's PID, and remove it when they end. A
-  second one refuses while the file exists. A swarm stopped by force leaves its lock: once its
-  process no longer runs, the file is removed by hand. Swarms in two checkouts, or on two machines,
-  do not see each other's lock.
+  take a lock file, `swarm-<network>-<parent>.lock` (the network by its chain name, such as
+  `testnet`), in the lock folder that configuration sets (section 7.6), `data/` at the repository's
+  root by default. It holds their process's PID, and they remove it when they end, only while it
+  still holds that PID. A second one refuses while the file exists. A swarm stopped by force leaves
+  its lock: once its process no longer runs, the file is removed by hand. Swarms whose lock folders
+  differ, as they do by default in two checkouts or on two machines, do not see each other's lock.
 - **One MCP server per spend file.** A server runs its payments through the cap one at a time within
   its own process, and keeps its holds in memory. Two servers sharing one spend file can each pass
-  the cap check before the other has counted its payment, and so overshoot the cap by one payment,
-  and neither sees the pools the other holds.
+  the cap check before the other has counted its payment, and when their reservations interleave one
+  of the two writes is lost, so the total misses a payment each time. The overshoot of the cap
+  therefore grows by one payment per race, and is not bounded by one. Neither sees the pools the
+  other holds.
 - **The spend cap counts the gateway's answers.** A gateway that misreports what it relayed can make
   the cap count less than was spent; the buyer's token balance is the bound that does not depend on
   the gateway.

@@ -25,9 +25,9 @@ const ENV: Env = { QUORUM_PARENT_ACCOUNT: PARENT, QUORUM_SCENARIO_DEADLINE_SECON
 const BASELINE: Baseline = new Map([[PROVIDER, 10_000n]]);
 const OPENED_POOL = 7;
 
-/** A temporary folder for the tests' lock files, so that no test writes into the repository's data/ folder. */
+/** A temporary folder for the tests' lock files, which QUORUM_SWARM_LOCK_DIR names, so that no test writes into the repository's data/ folder. */
 let lockRoot: string;
-/** The folder the commands take their lock in: created by the first command that takes one. */
+/** The folder QUORUM_SWARM_LOCK_DIR names for the commands: created by the first command that takes a lock. */
 let lockDir: string;
 
 beforeAll(async () => {
@@ -103,7 +103,7 @@ function harness(env: Env = ENV) {
   const modules = stubModules(order);
   const connect = vi.fn<Cli['connect']>(() => ({ chain, gateway, buyerChain, pools }));
   const cli: Cli = {
-    env,
+    env: { QUORUM_SWARM_LOCK_DIR: lockDir, ...env },
     out: (line) => out.push(line),
     err: (line) => err.push(line),
     connect,
@@ -111,7 +111,6 @@ function harness(env: Env = ENV) {
     modules,
     platform: 'linux',
     userName: () => 'ada',
-    lockDir,
   };
   return { cli, out, err, order, chain, gateway, buyerChain, pools, runtime, modules, connect };
 }
@@ -521,12 +520,93 @@ describe('runCli: one swarm at a time', () => {
   );
 
   it('creates the folder of its lock when it does not exist yet', async () => {
-    const h = harness();
-    h.cli.lockDir = join(lockRoot, 'fresh', 'data');
+    const fresh = join(lockRoot, 'fresh', 'data');
+    const h = harness({ ...ENV, QUORUM_SWARM_LOCK_DIR: fresh });
 
     expect(await runCli(['setup'], h.cli)).toBe(0);
 
-    expect(existsSync(h.cli.lockDir)).toBe(true);
+    expect(existsSync(fresh)).toBe(true);
+  });
+
+  it('takes its lock in the folder QUORUM_SWARM_LOCK_DIR names, and not in another one', async () => {
+    const elsewhere = join(lockRoot, 'elsewhere');
+    const h = harness({ ...ENV, QUORUM_SWARM_LOCK_DIR: elsewhere });
+    const seen: string[] = [];
+    h.modules.runSetup.mockImplementation(async () => {
+      seen.push(existsSync(join(elsewhere, `swarm-testnet-${PARENT}.lock`)) ? 'held there' : 'not there');
+      seen.push(existsSync(lockPath()) ? 'held in the other folder' : 'not in the other folder');
+      return { actions: [] };
+    });
+
+    expect(await runCli(['setup'], h.cli)).toBe(0);
+
+    expect(seen).toEqual(['held there', 'not in the other folder']);
+  });
+
+  it('refuses an invalid QUORUM_SWARM_LOCK_DIR with the configuration problem, taking no lock', async () => {
+    const h = harness({ ...ENV, QUORUM_SWARM_LOCK_DIR: 'data' });
+
+    expect(await runCli(['setup'], h.cli)).toBe(1);
+
+    expect(h.err).toEqual(['invalid configuration:\nQUORUM_SWARM_LOCK_DIR must be an absolute path, got "data"']);
+    expect(h.order).toEqual([]);
+  });
+
+  /** Replaces the lock file with a folder, so that the command can no longer read or remove it. */
+  async function breakLock(): Promise<void> {
+    await rm(lockPath());
+    await mkdir(lockPath());
+  }
+
+  it('keeps the success of a command whose lock could not be removed, and says so on stderr', async () => {
+    const h = harness();
+    h.modules.runSetup.mockImplementation(async () => {
+      await breakLock();
+      return { actions: [] };
+    });
+    try {
+      expect(await runCli(['setup'], h.cli)).toBe(0);
+
+      expect(h.err).toHaveLength(1);
+      expect(h.err[0]).toContain(`could not remove the lock ${lockPath()}`);
+      expect(h.err[0]).toContain('remove it by hand');
+    } finally {
+      await rm(lockPath(), { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the error of a command whose lock could not be removed, and says so on stderr before it', async () => {
+    const h = harness();
+    h.modules.runSetup.mockImplementation(async () => {
+      await breakLock();
+      throw new Error('stopped');
+    });
+    try {
+      expect(await runCli(['setup'], h.cli)).toBe(1);
+
+      expect(h.err).toHaveLength(2);
+      expect(h.err[0]).toContain(`could not remove the lock ${lockPath()}`);
+      expect(h.err[1]).toBe('stopped');
+    } finally {
+      await rm(lockPath(), { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the failure of a check of a command whose lock could not be removed', async () => {
+    const h = harness();
+    h.modules.checkPool.mockImplementation(async () => {
+      await breakLock();
+      return report([true, false]);
+    });
+    try {
+      expect(await runCli(['demo', 'fails'], h.cli)).toBe(1);
+
+      expect(h.err).toHaveLength(2);
+      expect(h.err[0]).toBe('pool 7: 1 of 2 checks failed');
+      expect(h.err[1]).toContain('could not remove the lock');
+    } finally {
+      await rm(lockPath(), { recursive: true, force: true });
+    }
   });
 
   it('removes its lock when the command fails', async () => {
