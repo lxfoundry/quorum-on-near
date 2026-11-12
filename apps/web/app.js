@@ -9,18 +9,17 @@
 import {
   buyerRows,
   countdown,
-  foreignPoolNotice,
   formatAmount,
   parseActivity,
   parseBalance,
   parseConfig,
-  parsePool,
   parsePools,
   parseSeats,
   parseToken,
   payoutLinks,
   poolChoices,
   poolParam,
+  poolToShow,
   poolTotals,
   readAll,
   viewRequest,
@@ -150,10 +149,11 @@ async function loadSetup() {
 
 /**
  * Reads the chain and the feed, then renders the pool the URL asks for, or the provider's newest.
- * A pool another seller opened is not rendered: the page shows a notice naming its seller instead.
- * `get_pool` is read at final finality, and the pool's seats and the contract's balance at the block
- * of that answer, so that the three agree. Returns false, rendering nothing, when the choice of pool
- * changed while it read.
+ * What is shown is decided by `poolToShow` from the `get_pool` answer of this refresh: a pool
+ * another seller opened is not rendered, and the page shows a notice naming its seller instead.
+ * `get_pool` is read at final finality, and the seats and the contract's balance of a pool to render
+ * at the block of that answer, so that the three agree. Returns false, rendering nothing, when the
+ * choice of pool changed while it read.
  *
  * @returns {Promise<boolean>}
  */
@@ -165,35 +165,26 @@ async function poll() {
     parsePools((await view(config, config.poolsContract, 'list_pools', { from, limit }, FINAL)).value),
   );
   const { options, selected } = poolChoices(pools, config.provider, poolParam(search));
-  if (selected === null) {
+  const found = selected === null ? null : await view(config, config.poolsContract, 'get_pool', { pool_id: selected }, FINAL);
+  const shown = poolToShow(selected, found, config.provider);
+  if (shown.kind === 'notice') {
+    if (location.search !== search) return false;
     renderSelector(options, selected);
-    renderNoPool('The provider has not opened a pool yet.');
+    renderNoPool(shown.notice);
     return true;
   }
-  const found = await view(config, config.poolsContract, 'get_pool', { pool_id: selected }, FINAL);
+  const { pool } = shown;
   /** @type {BlockRef} */
-  const atPool = { block_id: found.blockHash };
+  const atPool = { block_id: shown.blockHash };
   const [seats, balance, activity] = await Promise.all([
     readAll(async (from, limit) =>
-      parseSeats((await view(config, config.poolsContract, 'get_seats', { pool_id: selected, from, limit }, atPool)).value),
+      parseSeats((await view(config, config.poolsContract, 'get_seats', { pool_id: pool.id, from, limit }, atPool)).value),
     ),
     view(config, config.token, 'ft_balance_of', { account_id: config.poolsContract }, atPool).then((answer) => parseBalance(answer.value)),
-    getJson(`/activity?pool=${selected}`).then(parseActivity),
+    getJson(`/activity?pool=${pool.id}`).then(parseActivity),
   ]);
-  const pool = found.value === null ? null : parsePool(found.value);
   if (location.search !== search) return false;
   renderSelector(options, selected);
-  if (pool === null) {
-    renderNoPool(`There is no pool ${selected}.`);
-    return true;
-  }
-  // Checked on the pool just read, not on the list, so that a pool opened after list_pools is
-  // caught too.
-  const notice = foreignPoolNotice(pool, config.provider);
-  if (notice !== null) {
-    renderNoPool(notice);
-    return true;
-  }
   renderPool(pool, token);
   renderLedger(pool, seats, activity, balance, config, token);
   renderBuyers(pool, seats, activity, config, token);

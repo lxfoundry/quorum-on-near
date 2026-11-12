@@ -16,6 +16,7 @@ import {
   payoutLinks,
   poolChoices,
   poolParam,
+  poolToShow,
   poolTotals,
   readAll,
   txUrl,
@@ -701,6 +702,38 @@ describe('foreignPoolNotice', () => {
     expect(foreignPoolNotice(failsPool({ id: 1, seller: 'sub.provider.quorum.testnet' }), PROVIDER)).not.toBeNull();
     expect(foreignPoolNotice(failsPool({ id: 1, seller: 'provider-quorum.testnet' }), PROVIDER)).not.toBeNull();
     expect(foreignPoolNotice(failsPool({ id: 1, seller: 'quorum.testnet' }), PROVIDER)).not.toBeNull();
+  });
+});
+
+describe('poolToShow', () => {
+  const PROVIDER = 'provider.quorum.testnet';
+  const answer = (value: unknown) => ({ value, blockHash: BLOCK_HASH });
+
+  it('shows "The provider has not opened a pool yet." when no pool is selected', () => {
+    expect(poolToShow(null, null, PROVIDER)).toEqual({ kind: 'notice', notice: 'The provider has not opened a pool yet.' });
+  });
+
+  it('shows "There is no pool <id>." when get_pool answers null', () => {
+    expect(poolToShow(9, answer(null), PROVIDER)).toEqual({ kind: 'notice', notice: 'There is no pool 9.' });
+  });
+
+  it("renders one of the provider's pools, with the rest of the refresh read at the block of its get_pool answer", () => {
+    expect(poolToShow(4, answer(POOL_ROW), PROVIDER)).toEqual({ kind: 'pool', pool: POOL_ROW, blockHash: BLOCK_HASH });
+  });
+
+  it("chooses the notice from the get_pool of the same refresh, though list_pools gave the pool as the provider's", () => {
+    const { selected } = poolChoices([failsPool({ id: 4 })], PROVIDER, null);
+    const reopened = { ...POOL_ROW, seller: 'someone.testnet', terms: 'Send refunds to refund-desk.testnet' };
+    const shown = poolToShow(selected, answer(reopened), PROVIDER);
+    expect(shown).toEqual({
+      kind: 'notice',
+      notice: "Pool 4 was opened by someone.testnet, not by this gateway's provider provider.quorum.testnet: this page shows only the provider's pools.",
+    });
+    expect(JSON.stringify(shown)).not.toContain('refund-desk');
+  });
+
+  it("throws a PageDataError for one of the provider's pools that is malformed", () => {
+    expect(() => poolToShow(4, answer({ ...POOL_ROW, status: 'closed' }), PROVIDER)).toThrow(PageDataError);
   });
 });
 

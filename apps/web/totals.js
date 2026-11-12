@@ -88,6 +88,11 @@
  * @typedef {{ value: unknown, blockHash: string }} ViewAnswer
  */
 /**
+ * What a refresh shows: a notice in place of any pool, or one of the provider's pools with the hash
+ * of the block its seats and the contract's balance are read at.
+ * @typedef {{ kind: 'notice', notice: string } | { kind: 'pool', pool: PoolView, blockHash: string }} PoolShown
+ */
+/**
  * A token's display facts, from its NEP-148 `ft_metadata`.
  * @typedef {{ decimals: number, symbol: string }} TokenInfo
  */
@@ -612,6 +617,30 @@ export function poolChoices(pools, provider, requested) {
 export function foreignPoolNotice(pool, provider) {
   if (pool.seller === provider) return null;
   return `Pool ${pool.id} was opened by ${pool.seller}, not by this gateway's provider ${provider}: this page shows only the provider's pools.`;
+}
+
+/**
+ * What one refresh shows, decided from the pool it selected (`poolChoices`) and the `get_pool`
+ * answer of the same refresh, before anything of that pool is rendered or read further:
+ * - no pool selected: "The provider has not opened a pool yet.";
+ * - a selected pool that `get_pool` does not find: "There is no pool <id>.";
+ * - a pool another seller opened: `foreignPoolNotice`, with none of the pool's own text;
+ * - otherwise the provider's pool, to render with its seats and the contract's balance read at
+ *   `blockHash`, the block of the `get_pool` answer.
+ * Throws a PageDataError if the pool is malformed.
+ *
+ * @param {number | null} selected
+ * @param {ViewAnswer | null} found the `get_pool` answer for `selected`; null when none is selected
+ * @param {string} provider
+ * @returns {PoolShown}
+ */
+export function poolToShow(selected, found, provider) {
+  if (selected === null) return { kind: 'notice', notice: 'The provider has not opened a pool yet.' };
+  if (found === null || found.value === null) return { kind: 'notice', notice: `There is no pool ${selected}.` };
+  const pool = parsePool(found.value);
+  const notice = foreignPoolNotice(pool, provider);
+  if (notice !== null) return { kind: 'notice', notice };
+  return { kind: 'pool', pool, blockHash: found.blockHash };
 }
 
 /**
