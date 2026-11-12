@@ -411,7 +411,7 @@ describe('RpcRelayer.relayDelegate', () => {
     };
     const { signed } = await buyerDelegate(1_008n);
     const result = await relayer.relayDelegate(signed, 1_008n);
-    expect(result).toEqual({ kind: 'unknown', txHash: rpc.sent[0]?.hash, expired: true });
+    expect(result).toEqual({ kind: 'unknown', txHash: rpc.sent[0]?.hash, expired: true, finalHeight: 1_009n });
     expect(rpc.sent).toHaveLength(1);
     expect(rpc.lookups.map((lookup) => lookup.finalHeight)).toEqual(
       Array.from({ length: 10 }, (_, i) => 1_000n + BigInt(i)),
@@ -452,7 +452,7 @@ describe('RpcRelayer.relayDelegate', () => {
       throw new UnknownTransactionError(txHash);
     };
     const result = await relayer.relayDelegate(signed, 1_010n);
-    expect(result).toEqual({ kind: 'unknown', txHash: rpc.sent[0]?.hash, expired: true });
+    expect(result).toEqual({ kind: 'unknown', txHash: rpc.sent[0]?.hash, expired: true, finalHeight: 1_023n });
     expect(rpc.lookups).toHaveLength(4);
   });
 
@@ -505,7 +505,7 @@ describe('RpcRelayer.relayDelegate', () => {
     rpc.onSend = async () => UNREADABLE;
     const { signed } = await buyerDelegate(1_008n);
     const result = await relayer.relayDelegate(signed, 1_008n);
-    expect(result).toEqual({ kind: 'unknown', txHash: rpc.sent[0]?.hash, expired: true });
+    expect(result).toEqual({ kind: 'unknown', txHash: rpc.sent[0]?.hash, expired: true, finalHeight: 1_009n });
     expect(rpc.sent).toHaveLength(1);
   });
 
@@ -557,7 +557,7 @@ describe('RpcRelayer.relayDelegate', () => {
     rpc.onLookup = async () => UNREADABLE;
     const { signed } = await buyerDelegate(1_008n);
     const result = await relayer.relayDelegate(signed, 1_008n);
-    expect(result).toEqual({ kind: 'unknown', txHash: rpc.sent[0]?.hash, expired: true });
+    expect(result).toEqual({ kind: 'unknown', txHash: rpc.sent[0]?.hash, expired: true, finalHeight: 1_009n });
     expect(rpc.sent).toHaveLength(1);
   });
 

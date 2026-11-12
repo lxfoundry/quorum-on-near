@@ -31,13 +31,16 @@ export interface ChainReader {
  * - `executed`: the RPC returned the outcome once every non-refund receipt had run (some may have
  *   failed).
  * - `unknown`: the transaction was sent but its result was not known in time. `expired` is true when
- *   a final block above the delegate's `maxBlockHeight` was seen, so the delegate can no longer
- *   execute; false when it may still land, and for a call that relays no delegate.
+ *   the lookup stopped on a final block above the delegate's `maxBlockHeight`, whose height is
+ *   `finalHeight`: the delegate can no longer be included, but one included by its `maxBlockHeight`
+ *   may still have receipts to run. False when the lookup's time ran out first, and for a call that
+ *   relays no delegate.
  * - `rejected`: the RPC refused the transaction, so nothing ran.
  */
 export type RelayResult =
   | { kind: 'executed'; outcome: TxOutcome }
-  | { kind: 'unknown'; txHash: string; expired: boolean }
+  | { kind: 'unknown'; txHash: string; expired: false }
+  | { kind: 'unknown'; txHash: string; expired: true; finalHeight: bigint }
   | { kind: 'rejected'; txHash: string; error: string };
 
 /**

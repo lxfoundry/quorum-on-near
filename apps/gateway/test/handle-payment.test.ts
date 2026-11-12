@@ -965,8 +965,15 @@ describe('handlePayment: in-flight slot', () => {
     ['the commit takes no seats', (s) => s.fake.relayResults.push(NO_SEATS), 0],
     ['the relay is rejected', (s) => s.fake.relayResults.push({ kind: 'rejected', txHash: TX_HASH, error: 'x' }), 0],
     [
-      'the result is unknown and the delegate has expired',
-      (s) => s.fake.relayResults.push({ kind: 'unknown', txHash: TX_HASH, expired: true }),
+      "the result is unknown and the lookup saw a final block above the delegate's max_block_height plus EXPIRY_MARGIN_BLOCKS",
+      (s) => {
+        s.fake.onRelay = (_, maxBlockHeight) => ({
+          kind: 'unknown',
+          txHash: TX_HASH,
+          expired: true,
+          finalHeight: maxBlockHeight + EXPIRY_MARGIN_BLOCKS + 1n,
+        });
+      },
       0,
     ],
     ['a gateway check fails', (s) => s.fake.balances.set(BUYER, 0n), 0],
@@ -1013,45 +1020,84 @@ describe('handlePayment: a payment whose result is unknown', () => {
     return { status: 402, body: { x402Version: 1, error: 'payment_in_flight', accepts } };
   }
 
-  /** Relays a payment whose delegate expires at block 1100 and whose result is unknown. */
-  async function relayUnknown(s: Scenario, expired: boolean): Promise<void> {
-    s.fake.relayResults.push({ kind: 'unknown', txHash: TX_HASH, expired });
+  /**
+   * Relays a payment whose delegate expires at block 1100 and whose result is unknown. With
+   * `finalHeight`, the relayer's lookup stopped on that final block, above 1100 (`expired`); without
+   * it, the lookup's time ran out first.
+   */
+  async function relayUnknown(s: Scenario, finalHeight?: bigint): Promise<void> {
+    s.fake.relayResults.push(
+      finalHeight === undefined
+        ? { kind: 'unknown', txHash: TX_HASH, expired: false }
+        : { kind: 'unknown', txHash: TX_HASH, expired: true, finalHeight },
+    );
     const result = await handlePayment(s.deps, POOL_ID, '2', await s.header({ maxBlockHeight: 1_100n }));
     expect(result).toEqual({ status: 502, body: { error: 'result_unknown', txHash: TX_HASH } });
   }
 
   it('keeps the buyer in flight when the delegate may still land, so its next payment is refused', async () => {
     const s = await scenario();
-    await relayUnknown(s, false);
+    await relayUnknown(s);
     const next = await handlePayment(s.deps, POOL_ID, '2', await s.header({ nonce: KEY_NONCE + 2n }));
     expect(next).toEqual(inFlightReply(s));
     expect(s.fake.relayed).toHaveLength(1);
   });
 
-  it("frees the buyer once a final block above the delegate's max_block_height is seen, not at it", async () => {
+  it("keeps the buyer in flight past the delegate's max_block_height while its receipts may still run", async () => {
     const s = await scenario();
-    await relayUnknown(s, false);
-    s.fake.block = { ...s.fake.block, height: 1_100n };
-    const atHeight = await handlePayment(s.deps, POOL_ID, '2', await s.header({ nonce: KEY_NONCE + 2n }));
-    expect(atHeight).toEqual(inFlightReply(s));
+    await relayUnknown(s);
+    for (const height of [1_101n, 1_100n + EXPIRY_MARGIN_BLOCKS]) {
+      s.fake.block = { ...s.fake.block, height };
+      const held = await handlePayment(s.deps, POOL_ID, '2', await s.header({ nonce: KEY_NONCE + 2n }));
+      expect(held).toEqual(inFlightReply(s));
+    }
+    expect(s.fake.relayed).toHaveLength(1);
+  });
 
-    s.fake.block = { ...s.fake.block, height: 1_101n };
+  it("frees the buyer once a final block above the delegate's max_block_height plus EXPIRY_MARGIN_BLOCKS is seen", async () => {
+    const s = await scenario();
+    await relayUnknown(s);
+    s.fake.block = { ...s.fake.block, height: 1_100n + EXPIRY_MARGIN_BLOCKS + 1n };
     s.fake.relayResults.push(committed(2, 150));
     expect((await handlePayment(s.deps, POOL_ID, '2', await s.header({ nonce: KEY_NONCE + 2n }))).status).toBe(202);
     expect(s.fake.relayed).toHaveLength(2);
   });
 
-  it('frees the buyer at once when the delegate can no longer execute', async () => {
+  it("keeps the buyer in flight after a lookup that saw the delegate expire, until a final block above its max_block_height plus EXPIRY_MARGIN_BLOCKS", async () => {
     const s = await scenario();
-    await relayUnknown(s, true);
+    // The lookup stopped on the first final block above 1100: the delegate can no longer be included,
+    // but one included at 1100 may still have its receipts to run.
+    await relayUnknown(s, 1_101n);
+    for (const height of [1_101n, 1_100n + EXPIRY_MARGIN_BLOCKS]) {
+      s.fake.block = { ...s.fake.block, height };
+      const held = await handlePayment(s.deps, POOL_ID, '2', await s.header({ nonce: KEY_NONCE + 2n }));
+      expect(held).toEqual(inFlightReply(s));
+    }
+    s.fake.block = { ...s.fake.block, height: 1_100n + EXPIRY_MARGIN_BLOCKS + 1n };
     s.fake.relayResults.push(committed(2, 150));
     expect((await handlePayment(s.deps, POOL_ID, '2', await s.header({ nonce: KEY_NONCE + 2n }))).status).toBe(202);
+    expect(s.fake.relayed).toHaveLength(2);
+  });
+
+  it("holds the buyer when the lookup's final height is max_block_height plus EXPIRY_MARGIN_BLOCKS", async () => {
+    const s = await scenario();
+    await relayUnknown(s, 1_100n + EXPIRY_MARGIN_BLOCKS);
+    expect(s.deps.inFlight.held(BUYER)).toBe(true);
+    s.fake.block = { ...s.fake.block, height: 1_100n + EXPIRY_MARGIN_BLOCKS };
+    expect(await handlePayment(s.deps, POOL_ID, '2', await s.header({ nonce: KEY_NONCE + 2n }))).toEqual(inFlightReply(s));
+    expect(s.fake.relayed).toHaveLength(1);
+  });
+
+  it("frees the buyer at once when the lookup's final height is above max_block_height plus EXPIRY_MARGIN_BLOCKS", async () => {
+    const s = await scenario();
+    await relayUnknown(s, 1_100n + EXPIRY_MARGIN_BLOCKS + 1n);
+    expect(s.deps.inFlight.has(BUYER)).toBe(false);
   });
 
   it('answers 503 chain_unavailable, relaying nothing, and logs the error, when the final block cannot be read for a held buyer', async () => {
     const s = await scenario();
     const logged = silenceErrors();
-    await relayUnknown(s, false);
+    await relayUnknown(s);
     const failure = new Error('connect ECONNREFUSED');
     vi.spyOn(s.fake, 'finalBlock').mockRejectedValue(failure);
     const next = await handlePayment(s.deps, POOL_ID, '2', await s.header({ nonce: KEY_NONCE + 2n }));
