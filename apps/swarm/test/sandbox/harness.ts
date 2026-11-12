@@ -143,7 +143,8 @@ export interface SwarmWorld {
    * The swarm's variables in this world: the sandbox network and RPC, the sandbox's root account as
    * the parent, the mock token, the gateway's URL, QUORUM_POOLS_WASM, the temporary key folder and
    * spend file, a shortened deadline, spread and redemption interval, and the options' swarmEnv. It
-   * holds paths and account ids, no key. Spawn the real command line with it (runSwarmCli).
+   * holds paths and account ids, no key. runSwarmCli spawns the real command line with it, every
+   * variable it leaves unset given at the value `config` resolved (swarmCliEnv).
    */
   swarmEnv: Readonly<Record<string, string>>;
   /** loadSwarmConfig(swarmEnv). */
@@ -456,17 +457,19 @@ export async function recordSetup(config: SwarmConfig, chain: CountingChain, log
 
 /**
  * Runs the swarm's real command line, `node apps/swarm/src/main.ts <args>`, from the repository's
- * root, with the world's swarmEnv and then `env` as its only QUORUM_* variables. Resolves once it
- * exits, with what it printed; a run longer than `timeoutMs` is killed and resolves with its signal.
+ * root, with swarmCliEnv(world, env) as its only QUORUM_* variables: every variable the swarm reads is
+ * set, so that the command line reads the world's configuration whatever apps/swarm/.env holds.
+ * Resolves once it exits, with what it printed; a run longer than `timeoutMs` is killed and resolves
+ * with its signal.
  */
 export async function runSwarmCli(
-  world: Pick<SwarmWorld, 'swarmEnv'>,
+  world: Pick<SwarmWorld, 'swarmEnv' | 'config'>,
   args: readonly string[],
   options: { env?: Env; timeoutMs?: number } = {},
 ): Promise<ProcessResult> {
   const child = spawn(process.execPath, [SWARM_MAIN, ...args], {
     cwd: REPO_ROOT,
-    env: childEnv({ ...world.swarmEnv, ...definedOnly(options.env) }),
+    env: childEnv(swarmCliEnv(world, options.env)),
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let stdout = '';
@@ -480,6 +483,56 @@ export async function runSwarmCli(
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * The QUORUM_* variables runSwarmCli gives the command line: every variable the swarm reads, each at
+ * the value the world's configuration resolved (a null setting empty, which the swarm reads as
+ * unset), then the world's swarmEnv as written, then `env`. The command line loads apps/swarm/.env
+ * without replacing a variable already set, even to an empty value, so a developer's file there
+ * cannot fill a variable the world leaves to its default.
+ */
+export function swarmCliEnv(world: Pick<SwarmWorld, 'swarmEnv' | 'config'>, env?: Env): Record<string, string> {
+  const { config } = world;
+  const resolved: Record<string, string> = {
+    QUORUM_NETWORK: config.network,
+    QUORUM_RPC_URL: config.rpcUrl,
+    QUORUM_GATEWAY_URL: config.gatewayUrl,
+    QUORUM_PARENT_ACCOUNT: config.parent,
+    QUORUM_TOKEN_ACCOUNT: config.token,
+    QUORUM_POOLS_ACCOUNT: config.poolsContract,
+    QUORUM_BLOCK_TIME_MS: String(config.blockTimeMs),
+    QUORUM_BUYER_MAX_TIMEOUT_SECONDS: String(config.maxTimeoutSeconds),
+    QUORUM_CREDENTIALS_DIR: config.credentialsDir,
+    QUORUM_MCP_ACCOUNT: config.mcpAccount,
+    QUORUM_MCP_SPEND_FILE: config.spendFile,
+    QUORUM_FUNDING_ACCOUNT: config.funding,
+    QUORUM_RELAYER_ACCOUNT: config.relayer,
+    QUORUM_PROVIDER_ACCOUNT: config.provider,
+    QUORUM_POOLS_WASM: config.poolsWasm ?? '',
+    QUORUM_RELAYER_KEY_COUNT: String(config.relayerKeyCount),
+    QUORUM_BUYER_NEAR: nearText(config.buyerNear),
+    QUORUM_PROVIDER_NEAR: nearText(config.providerNear),
+    QUORUM_FUNDING_NEAR: nearText(config.fundingNear),
+    QUORUM_RELAYER_NEAR: nearText(config.relayerNear),
+    QUORUM_POOLS_NEAR: nearText(config.poolsNear),
+    QUORUM_POOLS_FREE_NEAR: nearText(config.poolsFreeNear),
+    QUORUM_BUYER_BUDGET: String(config.buyerBudget),
+    QUORUM_PROVIDER_BONUS_FUNDS: String(config.providerBonusFunds),
+    QUORUM_COMMIT_MIN_GAS: String(config.commitMinGas),
+    QUORUM_COMMIT_MAX_GAS: String(config.commitMaxGas),
+    QUORUM_SCENARIO_DEADLINE_SECONDS: config.deadlineSeconds === null ? '' : String(config.deadlineSeconds),
+    QUORUM_SWARM_SPREAD_SECONDS: config.spreadSeconds === null ? '' : String(config.spreadSeconds),
+    QUORUM_REDEEM_INTERVAL_MS: String(config.redeemIntervalMs),
+  };
+  return { ...resolved, ...world.swarmEnv, ...definedOnly(env) };
+}
+
+/** yoctoNEAR written as the decimal NEAR the swarm's NEAR variables take: 5 × 10^22 is `0.05`. */
+function nearText(yocto: bigint): string {
+  const unit = 10n ** 24n;
+  const fraction = (yocto % unit).toString().padStart(24, '0').replace(/0+$/, '');
+  return fraction === '' ? `${yocto / unit}` : `${yocto / unit}.${fraction}`;
 }
 
 /**
