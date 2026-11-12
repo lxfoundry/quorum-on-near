@@ -166,16 +166,16 @@ async function poll() {
   );
   const { options, selected } = poolChoices(pools, config.provider, poolParam(search));
   const found = selected === null ? null : await view(config, config.poolsContract, 'get_pool', { pool_id: selected }, FINAL);
-  const shown = poolToShow(selected, found, config.provider);
-  if (shown.kind === 'notice') {
+  const choice = poolToShow(selected, found, config.provider);
+  if (choice.kind === 'notice') {
     if (location.search !== search) return false;
     renderSelector(options, selected);
-    renderNoPool(shown.notice);
+    renderNoPool(choice.notice);
     return true;
   }
-  const { pool } = shown;
+  const { pool } = choice;
   /** @type {BlockRef} */
-  const atPool = { block_id: shown.blockHash };
+  const atPool = { block_id: choice.blockHash };
   const [seats, balance, activity] = await Promise.all([
     readAll(async (from, limit) =>
       parseSeats((await view(config, config.poolsContract, 'get_seats', { pool_id: pool.id, from, limit }, atPool)).value),
