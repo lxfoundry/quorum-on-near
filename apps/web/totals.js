@@ -212,7 +212,8 @@ const TX_HASH = /^[1-9A-HJ-NP-Za-km-z]{43,44}$/;
 /**
  * The explorer link of a transaction: `explorerTxUrl` followed by the hash, or null when the hash
  * is not a base58 transaction hash, so that a feed record can never make the page link elsewhere.
- * `explorerTxUrl` must be an http(s) URL, as `parseConfig` checks.
+ * `explorerTxUrl` must be an http(s) URL ending in `/` or `=` whose links keep its origin, as
+ * `parseConfig` checks.
  *
  * @param {string} explorerTxUrl
  * @param {string} txHash
@@ -405,6 +406,23 @@ function isHttpUrl(value) {
 }
 
 /**
+ * Whether a transaction hash can be appended to `prefix` without leaving its origin: it ends in `/`
+ * or `=`, and a link built from it has its origin. Appended to `https://explorer.example`, a hash
+ * would become part of the host.
+ *
+ * @param {string} prefix
+ * @returns {boolean}
+ */
+function keepsOrigin(prefix) {
+  if (!prefix.endsWith('/') && !prefix.endsWith('=')) return false;
+  try {
+    return new URL(`${prefix}x`).origin === new URL(prefix).origin;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * @template T
  * @param {unknown} value
  * @param {(item: unknown) => T} parseItem
@@ -535,7 +553,8 @@ function parseRecord(value) {
 
 /**
  * The gateway's `/config.json`. Throws a PageDataError unless every field is a string and the
- * explorer URL is an http(s) URL, which `txUrl` relies on.
+ * explorer URL is an http(s) URL that ends in `/` or `=` and whose links keep its origin, which
+ * `txUrl` relies on.
  *
  * @param {unknown} value
  * @returns {PageConfig}
@@ -544,8 +563,12 @@ export function parseConfig(value) {
   if (!isObject(value) || !CONFIG_KEYS.every((key) => typeof value[key] === 'string')) {
     throw new PageDataError('the gateway configuration (/config.json) is malformed');
   }
-  if (!isHttpUrl(value.explorerTxUrl)) throw new PageDataError('the explorer URL in /config.json is not an http(s) URL');
-  return /** @type {PageConfig} */ (value);
+  const config = /** @type {PageConfig} */ (value);
+  if (!isHttpUrl(config.explorerTxUrl)) throw new PageDataError('the explorer URL in /config.json is not an http(s) URL');
+  if (!keepsOrigin(config.explorerTxUrl)) {
+    throw new PageDataError('the explorer URL in /config.json must end in / or =, and a hash appended to it must keep its origin');
+  }
+  return config;
 }
 
 /**

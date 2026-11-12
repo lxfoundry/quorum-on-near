@@ -572,12 +572,22 @@ describe('parseConfig', () => {
     expect(parseConfig(CONFIG)).toEqual(CONFIG);
   });
 
+  it('accepts an explorer prefix that ends in a query parameter, whose links keep its origin', () => {
+    const config = { ...CONFIG, explorerTxUrl: 'https://explorer.example/tx?hash=' };
+    expect(parseConfig(config)).toEqual(config);
+    expect(new URL(txUrl(config.explorerTxUrl, COMMIT_1) ?? '').origin).toBe('https://explorer.example');
+  });
+
   it.each([
     ['not an object', [CONFIG]],
     ['missing the provider', { ...CONFIG, provider: undefined }],
     ['an RPC URL that is not text', { ...CONFIG, rpcUrl: 8402 }],
     ['an explorer URL that is not http(s)', { ...CONFIG, explorerTxUrl: 'javascript:alert(1)//' }],
     ['an explorer URL that is not a URL', { ...CONFIG, explorerTxUrl: 'nearblocks' }],
+    // A hash appended to these would change the host: https://explorer.example<hash>/.
+    ['an explorer URL with no path', { ...CONFIG, explorerTxUrl: 'https://explorer.example' }],
+    ['an explorer URL whose host ends in =', { ...CONFIG, explorerTxUrl: 'https://explorer.example=' }],
+    ['an explorer URL that ends in neither / nor =', { ...CONFIG, explorerTxUrl: 'https://testnet.nearblocks.io/txns' }],
   ])('throws a PageDataError for a configuration with %s', (_kind, config) => {
     expect(() => parseConfig(config)).toThrow(PageDataError);
   });

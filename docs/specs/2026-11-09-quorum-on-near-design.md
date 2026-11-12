@@ -1066,7 +1066,9 @@ answer `404`. Every value it reads is written as text or as an attribute, never 
   sent as `block_id`), and the feed. So the pool, its seats and the balance are read at one block. Every view is a `call_function` query at
   `finality: "final"` or at a `block_id`, the two forms the pass-through forwards. Every value read
   is checked for its shape, and a malformed one fails that refresh with a status line naming what
-  was wrong; the configuration's explorer link prefix must be an http or https URL. Each request times out after 10 seconds, so that a hung request cannot stop
+  was wrong; the configuration's explorer link prefix must be an http or https URL that ends in `/`
+  or `=` and whose links keep its origin (a hash appended to `https://explorer.example` would become
+  part of its host). Each request times out after 10 seconds, so that a hung request cannot stop
   the refreshes, which never overlap. A failed refresh shows "Could not refresh" with its reason,
   keeps the last data on screen, and is tried again at the next 2-second tick.
 - `totals.js` is a pure module that computes the totals from the contract's data. It is the one
