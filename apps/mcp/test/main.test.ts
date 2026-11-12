@@ -1,8 +1,12 @@
-import { execFile } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { execFile, spawn } from 'node:child_process';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { keyFilePath, writeKeyFile } from '@quorum-on-near/buyer';
+import { KeyPair } from 'near-api-js';
 import { afterEach, describe, expect, it } from 'vitest';
 
 const MAIN = fileURLToPath(new URL('../src/main.ts', import.meta.url));
@@ -39,16 +43,22 @@ afterEach(async () => {
  * every other request with HTTP 502, which near-api-js reports in an error that quotes the RPC URL.
  * Returns that URL, with an API key in its query, as an RPC provider's may carry one.
  */
-async function rpcStub(chainId?: string): Promise<string> {
+async function rpcStub(chainId?: string, metadata?: Record<string, unknown>): Promise<string> {
   const server = createServer((request, response) => {
     let body = '';
     request.on('data', (chunk: Buffer) => (body += chunk.toString()));
     request.on('end', () => {
       const { id, method, params } = JSON.parse(body) as { id: string; method: string; params: unknown };
       received.push({ method, params });
-      if (method === 'status' && chainId !== undefined) {
+      const json = (result: unknown): void => {
         response.writeHead(200, { 'content-type': 'application/json' });
-        response.end(JSON.stringify({ jsonrpc: '2.0', id, result: { chain_id: chainId } }));
+        response.end(JSON.stringify({ jsonrpc: '2.0', id, result }));
+      };
+      if (method === 'status' && chainId !== undefined) {
+        json({ chain_id: chainId });
+      } else if (method === 'query' && metadata !== undefined) {
+        // A call_function answer: the view's JSON as bytes.
+        json({ result: [...Buffer.from(JSON.stringify(metadata))], logs: [], block_height: 1, block_hash: '11111111111111111111111111111111' });
       } else {
         response.writeHead(502).end();
       }
@@ -67,6 +77,23 @@ function run(args: string[], env: Record<string, string>): Promise<Run> {
     const child = execFile(process.execPath, args, options, (_, stdout, stderr) =>
       resolve({ code: child.exitCode, stdout, stderr }),
     );
+  });
+}
+
+/** Starts `node <MAIN>` with `env` added, closes its input, and resolves once it exits. */
+function runClosed(env: Record<string, string>): Promise<Run> {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [MAIN], { env: { ...process.env, ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => (stdout += chunk));
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => (stderr += chunk));
+    const timer = setTimeout(() => child.kill('SIGKILL'), 30_000);
+    child.on('exit', (code) => {
+      clearTimeout(timer);
+      resolve({ code, stdout, stderr });
+    });
+    child.stdin.end();
   });
 }
 
@@ -108,6 +135,28 @@ describe('main', () => {
     expect(stderr).toContain('cannot read the metadata of the token');
     expect(stderr).toContain('QUORUM_RPC_URL Bad Gateway');
     expect(stderr).not.toContain('TEST-RPC-KEY');
+  });
+
+  it('names the gateway by its host alone once started, never QUORUM_GATEWAY_URL, which may carry a key', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'quorum-mcp-main-'));
+    try {
+      const account = 'buyer-llm.parent.testnet';
+      await writeKeyFile(keyFilePath(join(dir, 'keys'), 'near:testnet', account), account, KeyPair.fromRandom('ed25519'));
+      const url = await rpcStub('testnet', { spec: 'ft-1.0.0', name: 'USD Coin', symbol: 'USDC', decimals: 6 });
+      const { stdout, stderr } = await runClosed({
+        ...VALID,
+        QUORUM_RPC_URL: url,
+        QUORUM_GATEWAY_URL: 'http://127.0.0.1:9402/route/GATEWAY-SECRET',
+        QUORUM_CREDENTIALS_DIR: join(dir, 'keys'),
+        QUORUM_MCP_SPEND_FILE: join(dir, 'mcp-spend.json'),
+      });
+      expect(stdout).toBe('');
+      expect(stderr).toContain(`quorum-buyer MCP server on stdio: buyer ${account}, gateway 127.0.0.1:9402, `);
+      expect(stderr).not.toContain('GATEWAY-SECRET');
+      expect(stderr).not.toContain('TEST-RPC-KEY');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it('is what the command in mcp.example.json starts, with the repository as the project folder', async () => {

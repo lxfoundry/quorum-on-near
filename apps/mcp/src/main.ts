@@ -119,7 +119,9 @@ const server = buildServer({
 // A line on stdin that is not a JSON-RPC message is dropped; say so.
 server.server.onerror = (error) => console.error(`MCP: ${errorMessage(error)}`);
 await server.connect(new StdioServerTransport());
+// The gateway by its host alone: QUORUM_GATEWAY_URL is read as a secret, since its path or query may
+// carry a key, and its host is the recipient that redemption proofs name anyway.
 console.error(
-  `quorum-buyer MCP server on stdio: buyer ${config.mcpAccount}, gateway ${config.gatewayUrl}, ` +
+  `quorum-buyer MCP server on stdio: buyer ${config.mcpAccount}, gateway ${new URL(config.gatewayUrl).host}, ` +
     `spend cap ${left} of ${config.spendCap} base units left`,
 );
