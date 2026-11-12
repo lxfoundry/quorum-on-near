@@ -184,12 +184,20 @@ async function poolOnChain(deps: ToolDeps, tool: string, pool: number): Promise<
  * then checks the offer, signs the payment and sends it once. A payment whose result is unknown holds
  * the pool until it is settled (see ToolDeps.commits). One commit runs at a time, so that each sees
  * the hold the one before it left.
+ *
+ * `signal` is the client's cancellation of the call, after which the MCP SDK sends no answer. A call
+ * cancelled when it leaves the queue, or before its payment goes through the spend ledger, signs and
+ * spends nothing (`cancelled`). One cancelled once the payment was handed over runs to its answer;
+ * the pool is then held whatever the answer, as for a payment whose result is unknown, and the answer
+ * goes to the log, since no client receives it.
  */
-export function quorumCommit(deps: ToolDeps, request: SeatsInput): Promise<ToolResult<CommitOutput>> {
-  return deps.commits.serial(() => commit(deps, request));
+export function quorumCommit(deps: ToolDeps, request: SeatsInput, signal?: AbortSignal): Promise<ToolResult<CommitOutput>> {
+  return deps.commits.serial(() => commit(deps, request, signal));
 }
 
-async function commit(deps: ToolDeps, { pool, seats }: SeatsInput): Promise<ToolResult<CommitOutput>> {
+async function commit(deps: ToolDeps, { pool, seats }: SeatsInput, signal?: AbortSignal): Promise<ToolResult<CommitOutput>> {
+  // Cancelled while it waited its turn: nothing is asked, signed or counted.
+  if (isCancelled(signal)) return cancelled(pool);
   let wait: Unsettled | null;
   try {
     wait = await unsettledWait(deps, pool);
@@ -204,6 +212,23 @@ async function commit(deps: ToolDeps, { pool, seats }: SeatsInput): Promise<Tool
   if (!read.ok) return read;
   const refusal = poolRefusal(offer, read.output);
   if (refusal !== null) return refused(refusal);
+  // Cancelled before the payment is handed over: nothing is signed or counted.
+  if (isCancelled(signal)) return cancelled(pool);
+  const { result, signed } = await payOffer(deps, pool, seats, offer);
+  if (isCancelled(signal)) cancelledAfterPaying(deps, pool, signed, result);
+  return result;
+}
+
+/**
+ * Pays `offer` through the spend ledger: the call's answer, and what Buyer.pay signed when it signed
+ * and sent a payment (null when nothing left the buyer, or what it signed is not known).
+ */
+async function payOffer(
+  deps: ToolDeps,
+  pool: number,
+  seats: number,
+  offer: Offer,
+): Promise<{ result: ToolResult<CommitOutput>; signed: SignedPayment | null }> {
   let payment: LedgerPayment;
   try {
     payment = await deps.ledger.pay(offer, (maxAmount) => deps.buyer.pay(offer, { poolId: pool, seats, maxAmount }));
@@ -213,21 +238,59 @@ async function commit(deps: ToolDeps, { pool, seats }: SeatsInput): Promise<Tool
     const reason = transportReason(error.cause);
     const noAnswer = `The payment may have been sent: the gateway gave no documented answer to it (${reason}).`;
     // Buyer.pay's own rejection says what it signed; without that, the pool cannot be held.
-    const after =
-      error.cause instanceof PaymentUnknownError
-        ? holdUnsettled(deps, pool, error.amount, error.cause.signed)
-        : stillCounted(deps, error.amount);
-    return failure('payment_unknown', `${noAnswer} ${after}`);
+    if (error.cause instanceof PaymentUnknownError) {
+      const { signed } = error.cause;
+      return { result: failure('payment_unknown', `${noAnswer} ${holdUnsettled(deps, pool, error.amount, signed)}`), signed };
+    }
+    return { result: failure('payment_unknown', `${noAnswer} ${stillCounted(deps, error.amount)}`), signed: null };
   }
   if (payment.kind === 'over_spend_cap') {
-    return failure(
+    const result = failure(
       'over_spend_cap',
       `Paying ${display(deps, payment.amount)} would take this buyer past its spend cap of ` +
         `${display(deps, deps.ledger.cap)}: ${display(deps, payment.left)} is left. Nothing was signed.`,
     );
+    return { result, signed: null };
   }
-  if (payment.kind === 'not_sent') return notSent(deps, payment);
-  return paymentResult(deps, pool, payment);
+  if (payment.kind === 'not_sent') return { result: notSent(deps, payment), signed: null };
+  const { answer } = payment;
+  return { result: paymentResult(deps, pool, payment), signed: 'signed' in answer ? answer.signed : null };
+}
+
+/** Whether the client has cancelled the call: read afresh at each check, since a cancellation can come during any await. */
+function isCancelled(signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true;
+}
+
+/** A call cancelled before its payment was handed over: nothing was signed or counted. No client receives this. */
+function cancelled(pool: number): ToolResult<never> {
+  return failure('cancelled', `The call for pool ${pool} was cancelled before anything was signed; nothing was paid.`);
+}
+
+/**
+ * A call cancelled once its payment was handed over, which no client hears the answer of: the pool is
+ * held as for a payment whose result is unknown, whatever the answer, when a payment was signed, and
+ * the answer goes to the operator's log.
+ */
+function cancelledAfterPaying(deps: ToolDeps, pool: number, signed: SignedPayment | null, result: ToolResult<CommitOutput>): void {
+  const answer = `the answer: ${answerLine(result)}`;
+  if (signed === null) {
+    deps.log(`quorum_commit: the call for pool ${pool} was cancelled once it reached the spend cap, and no payment was signed; ${answer}`);
+    return;
+  }
+  const untilHeight = signed.maxBlockHeight + SETTLE_MARGIN_BLOCKS;
+  deps.commits.hold(pool, untilHeight);
+  deps.log(
+    `quorum_commit: the call for pool ${pool} was cancelled once its payment was handed over, so pool ${pool} is held ` +
+      `until a final block above ${untilHeight}; ${answer}`,
+  );
+}
+
+/** A commit's answer in one line for the log: never the credential, which is a bearer token. */
+function answerLine(result: ToolResult<CommitOutput>): string {
+  if (!result.ok) return `${result.error}: ${result.message}`;
+  const { status, seats, paid, txHash } = result.output;
+  return `${status}, ${seats} seats, ${paid.display} counted, transaction ${txHash}`;
 }
 
 /**

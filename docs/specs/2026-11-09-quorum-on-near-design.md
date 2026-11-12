@@ -906,6 +906,13 @@ pool is held, the answer is `chain_unavailable`. The server runs one `quorum_com
 when the client calls tools concurrently, so that each sees the hold the one before it left. Holds
 are kept in memory (section 12).
 
+**A cancelled commit.** An MCP client may cancel a call, and the server then sends it no answer. A
+`quorum_commit` cancelled while it waits its turn, or before its payment goes through the spend cap,
+signs nothing and spends nothing. Once its payment has gone through the spend cap, the call runs to
+its answer: the server holds the pool whatever the answer, as after a payment whose result is
+unknown, and writes the answer to its log. The server's instructions and the tool's description say
+that a call that ends without an answer may have paid: call `quorum_status` before committing again.
+
 `quorum_commit` refuses, in this order: `payment_unsettled`; then, on its fresh offer,
 `offer_mismatch` or `pool_closed`; `over_spend_cap`; then the buyer's own checks of section 6.3.
 `quorum_offer` makes the same checks in the same order.

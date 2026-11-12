@@ -635,6 +635,64 @@ describe('quorum_commit', () => {
   });
 });
 
+describe('quorum_commit cancelled by the client', () => {
+  it('signs and spends nothing when it is cancelled while it waits its turn', async () => {
+    let answerFirst!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      answerFirst = resolve;
+    });
+    const { deps, calls } = setup({ duringPay: () => gate });
+    const first = quorumCommit(deps, { pool: 7, seats: 2 });
+    await vi.waitFor(() => expect(calls.pay).toHaveLength(1));
+    const controller = new AbortController();
+    const second = quorumCommit(deps, { pool: 7, seats: 3 }, controller.signal);
+
+    controller.abort();
+    answerFirst();
+
+    expect(await first).toMatchObject({ ok: true, output: { status: 'pending', seats: 2 } });
+    expect(await second).toMatchObject({ ok: false, error: 'cancelled' });
+    expect(calls.offer).toEqual([[7, 2]]);
+    expect(calls.pay).toHaveLength(1);
+    expect(await spent()).toBe(360n);
+    expect(deps.commits.heldUntil(7)).toBeUndefined();
+  });
+
+  it('signs and spends nothing when it is cancelled before the spend ledger pays', async () => {
+    const controller = new AbortController();
+    const { deps, calls } = setup();
+    deps.chain.getPool = async (id) => {
+      controller.abort();
+      return { ...POOL, id };
+    };
+
+    expect(await quorumCommit(deps, { pool: 7, seats: 2 }, controller.signal)).toMatchObject({ ok: false, error: 'cancelled' });
+
+    expect(calls.pay).toEqual([]);
+    expect(await spent()).toBe(0n);
+    expect(deps.commits.heldUntil(7)).toBeUndefined();
+  });
+
+  it.each<[string, Answers['pay']]>([
+    ['a 202', pending(2)],
+    ['a 200 with a credential', filled(24)],
+    ['a 502 relay_failed', signed({ kind: 'relay_failed', txHash: TX_HASH })],
+    ['no documented answer', new PaymentUnknownError(SIGNED, new TypeError('fetch failed'))],
+  ])('holds the pool whatever the answer, and logs the answer, when it is cancelled once the payment was handed over: %s', async (_, pay) => {
+    const controller = new AbortController();
+    const { deps, calls, logs } = setup({ pay, duringPay: async () => controller.abort() });
+
+    await quorumCommit(deps, { pool: 7, seats: 2 }, controller.signal);
+
+    expect(deps.commits.heldUntil(7)).toBe(245_000_240n);
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toMatch(/^quorum_commit: the call for pool 7 was cancelled once its payment was handed over, so pool 7 is held until a final block above 245000240; the answer: /);
+    expect(logs.join('\n')).not.toContain(CREDENTIAL);
+    expect(await quorumCommit(deps, { pool: 7, seats: 2 })).toMatchObject({ ok: false, error: 'payment_unsettled' });
+    expect(calls.pay).toHaveLength(1);
+  });
+});
+
 describe('quorum_status', () => {
   it('reports seats held in a pool still filling', async () => {
     const redeem = { kind: 'pending', seats: 2, taken: 150, target: 192, deadlineMs: POOL.deadline_ms } as const;

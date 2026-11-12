@@ -5,7 +5,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { CallToolResultSchema, type CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { writeSpendFile } from '@quorum-on-near/buyer';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildServer } from '../src/server.ts';
 import {
   BUYER,
@@ -171,6 +171,34 @@ describe('buildServer', () => {
     expect(result.isError).toBeUndefined();
     expect(result.structuredContent).toBeDefined();
     expect(JSON.parse(text(result))).toEqual(result.structuredContent);
+  });
+
+  it('tells the agent, in its instructions and in quorum_commit, that a call ending without an answer may have paid', async () => {
+    const { client } = await connect();
+    const { tools } = await client.listTools();
+    const advice = 'a call that ends without an answer may have paid: call quorum_status before committing again';
+    expect(client.getInstructions()).toContain(advice);
+    expect(tools.find((tool) => tool.name === 'quorum_commit')?.description).toContain(`A${advice.slice(1)}.`);
+  });
+
+  it("passes the client's cancellation to quorum_commit: a payment cancelled once handed over holds the pool", async () => {
+    const controller = new AbortController();
+    const { client, calls, logs } = await connect({
+      duringPay: async () => {
+        controller.abort();
+        // The cancellation reaches the server while the payment is in flight.
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      },
+    });
+    const cancelled = client.callTool({ name: 'quorum_commit', arguments: { pool: 7, seats: 2 } }, undefined, { signal: controller.signal });
+    await expect(cancelled).rejects.toThrow();
+    await vi.waitFor(() => expect(logs.some((line) => line.includes('was cancelled'))).toBe(true));
+
+    const next = await call(client, 'quorum_commit', { pool: 7, seats: 2 });
+
+    expect(next.isError).toBe(true);
+    expect(JSON.parse(text(next))).toMatchObject({ error: 'payment_unsettled' });
+    expect(calls.pay).toHaveLength(1);
   });
 
   it('answers a failure with isError, and its code and message as JSON text', async () => {
