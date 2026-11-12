@@ -17,6 +17,7 @@ import { TGAS } from '../../src/chain.ts';
 import { checkPool, commitGas, payoutGas, snapshot } from '../../src/check.ts';
 import { PROFILES } from '../../src/profiles.ts';
 import { openPool } from '../../src/provider.ts';
+import { runReset } from '../../src/reset.ts';
 import { runSwarm } from '../../src/run.ts';
 import { scenario } from '../../src/scenarios.ts';
 import { ShortfallError } from '../../src/setup.ts';
@@ -243,6 +244,26 @@ describe.skipIf(process.platform === 'win32')('the swarm against a local sandbox
     expect(second.writes).toBe(0);
     expect(second.report?.actions).toEqual([]);
     expect(second.lines).toEqual(['nothing to do']);
+  });
+
+  it('brings every buyer and the provider back to its token amount with reset then setup, and a second reset sends nothing', async () => {
+    const { config, chain } = started();
+    const log = (line: string): void => console.log(line);
+
+    const returned = await runReset(config, { chain, log });
+    const setup = await recordSetup(config, chain, log);
+    const writes = chain.writes.length;
+    const again = await runReset(config, { chain, log });
+
+    logSetup('setup after reset', setup);
+    // The provider earned the fills pool's sales; buyers 01 to 06 earned the fails pool's bonus.
+    const buyers = buyerIds(config);
+    expect(returned.map((surplus) => surplus.accountId)).toEqual([config.provider, ...buyers.slice(0, 6)]);
+    expect(setup.error).toBeNull();
+    for (const id of buyers) expect(await chain.ftBalanceOf(id)).toBe(config.buyerBudget);
+    expect(await chain.ftBalanceOf(config.provider)).toBe(config.providerBonusFunds);
+    expect(again).toEqual([]);
+    expect(chain.writes.length).toBe(writes);
   });
 
   it("still knows the first setup's first transaction once every scenario has run, minutes later", async () => {

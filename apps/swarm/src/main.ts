@@ -20,6 +20,7 @@ import { checkPool, snapshot, type CheckReport } from './check.ts';
 import { loadSwarmConfig, type SwarmConfig } from './config.ts';
 import { aclNotice, envFilePath, writeGatewayEnv, writeMcpEnv, type EnvApp } from './env-files.ts';
 import { assertNoPoolOpen, openPool } from './provider.ts';
+import { runReset } from './reset.ts';
 import { createRpcSwarmChain } from './rpc-chain.ts';
 import { runSwarm, unexpectedOutcomes } from './run.ts';
 import { isScenarioName, scenario, type Scenario, type ScenarioName } from './scenarios.ts';
@@ -34,6 +35,7 @@ export type SwarmCommand =
   | { name: 'check'; poolId: number; scenario: ScenarioName }
   | { name: 'demo'; scenario: ScenarioName }
   | { name: 'env'; app: EnvApp }
+  | { name: 'reset' }
   | { name: 'help' };
 
 /** Each command's arguments and what it does, in the order USAGE lists them. */
@@ -44,6 +46,7 @@ const COMMANDS: Record<SwarmCommand['name'], { synopsis: string; does: string }>
   check: { synopsis: 'check <pool-id> <fills|fails>', does: 'wait until the pool has ended, then check what the chain holds' },
   demo: { synopsis: 'demo <fills|fails>', does: 'setup, open, run, then check against the balances read before the pool opened' },
   env: { synopsis: 'env <gateway|mcp>', does: 'write apps/<gateway|mcp>/.env from this configuration, never over a file' },
+  reset: { synopsis: 'reset', does: "send each buyer's and the provider's surplus back to the funding account" },
   help: { synopsis: 'help', does: 'print this text' },
 };
 
@@ -89,6 +92,7 @@ export function parseCommand(argv: readonly string[]): SwarmCommand {
       argsOf('help', args, 0);
       return { name: 'help' };
     case 'setup':
+    case 'reset':
       argsOf(name, args, 0);
       return { name };
     case 'open':
@@ -150,6 +154,7 @@ export interface SwarmModules {
   openPool: typeof openPool;
   runSwarm: typeof runSwarm;
   checkPool: typeof checkPool;
+  runReset: typeof runReset;
   writeGatewayEnv: typeof writeGatewayEnv;
   writeMcpEnv: typeof writeMcpEnv;
 }
@@ -253,6 +258,9 @@ async function execute(command: SwarmCommand, cli: Cli): Promise<boolean> {
       const checked = verdict(cli, await modules.checkPool(config, checkDeps, { poolId, scenario: chosen, baseline, extraCommits }));
       return asExpected(cli, chosen, outcomes) && checked;
     }
+    case 'reset':
+      await modules.runReset(config, { chain, log });
+      return true;
   }
 }
 
@@ -328,7 +336,7 @@ if (import.meta.main) {
         err: (line) => console.error(line),
         connect: connectRpc,
         runtime: systemRuntime,
-        modules: { runSetup, snapshot, openPool, runSwarm, checkPool, writeGatewayEnv, writeMcpEnv },
+        modules: { runSetup, snapshot, openPool, runSwarm, checkPool, runReset, writeGatewayEnv, writeMcpEnv },
         platform: process.platform,
         userName: () => userInfo().username,
       })

@@ -54,6 +54,10 @@ function stubModules(order: string[]): StubModules {
       order.push('check');
       return report([true, true]);
     }),
+    runReset: vi.fn<SwarmModules['runReset']>(async () => {
+      order.push('reset');
+      return [];
+    }),
     writeGatewayEnv: vi.fn<SwarmModules['writeGatewayEnv']>(async () => {
       order.push('env gateway');
     }),
@@ -102,6 +106,7 @@ describe('parseCommand', () => {
     [['demo', 'fills'], { name: 'demo', scenario: 'fills' }],
     [['env', 'gateway'], { name: 'env', app: 'gateway' }],
     [['env', 'mcp'], { name: 'env', app: 'mcp' }],
+    [['reset'], { name: 'reset' }],
     [['help'], { name: 'help' }],
     [['--help'], { name: 'help' }],
     [['-h'], { name: 'help' }],
@@ -114,6 +119,7 @@ describe('parseCommand', () => {
     [['deploy'], '"deploy"'],
     [['Setup'], '"Setup"'],
     [['setup', 'now'], 'swarm setup'],
+    [['reset', 'all'], 'swarm reset'],
     [['help', 'open'], 'swarm help'],
     [['open'], 'swarm open <fills|fails>'],
     [['open', 'fills', 'fails'], 'swarm open <fills|fails>'],
@@ -142,7 +148,7 @@ describe('parseCommand', () => {
   });
 
   it('is what USAGE lists, command by command', () => {
-    for (const name of ['setup', 'open', 'run', 'check', 'demo', 'env', 'help']) {
+    for (const name of ['setup', 'open', 'run', 'check', 'demo', 'env', 'reset', 'help']) {
       expect(USAGE).toMatch(new RegExp(`^  ${name}\\b`, 'm'));
     }
   });
@@ -198,7 +204,7 @@ describe('runCli: configuration and chain', () => {
     expect(h.connect).not.toHaveBeenCalled();
   });
 
-  it.each([['setup'], ['open', 'fills'], ['run', '3', 'fills'], ['check', '3', 'fails'], ['demo', 'fails']])(
+  it.each([['setup'], ['open', 'fills'], ['run', '3', 'fills'], ['check', '3', 'fails'], ['demo', 'fails'], ['reset']])(
     '%s stops with exit 1, running nothing, when the RPC serves another chain than QUORUM_NETWORK names',
     async (...argv) => {
       const h = harness();
@@ -380,6 +386,17 @@ describe('runCli: commands', () => {
     expect(await runCli(['demo', 'fills'], h.cli)).toBe(0);
     expect(h.order).toEqual(['setup', 'snapshot', 'open', 'run', 'check']);
     expect(h.chain.reads.filter((read) => read.method === 'listPools')).toEqual([]);
+  });
+
+  it('reset runs runReset on the chain, its lines on stdout', async () => {
+    const h = harness();
+    h.modules.runReset.mockImplementation(async (_, deps) => {
+      deps.log('nothing to do');
+      return [];
+    });
+    expect(await runCli(['reset'], h.cli)).toBe(0);
+    expect(h.modules.runReset.mock.calls[0]?.[1].chain).toBe(h.chain);
+    expect(h.out).toEqual(['nothing to do']);
   });
 
   it.each([
