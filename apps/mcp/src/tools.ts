@@ -275,7 +275,11 @@ function cancelled(pool: number): ToolResult<never> {
 function cancelledAfterPaying(deps: ToolDeps, pool: number, signed: SignedPayment | null, result: ToolResult<CommitOutput>): void {
   const answer = `the answer: ${answerLine(result)}`;
   if (signed === null) {
-    deps.log(`quorum_commit: the call for pool ${pool} was cancelled once it reached the spend cap, and no payment was signed; ${answer}`);
+    // Whether anything was signed is for the answer to say: a payment can have been signed and never sent.
+    deps.log(
+      `quorum_commit: the call for pool ${pool} was cancelled once its payment had reached the spend ledger, ` +
+        `and no signed payment is known, so pool ${pool} is not held; ${answer}`,
+    );
     return;
   }
   const untilHeight = signed.maxBlockHeight + SETTLE_MARGIN_BLOCKS;

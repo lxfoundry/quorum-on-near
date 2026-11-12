@@ -693,6 +693,62 @@ describe('quorum_commit cancelled by the client', () => {
   });
 });
 
+describe('quorum_commit cancelled by the client once its payment reached the ledger, with no signed payment known', () => {
+  /** Every case in which the answer holds no signed payment, so that there is nothing to hold the pool for. */
+  const cases: Array<[string, Answers['pay'], string]> = [
+    [
+      'the offer was declined before anything was signed',
+      { kind: 'declined', refusal: { code: 'wrong_asset', detail: 'the asset is not usdc.testnet' } },
+      'wrong_asset: ',
+    ],
+    [
+      'a payment was signed but never sent, the gateway being unreachable',
+      new PaymentNotSentError('gateway_unreachable', 'could not connect', new TypeError('fetch failed')),
+      'payment_not_sent: ',
+    ],
+    ['a payment was never signed, its key being missing', new PaymentNotSentError('key_not_found', 'no key', new Error('key')), 'payment_not_sent: '],
+    ['a payment failed with an error that says nothing of what was signed', new Error('boom'), 'payment_unknown: '],
+  ];
+
+  it.each(cases)('logs the answer, saying no signed payment is known and the pool is not held, when %s', async (_case, pay, start) => {
+    const controller = new AbortController();
+    const { deps, calls, logs } = setup({ pay, duringPay: async () => controller.abort() });
+
+    await quorumCommit(deps, { pool: 7, seats: 2 }, controller.signal);
+
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toMatch(
+      new RegExp(
+        `^quorum_commit: the call for pool 7 was cancelled once its payment had reached the spend ledger, and no signed payment is known, so pool 7 is not held; the answer: ${start}`,
+      ),
+    );
+    expect(logs[0]).not.toContain('no payment was signed');
+    expect(deps.commits.heldUntil(7)).toBeUndefined();
+    expect(calls.pay).toHaveLength(1);
+  });
+
+  it('logs the same when the spend ledger refuses the payment for the cap, which nothing signed', async () => {
+    await writeSpendFile(spendFile, BUYER, 9_800n);
+    const controller = new AbortController();
+    const { deps, calls, logs } = setup();
+    const pay = deps.ledger.pay.bind(deps.ledger);
+    deps.ledger.pay = async (offer, send) => {
+      const payment = await pay(offer, send);
+      controller.abort();
+      return payment;
+    };
+
+    await quorumCommit(deps, { pool: 7, seats: 2 }, controller.signal);
+
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toMatch(
+      /^quorum_commit: the call for pool 7 was cancelled once its payment had reached the spend ledger, and no signed payment is known, so pool 7 is not held; the answer: over_spend_cap: /,
+    );
+    expect(deps.commits.heldUntil(7)).toBeUndefined();
+    expect(calls.pay).toEqual([]);
+  });
+});
+
 describe('quorum_status', () => {
   it('reports seats held in a pool still filling', async () => {
     const redeem = { kind: 'pending', seats: 2, taken: 150, target: 192, deadlineMs: POOL.deadline_ms } as const;
