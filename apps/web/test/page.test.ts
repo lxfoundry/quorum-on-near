@@ -62,3 +62,14 @@ describe('the page scripts', () => {
     expect(read(name)).not.toMatch(/innerHTML|outerHTML|insertAdjacentHTML|document\.write/);
   });
 });
+
+describe('style.css', () => {
+  // A notice or a failure can hold a 64-character implicit account id, which has no break of its own
+  // and would otherwise widen the whole page on a narrow screen.
+  it.each(['.status', '.empty', '.account', '.footer'])('breaks a long word inside %s', (selector) => {
+    const bodies = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+      .filter((rule) => (rule[1] ?? '').split(',').some((name) => name.trim() === selector))
+      .map((rule) => rule[2] ?? '');
+    expect(bodies.some((body) => /overflow-wrap:\s*anywhere/.test(body)), selector).toBe(true);
+  });
+});
