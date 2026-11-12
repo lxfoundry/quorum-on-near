@@ -1,11 +1,18 @@
 import type {
   BuyerPaymentAnswer,
+  OfferAnswer,
   PaymentAnswer,
+  PaymentRequest,
   PoolListing,
+  PoolsAnswer,
+  RedeemAnswer,
   SignedPayment,
 } from '@quorum-on-near/buyer';
 import { buildOffer, type Offer, type OfferContext, type PoolView } from '@quorum-on-near/protocol';
 import { baseEncode } from 'near-api-js';
+import { Commits } from '../src/commits.ts';
+import { SpendLedger } from '../src/spend.ts';
+import type { ToolDeps } from '../src/tools.ts';
 
 /** The accounts, the pool, the gateway answers and the stubbed buyer the MCP tests share. */
 
@@ -104,3 +111,86 @@ export const CAP = 10_000n;
 
 /** The RPC URL the tools are configured with: it carries an API key, so no text may quote it. */
 export const RPC_URL = 'https://rpc.example.org/?apiKey=TEST-RPC-KEY';
+
+/** The stubbed gateway's answers; each defaults to the happy path for POOL, and an Error is thrown. */
+export interface Answers {
+  pools?: PoolsAnswer | Error;
+  /** Defaults to the offer for the seats requested. */
+  offer?: OfferAnswer | Error;
+  /** Defaults to a 202 for every seat of the offer. */
+  pay?: BuyerPaymentAnswer | Error;
+  /** Runs while the payment is in flight, before its answer. */
+  duringPay?: () => Promise<void>;
+  redeem?: RedeemAnswer | Error;
+  /** The latest final height, read at each call; SIGNED's final height by default. */
+  finalHeight?: () => bigint;
+  /** The pool's view on chain, for any pool id; POOL with that id by default. */
+  pool?: PoolView | null | Error;
+}
+
+/** What the stubbed buyer and gateway were asked. */
+export interface Calls {
+  pools: number;
+  offer: [pool: number, seats: number][];
+  pay: [offer: Offer, request: PaymentRequest][];
+  redeem: number[];
+  finalHeight: number;
+  getPool: number[];
+}
+
+/** `answer`, or a throw when it is an Error. */
+function answerOrThrow<T>(answer: T | Error): T {
+  if (answer instanceof Error) throw answer;
+  return answer;
+}
+
+/**
+ * The tools' dependencies: a buyer and a gateway stubbed with `answers`, and a real spend ledger over
+ * the file at `spendFile` with a cap of CAP, at the time NOW_MS, writing amounts as USDC does. `logs`
+ * holds every line written to the operator's log.
+ */
+export function toolDeps(spendFile: string, answers: Answers = {}): { deps: ToolDeps; calls: Calls; logs: string[] } {
+  const calls: Calls = { pools: 0, offer: [], pay: [], redeem: [], finalHeight: 0, getPool: [] };
+  const logs: string[] = [];
+  const deps: ToolDeps = {
+    buyer: {
+      accountId: BUYER,
+      async offer(pool, seats) {
+        calls.offer.push([pool, seats]);
+        return answerOrThrow(answers.offer ?? { kind: 'offer', offer: offerFor(seats) });
+      },
+      async pay(offer, request) {
+        calls.pay.push([offer, request]);
+        await answers.duringPay?.();
+        return answerOrThrow(answers.pay ?? pending(offer.extra.seats));
+      },
+      async redeem(pool) {
+        calls.redeem.push(pool);
+        return answerOrThrow(answers.redeem ?? { kind: 'no_seats' });
+      },
+      async finalHeight() {
+        calls.finalHeight += 1;
+        return answers.finalHeight?.() ?? SIGNED.finalHeight;
+      },
+    },
+    gateway: {
+      async pools() {
+        calls.pools += 1;
+        return answerOrThrow(answers.pools ?? { kind: 'pools', pools: [LISTING] });
+      },
+    },
+    chain: {
+      async getPool(id) {
+        calls.getPool.push(id);
+        return answerOrThrow(answers.pool === undefined ? { ...POOL, id } : answers.pool);
+      },
+    },
+    ledger: new SpendLedger({ path: spendFile, account: BUYER, cap: CAP, log: (line) => logs.push(line) }),
+    settings: { network: 'near:testnet', token: TOKEN, poolsContract: POOLS, rpcUrl: RPC_URL, blockTimeMs: 1000 },
+    units: { decimals: 6, symbol: 'USDC' },
+    now: () => NOW_MS,
+    log: (line) => logs.push(line),
+    commits: new Commits(),
+  };
+  return { deps, calls, logs };
+}

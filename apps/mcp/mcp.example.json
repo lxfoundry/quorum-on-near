@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "quorum-buyer": {
+      "command": "node",
+      "args": ["${CLAUDE_PROJECT_DIR:-.}/apps/mcp/src/main.ts"]
+    }
+  }
+}

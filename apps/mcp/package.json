@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "start": "node src/main.ts",
     "test": "vitest run --exclude \"test/sandbox/**\"",
     "typecheck": "tsc -p tsconfig.json"
   },
