@@ -346,6 +346,32 @@ describe('a refresh', () => {
     expect(el('buyer-rows').children).toHaveLength(3);
   });
 
+  it('builds the buyer rows again at the next refresh when building them threw', async () => {
+    const world = newWorld();
+    const page = await openPage(worldFetch(world));
+    // From now on the page cannot create an element, once.
+    const broken = { value: true };
+    vi.stubGlobal('document', {
+      getElementById: (id: string) => elements.get(id) ?? null,
+      createElement: (tag: string) => {
+        if (broken.value) {
+          broken.value = false;
+          throw new Error('cannot create an element');
+        }
+        return new FakeElement(tag, false, false);
+      },
+    });
+    world.seats.push({ buyer: 'buyer-03.quorum.testnet', seats: 1, state: 'committed' });
+    world.pools = [openPool({ taken: 3 })];
+    world.balance = '2268';
+    await page.refresh();
+    expect(el('status').textContent).toBe('Could not refresh (cannot create an element). Retrying every 2 seconds.');
+    expect(el('buyer-rows').children.length).toBe(2);
+    await page.refresh();
+    expect(el('status').textContent).toMatch(/^Updated at /);
+    expect(el('buyer-rows').children.length).toBe(3);
+  });
+
   it("rebuilds a buyer's links when its commit shows in the feed", async () => {
     const world = newWorld();
     const page = await openPage(worldFetch(world));

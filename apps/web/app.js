@@ -76,7 +76,8 @@ const builtKeys = new WeakMap();
 /**
  * Replaces the children of `parent` with the nodes `build` returns, unless `key`, which stands for
  * everything `build` reads, is the key of the last build into `parent`. An unchanged list keeps its
- * nodes, so a link a viewer is clicking or has focused is not replaced under them.
+ * nodes, so a link a viewer is clicking or has focused is not replaced under them. The key is kept
+ * once the children are replaced, so a build that throws is tried again at the next refresh.
  *
  * @param {HTMLElement} parent
  * @param {string} key
@@ -84,8 +85,8 @@ const builtKeys = new WeakMap();
  */
 function replaceWhenChanged(parent, key, build) {
   if (builtKeys.get(parent) === key) return;
-  builtKeys.set(parent, key);
   parent.replaceChildren(...build());
+  builtKeys.set(parent, key);
 }
 
 const ui = {
