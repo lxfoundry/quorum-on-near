@@ -1,4 +1,3 @@
-# >>> scaffold-hackathon-repo >>>
 # Product repo: may become public at any time. Nothing secret is ever committed:
 # when in doubt, add the pattern here first. Commit a .env.example with empty values.
 
@@ -52,7 +51,6 @@ __pycache__/
 coverage/
 test-results/
 .cache/
-# <<< scaffold-hackathon-repo <<<
 
 # >>> near >>>
 # NEAR key material and build output. near-cli-rs's legacy keychain and near-kit's FileKeyStore
