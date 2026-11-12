@@ -27,7 +27,7 @@ import {
   type PoolView,
   type SeatView,
 } from '../totals.js';
-import { isAllowedViewCall } from '../../gateway/src/app.ts';
+import { isAllowedViewCall } from '../../gateway/src/view-call.ts';
 
 const EXPLORER = 'https://testnet.nearblocks.io/txns/';
 const POOLS = 'pools.quorum.testnet';
