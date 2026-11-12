@@ -10,9 +10,9 @@ import type { Network } from '@quorum-on-near/protocol';
  */
 
 /**
- * The folder of the lock files: `data/` at the root of the repository, which is gitignored and holds
- * the MCP server's spend file by default too. Resolved from this module's own location, so it does
- * not depend on the folder the process was started from.
+ * The folder of the lock files when QUORUM_SWARM_LOCK_DIR is unset: `data/` at the root of the
+ * repository, which is gitignored and holds the MCP server's spend file by default too. Resolved from
+ * this module's own location, so it does not depend on the folder the process was started from.
  */
 export function defaultLockDir(): string {
   return fileURLToPath(new URL('../../../data/', import.meta.url));
@@ -48,7 +48,11 @@ export class SwarmLockedError extends Error {
 /** A lock held by this process. */
 export interface SwarmLock {
   path: string;
-  /** Removes the lock file; later calls do nothing. */
+  /**
+   * Removes the lock file, but only while it still holds this process's PID: a file that is gone, or
+   * that another process wrote after it, is left as it is. Rejects when the file cannot be read or
+   * removed. Later calls do nothing.
+   */
   release(): Promise<void>;
 }
 
@@ -80,16 +84,30 @@ export async function takeLock(path: string, pid: number = process.pid): Promise
     release: async () => {
       if (released) return;
       released = true;
-      await rm(path, { force: true });
+      if ((await readPid(path)) === pid) await rm(path, { force: true });
     },
   };
 }
 
-/** The PID a lock file holds: null when it holds none, or cannot be read. */
+/**
+ * The PID a lock file holds: null when the file is missing or holds none. Throws when the file
+ * exists but cannot be read.
+ */
+async function readPid(path: string): Promise<number | null> {
+  let text: string;
+  try {
+    text = (await readFile(path, 'utf8')).trim();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+  return /^[1-9][0-9]{0,9}$/.test(text) ? Number(text) : null;
+}
+
+/** The PID a lock file holds, for the message that names its holder: null when it holds none, or cannot be read. */
 async function pidIn(path: string): Promise<number | null> {
   try {
-    const text = (await readFile(path, 'utf8')).trim();
-    return /^[1-9][0-9]{0,9}$/.test(text) ? Number(text) : null;
+    return await readPid(path);
   } catch {
     return null;
   }

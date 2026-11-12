@@ -62,6 +62,7 @@ describe('loadSwarmConfig', () => {
       spreadSeconds: null,
       redeemIntervalMs: 5000,
       spendFile: fileURLToPath(new URL('../../../data/mcp-spend.json', import.meta.url)),
+      lockDir: fileURLToPath(new URL('../../../data/', import.meta.url)),
     });
   });
 
@@ -69,6 +70,7 @@ describe('loadSwarmConfig', () => {
     const credentialsDir = join(tmpdir(), 'near-keys');
     const poolsWasm = join(tmpdir(), 'quorum_pools.wasm');
     const spendFile = join(tmpdir(), 'spend.json');
+    const lockDir = join(tmpdir(), 'swarm-lock');
     const config = loadSwarmConfig({
       QUORUM_NETWORK: 'near:sandbox',
       QUORUM_RPC_URL: 'http://127.0.0.1:3030',
@@ -99,6 +101,7 @@ describe('loadSwarmConfig', () => {
       QUORUM_SWARM_SPREAD_SECONDS: '0',
       QUORUM_REDEEM_INTERVAL_MS: '250',
       QUORUM_MCP_SPEND_FILE: spendFile,
+      QUORUM_SWARM_LOCK_DIR: lockDir,
     });
     expect(config).toEqual<SwarmConfig>({
       network: 'near:sandbox',
@@ -130,6 +133,7 @@ describe('loadSwarmConfig', () => {
       spreadSeconds: 0,
       redeemIntervalMs: 250,
       spendFile,
+      lockDir,
     });
   });
 
@@ -150,6 +154,10 @@ describe('loadSwarmConfig', () => {
 
   it('treats an empty QUORUM_POOLS_WASM as unset', () => {
     expect(loadSwarmConfig(env({ QUORUM_POOLS_WASM: '' })).poolsWasm).toBeNull();
+  });
+
+  it('treats an empty QUORUM_SWARM_LOCK_DIR as invalid, since the default applies only when it is unset', () => {
+    expect(problems(env({ QUORUM_SWARM_LOCK_DIR: '' }))).toEqual(['QUORUM_SWARM_LOCK_DIR must be an absolute path, got ""']);
   });
 
   it('collects one problem per invalid variable, naming each value', () => {
@@ -176,6 +184,7 @@ describe('loadSwarmConfig', () => {
           QUORUM_SWARM_SPREAD_SECONDS: '2147484',
           QUORUM_REDEEM_INTERVAL_MS: '2147483648',
           QUORUM_MCP_SPEND_FILE: 'data/mcp-spend.json',
+          QUORUM_SWARM_LOCK_DIR: 'data',
         }),
       ),
     ).toEqual([
@@ -199,6 +208,7 @@ describe('loadSwarmConfig', () => {
       'QUORUM_SCENARIO_DEADLINE_SECONDS must be a positive integer, got "0"',
       'QUORUM_SWARM_SPREAD_SECONDS must be an integer from 0 to 2147483 (the longest delay a Node timer honours, in seconds), got "2147484"',
       'QUORUM_REDEEM_INTERVAL_MS must be an integer from 1 to 2147483647 (the longest delay a Node timer honours), got "2147483648"',
+      'QUORUM_SWARM_LOCK_DIR must be an absolute path, got "data"',
     ]);
   });
 

@@ -43,14 +43,15 @@ export const TERMS = '8×GPU × 24 h; 1 seat = 1 GPU-hour; prices at 1/10,000 sc
 const UNUSABLE_FOLDER = join(fileURLToPath(import.meta.url), 'unusable');
 
 /**
- * The configuration for PARENT with every default, its key files and spend file under a folder that
- * cannot exist, so that only a test that passes its own temporary paths can touch files.
+ * The configuration for PARENT with every default, its key files, spend file and lock folder under a
+ * folder that cannot exist, so that only a test that passes its own temporary paths can touch files.
  */
 export function testConfig(overrides: Partial<SwarmConfig> = {}): SwarmConfig {
   return {
     ...loadSwarmConfig({ QUORUM_PARENT_ACCOUNT: PARENT }),
     credentialsDir: UNUSABLE_FOLDER,
     spendFile: join(UNUSABLE_FOLDER, 'mcp-spend.json'),
+    lockDir: join(UNUSABLE_FOLDER, 'swarm-lock'),
     ...overrides,
   };
 }

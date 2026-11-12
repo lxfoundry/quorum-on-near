@@ -15,6 +15,7 @@ import {
 } from '@quorum-on-near/buyer';
 import { scriptedBuyerIds } from './accounts.ts';
 import { TGAS } from './chain.ts';
+import { defaultLockDir } from './lock.ts';
 
 /**
  * The swarm's configuration: the settings it shares with the gateway and the buyers, read from the
@@ -62,6 +63,8 @@ export interface SwarmConfig extends BuyerSettings, McpBuyerSettings {
   spreadSeconds: number | null;
   /** QUORUM_REDEEM_INTERVAL_MS: how often a scripted buyer polls its redemption. */
   redeemIntervalMs: number;
+  /** QUORUM_SWARM_LOCK_DIR: the folder of the swarm's lock files, `data/` at the root of the repository by default. */
+  lockDir: string;
 }
 
 /** The most gas the gateway attaches to one call, and so the most either commit gas bound may be. */
@@ -122,6 +125,7 @@ export function loadSwarmConfig(env: Env): SwarmConfig {
   const deadlineSeconds = read.nullable('QUORUM_SCENARIO_DEADLINE_SECONDS', asPositiveInteger);
   const spreadSeconds = read.nullable('QUORUM_SWARM_SPREAD_SECONDS', asSpreadSeconds);
   const redeemIntervalMs = read.optional('QUORUM_REDEEM_INTERVAL_MS', '5000', asIntervalMs);
+  const lockDir = read.optional('QUORUM_SWARM_LOCK_DIR', defaultLockDir(), asAbsolutePath);
 
   if (parent !== undefined) {
     problems.push(
@@ -157,6 +161,7 @@ export function loadSwarmConfig(env: Env): SwarmConfig {
       deadlineSeconds,
       spreadSeconds,
       redeemIntervalMs,
+      lockDir,
     },
     problems,
   );

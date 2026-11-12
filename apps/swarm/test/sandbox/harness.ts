@@ -2,7 +2,8 @@
 // of the swarm prepared by runSetup, and the real gateway running as a child process. Needs Linux or
 // macOS (near-sandbox ships no Windows binary) and the wasm files from `cargo near build`, named by
 // QUORUM_POOLS_WASM and QUORUM_MOCK_USD_WASM. Everything it writes (key files, the spend file, the
-// gateway's data and logs) goes to one temporary folder, which stop() removes; nothing is written
+// swarm's lock files, the gateway's data and logs) goes to one temporary folder, which stop()
+// removes, so that even a command line killed by force leaves nothing behind; nothing is written
 // into the repository. The sandbox keeps about 15 minutes of history (SANDBOX_GC_EPOCHS), and stop()
 // ends it within a bounded time (stopSandbox).
 import { ChildProcess, spawn } from 'node:child_process';
@@ -38,6 +39,7 @@ import type {
 } from '../../src/chain.ts';
 import { loadSwarmConfig, type SwarmConfig } from '../../src/config.ts';
 import { gatewayEnvText, mcpEnvText, newCredentialJwk } from '../../src/env-files.ts';
+import { defaultLockDir } from '../../src/lock.ts';
 import { createRpcSwarmChain } from '../../src/rpc-chain.ts';
 import { runSetup, type SetupReport } from '../../src/setup.ts';
 import { stopSandbox } from './teardown.ts';
@@ -141,10 +143,10 @@ export interface SwarmWorld {
   sandbox: Sandbox;
   /**
    * The swarm's variables in this world: the sandbox network and RPC, the sandbox's root account as
-   * the parent, the mock token, the gateway's URL, QUORUM_POOLS_WASM, the temporary key folder and
-   * spend file, a shortened deadline, spread and redemption interval, and the options' swarmEnv. It
-   * holds paths and account ids, no key. runSwarmCli spawns the real command line with it, every
-   * variable it leaves unset given at the value `config` resolved (swarmCliEnv).
+   * the parent, the mock token, the gateway's URL, QUORUM_POOLS_WASM, the temporary key folder,
+   * spend file and lock folder, a shortened deadline, spread and redemption interval, and the
+   * options' swarmEnv. It holds paths and account ids, no key. runSwarmCli spawns the real command
+   * line with it, every variable it leaves unset given at the value `config` resolved (swarmCliEnv).
    */
   swarmEnv: Readonly<Record<string, string>>;
   /** loadSwarmConfig(swarmEnv). */
@@ -355,6 +357,7 @@ export async function startSwarmWorld(options: SwarmWorldOptions = {}): Promise<
       QUORUM_POOLS_WASM: wasm.pools,
       QUORUM_CREDENTIALS_DIR: credentialsDir,
       QUORUM_MCP_SPEND_FILE: join(root, 'mcp-spend.json'),
+      QUORUM_SWARM_LOCK_DIR: join(root, 'swarm-lock'),
       QUORUM_SCENARIO_DEADLINE_SECONDS: SANDBOX_DEADLINE_SECONDS,
       QUORUM_SWARM_SPREAD_SECONDS: SANDBOX_SPREAD_SECONDS,
       QUORUM_REDEEM_INTERVAL_MS: SANDBOX_REDEEM_INTERVAL_MS,
@@ -490,7 +493,8 @@ export async function runSwarmCli(
  * the value the world's configuration resolved (a null setting empty, which the swarm reads as
  * unset), then the world's swarmEnv as written, then `env`. The command line loads apps/swarm/.env
  * without replacing a variable already set, even to an empty value, so a developer's file there
- * cannot fill a variable the world leaves to its default.
+ * cannot fill a variable the world leaves to its default. Throws when the lock folder it gives is
+ * the repository's, since a command line killed by force would leave its lock there.
  */
 export function swarmCliEnv(world: Pick<SwarmWorld, 'swarmEnv' | 'config'>, env?: Env): Record<string, string> {
   const { config } = world;
@@ -524,8 +528,13 @@ export function swarmCliEnv(world: Pick<SwarmWorld, 'swarmEnv' | 'config'>, env?
     QUORUM_SCENARIO_DEADLINE_SECONDS: config.deadlineSeconds === null ? '' : String(config.deadlineSeconds),
     QUORUM_SWARM_SPREAD_SECONDS: config.spreadSeconds === null ? '' : String(config.spreadSeconds),
     QUORUM_REDEEM_INTERVAL_MS: String(config.redeemIntervalMs),
+    QUORUM_SWARM_LOCK_DIR: config.lockDir,
   };
-  return { ...resolved, ...world.swarmEnv, ...definedOnly(env) };
+  const merged = { ...resolved, ...world.swarmEnv, ...definedOnly(env) };
+  if (merged.QUORUM_SWARM_LOCK_DIR === defaultLockDir()) {
+    throw new Error("QUORUM_SWARM_LOCK_DIR must name a folder inside the world's temporary root, not the repository's data folder");
+  }
+  return merged;
 }
 
 /** yoctoNEAR written as the decimal NEAR the swarm's NEAR variables take: 5 × 10^22 is `0.05`. */

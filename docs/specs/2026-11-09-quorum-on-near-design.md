@@ -769,9 +769,11 @@ opens, as the baseline of the check, and stops at the first step that fails.
 (section 7.4), `swarm check <pool-id> <scenario>` makes the final check alone (section 10), and
 `swarm env` writes the other apps' configuration (section 7.6). Every command that reads the chain
 first checks that the RPC serves the configured network, and runs nothing if not. `setup`, `open`,
-`run`, `demo` and `reset` hold the swarm's lock while they run (section 12): while another swarm
-holds it, they run nothing, say that another swarm is running and name the lock; `demo` holds one
-lock across its steps, and `check`, `env` and `help` take none. A command exits
+`run`, `demo` and `reset` hold the swarm's lock while they run (section 12), a file in the lock
+folder that configuration sets (section 7.6): while another swarm holds it, they run nothing, say
+that another swarm is running and name the lock; `demo` holds one lock across its steps, and
+`check`, `env` and `help` take none. A lock that cannot be removed when the command ends is reported
+on standard error, and does not change the command's result or error. A command exits
 with 0 when done; with 1 for an invalid configuration, an RPC on another chain, a command that
 failed or a check that failed; and with 2 for a usage error. `swarm run` and `swarm demo` also exit
 with 1 when a buyer did not end as the scenario expects: in `fills`, a buyer whose top price is at
@@ -986,6 +988,7 @@ at once; their problem with a URL never quotes the URL, which may carry an API k
 | Budget per buyer, bonus funds for the provider | swarm | The token balances setup tops up to and reset returns to, in base units; default 10,000 (0.01 USDC) each (section 7.2) |
 | Scenario deadline and arrival spread | swarm | When set, they replace every scenario's own (section 7.3): the seconds from opening to the deadline, and the seconds over which the buyers arrive, 0 making every buyer arrive at once |
 | Redemption interval | swarm | How often a scripted buyer polls its redemption; default 5 seconds (section 7.4) |
+| Swarm lock folder | swarm | The absolute path of the folder that holds the swarm's lock files (sections 7.3 and 12); default `data/` at the repository root, which is gitignored. Setting it, as the swarm's sandbox test does with a temporary folder, keeps a lock left by a process stopped by force out of the repository |
 | Network | gateway, swarm, MCP server | `near:testnet`, the network that offers and payments name. The gateway refuses any other, except `near:sandbox`, the local chain its sandbox test runs on |
 | Pools account | gateway, swarm, MCP server | The pools contract buyers pay; default `pools.<parent>`. A buyer refuses an offer whose `payTo` is not this account (section 6.3) |
 | Commit gas bounds | gateway, swarm | The offer's `minGas` and `maxGas` (section 6.2): `minGas` at most `maxGas`, both at most 300 Tgas. The final check fails a commit that burns more than `minGas` (section 10) |
@@ -1196,11 +1199,12 @@ keys) and the NEP-141, NEP-145, NEP-297, NEP-366 and NEP-413 standards:
   result is unknown (section 7.5), so `quorum_commit` could pay for that pool again while the earlier
   payment can still take seats; the gateway's own hold (section 6.4) and the spend cap still apply.
 - **One swarm at a time for a network and a parent.** The swarm commands that write to the chain
-  take a lock file, `data/swarm-<network>-<parent>.lock` at the repository's root (the network by
-  its chain name, such as `testnet`), holding their process's PID, and remove it when they end. A
-  second one refuses while the file exists. A swarm stopped by force leaves its lock: once its
-  process no longer runs, the file is removed by hand. Swarms in two checkouts, or on two machines,
-  do not see each other's lock.
+  take a lock file, `swarm-<network>-<parent>.lock` (the network by its chain name, such as
+  `testnet`), in the lock folder that configuration sets (section 7.6), `data/` at the repository's
+  root by default. It holds their process's PID, and they remove it when they end, only while it
+  still holds that PID. A second one refuses while the file exists. A swarm stopped by force leaves
+  its lock: once its process no longer runs, the file is removed by hand. Swarms whose lock folders
+  differ, as they do by default in two checkouts or on two machines, do not see each other's lock.
 - **One MCP server per spend file.** A server runs its payments through the cap one at a time within
   its own process, and keeps its holds in memory. Two servers sharing one spend file can each pass
   the cap check before the other has counted its payment, and so overshoot the cap by one payment,
