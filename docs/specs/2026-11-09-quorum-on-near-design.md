@@ -1065,9 +1065,14 @@ pool the contract does not hold ends it at once. Each read after the wait is tri
 seconds apart. It then prints one line per check:
 - **status**: the pool ended as the scenario expects. This is the only check made against the
   scenario: the others follow the status the pool did end in;
-- **buyers**: every buyer `Committed` in a Settled pool, `Refunded` in a Refunded one;
-- **refunds and dust**, for a Refunded pool (invariant 4): the buyers' refunds, from the views, plus
-  the dust are `taken × seat_price + bonus`, and the bonus shares do not exceed the bonus;
+- **buyers**: every buyer `Committed` in a Settled pool, their seats adding up to `taken` (a Settled
+  pool with no buyers fails it), and `Refunded` in a Refunded one;
+- **refunds and dust**, for a Refunded pool (invariant 4), on what the activity feed records as
+  transferred: the `ok` refund records of each buyer the views give as `Refunded` carry
+  `seats × (seat_price + bonus_per_seat)`, the `dust` record carries `bonus − taken ×
+  bonus_per_seat`, and the refunds plus the dust total `taken × seat_price + bonus`; the bonus shares
+  do not exceed the bonus. The feed holds no record of a refund a buyer claimed itself: such a buyer
+  counts in the total at what it was due, and fails the check if it is one of the swarm's buyers;
 - **solvency** (invariant 1), across every pool: the pools contract's token balance, every
   `list_pools` page and every `get_seats` page it sums are read at the height of one final block, so
   that a commit landing between two reads cannot make it fail falsely; a retried read uses a new
@@ -1078,21 +1083,25 @@ seconds apart. It then prints one line per check:
   the baseline are compared, and a buyer with no seats in the pool is not;
 - **commit gas**: every relayed commit of the feed, and every transaction a buyer of `swarm demo`
   learned that the feed lacks and that committed seats in the pool to that buyer, burns at most
-  `minGas` in the token and the pools contract;
+  `minGas` in the token and the pools contract. A commit with no receipt of the token or the pools
+  contract after its delegate has no gas measured: that fails the check for an `ok` commit of the
+  feed or a commit a buyer learned, and is a note for one the feed records as taking no seats (a
+  delegate that failed);
 - **payout gas**: each `ft_transfer` and each callback of the keeper's `settle`, `refund` and dust
-  transactions, a failed transfer included, burns under 5 Tgas, and the feed holds the record that
-  ended the pool.
+  transactions, a failed transfer included, burns under 5 Tgas, the feed holds the record that ended
+  the pool, and the pool's keeper transactions made at least one `ft_transfer` between them (a last
+  refund batch that only passed buyers who had claimed their own refunds may make none).
 
 Once the pool has ended, the commit gas check also fails for every buyer of the swarm (the 20
 scripted buyers and the MCP server's) that holds seats with neither an `ok` commit record nor a
 measured commit, and, in a Refunded pool, the payout gas check for every one of them refunded with
 no `ok` refund record. Each such failure names the buyers, and says that the gateway records no relay
 whose result was unknown and keeps its feed in its data folder. A holder the swarm does not know is
-named in a note, and does not fail the check. A transaction the RPC does not know, one older than its
-history included, is reported at once as unknown to the RPC, failing its gas check; one not yet final
-is waited for once, and is reported as not yet final, failing its gas check, if the RPC's wait ends
-before it is. When the pool has not ended, the buyers, refunds and dust, and balances checks are
-left out, and solvency and both gas checks still run. Gas is shown in Tgas with 2 decimals,
+named in a note, and does not fail the check, in the refunds and dust check too. A transaction the
+RPC does not know, one older than its history included, is reported at once as unknown to the RPC,
+failing its gas check; one not yet final is waited for once, and is reported as not yet final,
+failing its gas check, if the RPC's wait ends before it is. When the pool has not ended, the buyers,
+refunds and dust, and balances checks are left out, and solvency and both gas checks still run. Gas is shown in Tgas with 2 decimals,
 truncated, so that a figure never shows as the limit it is under (4.996 Tgas shows as 4.99). The
 check ends with `pool <id>: <n> checks passed`, or the number that failed and an exit code of 1.
 

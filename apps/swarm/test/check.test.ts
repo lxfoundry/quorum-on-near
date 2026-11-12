@@ -16,7 +16,7 @@ import {
 } from '../src/check.ts';
 import type { SwarmConfig } from '../src/config.ts';
 import { scenario } from '../src/scenarios.ts';
-import { COMMIT_STEP_GAS, FIXTURE_COMMIT_GAS, hashOf, keeperCall, relayedCommit } from './check-outcomes.ts';
+import { COMMIT_STEP_GAS, failedDelegate, FIXTURE_COMMIT_GAS, hashOf, keeperCall, relayedCommit } from './check-outcomes.ts';
 import { eventLog, FakeChain, NOW_MS, PARENT, POOLS, poolView, PROVIDER, testConfig, TOKEN } from './fake-chain.ts';
 
 const RELAYER = `relay.${PARENT}`;
@@ -185,6 +185,12 @@ describe('commitGas', () => {
     const outcome = relayedCommit({ txHash: hashOf('commit'), relayer: RELAYER, buyer: buyer(1), token: TOKEN, pools: POOLS });
 
     expect(commitGas(outcome, buyer(2), [TOKEN, POOLS])).toBeNull();
+  });
+
+  it('is null when no token or pools receipt follows the buyer’s delegate receipt, as for a delegate that failed', () => {
+    const outcome = failedDelegate({ txHash: hashOf('failed delegate'), relayer: RELAYER, buyer: buyer(1) });
+
+    expect(commitGas(outcome, buyer(1), [TOKEN, POOLS])).toBeNull();
   });
 });
 
@@ -536,6 +542,24 @@ describe('checkPool', () => {
       });
     });
 
+    it('fails a settled pool whose buyers’ seats do not add up to the seats it took', async () => {
+      settledFills();
+      chain.seats.get(0)![1]!.seats = 2;
+
+      const report = await run({ poolId: 0 });
+
+      expect(lineOf(report, 'buyers')).toEqual({ ok: false, detail: '2 buyers hold 4 seats, not the 3 the pool took' });
+    });
+
+    it('fails a settled pool with no buyers', async () => {
+      settledFills();
+      chain.seats.set(0, []);
+
+      const report = await run({ poolId: 0 });
+
+      expect(lineOf(report, 'buyers')).toEqual({ ok: false, detail: 'no buyers hold the 3 seats the pool took' });
+    });
+
     it('reads every page of buyers', async () => {
       // 150 buyers of one seat: a bonus share of floor(3072 / 150) = 20 each and a dust of 72.
       const seats: SeatView[] = Array.from({ length: 150 }, (_, i) => ({ buyer: `b${i}.testnet`, seats: 1, state: 'refunded' }));
@@ -546,20 +570,98 @@ describe('checkPool', () => {
       const report = await run({ poolId: 1, scenario: FAILS });
 
       expect(lineOf(report, 'buyers')).toEqual({ ok: false, detail: '1 of 150 buyers not refunded: b120.testnet claimable' });
-      expect(lineOf(report, 'refunds and dust').ok).toBe(true);
     });
   });
 
   describe('refunds and dust (invariant 4)', () => {
+    /** The feed's record of `kind` for `account` in the refundedFails pool. */
+    function recordOf(kind: ActivityRecord['kind'], account: string): ActivityRecord {
+      const record = feed.find((r) => r.kind === kind && r.account === account);
+      if (record === undefined) throw new Error(`the feed has no ${kind} record of ${account}`);
+      return record;
+    }
+
     it('fails when the buyers’ seats do not add up to the seats the pool took', async () => {
-      // 101 seats at a share of 30 leave a dust of 3072 − 3030 = 42.
+      // 101 seats at a share of 30 leave a dust of 3072 − 3030 = 42, but the feed's refunds come to 100 seats.
       refundedFails({ taken: 101 });
 
       const report = await run({ poolId: 1, scenario: FAILS });
 
       expect(lineOf(report, 'refunds and dust')).toEqual({
         ok: false,
-        detail: 'refunds 35000 + dust 42 = 35042, not 101 × 320 + bonus 3072 = 35392',
+        detail:
+          'the dust record carries 72, not bonus 3072 − 101 × 30 = 42; ' +
+          'refunds 35000 + dust 72 = 35072, not 101 × 320 + bonus 3072 = 35392',
+      });
+    });
+
+    it('fails a refund the feed records at another amount than seats × (seat_price + bonus_per_seat)', async () => {
+      refundedFails();
+      recordOf('refund', buyer(2)).amount = 6_999n;
+
+      const report = await run({ poolId: 1, scenario: FAILS });
+
+      expect(lineOf(report, 'refunds and dust')).toEqual({
+        ok: false,
+        detail:
+          `${buyer(2)} was refunded 6999, not 20 × (320 + 30) = 7000; ` +
+          'refunds 34999 + dust 72 = 35071, not 100 × 320 + bonus 3072 = 35072',
+      });
+    });
+
+    it('fails a dust record that does not carry bonus − taken × bonus_per_seat', async () => {
+      refundedFails();
+      recordOf('dust', PROVIDER).amount = 73n;
+
+      const report = await run({ poolId: 1, scenario: FAILS });
+
+      expect(lineOf(report, 'refunds and dust')).toEqual({
+        ok: false,
+        detail:
+          'the dust record carries 73, not bonus 3072 − 100 × 30 = 72; ' +
+          'refunds 35000 + dust 73 = 35073, not 100 × 320 + bonus 3072 = 35072',
+      });
+    });
+
+    it('fails when the feed’s refunds and the dust fall short, as with a buyer still claimable', async () => {
+      refundedFails();
+      chain.seats.get(1)![2]!.state = 'claimable';
+      recordOf('refund', buyer(3)).ok = false;
+
+      const report = await run({ poolId: 1, scenario: FAILS });
+
+      expect(lineOf(report, 'refunds and dust')).toEqual({
+        ok: false,
+        detail: 'refunds 28700 + dust 72 = 28772, not 100 × 320 + bonus 3072 = 35072',
+      });
+    });
+
+    it("fails when one of the swarm's refunded buyers has no refund in the feed, as one that claimed its own refund has none", async () => {
+      refundedFails();
+      feed = feed.filter((record) => !(record.kind === 'refund' && record.account === buyer(3)));
+
+      const report = await run({ poolId: 1, scenario: FAILS });
+
+      expect(lineOf(report, 'refunds and dust')).toEqual({
+        ok: false,
+        detail:
+          `${buyer(3)} was refunded, but the activity feed has no refund of it ` +
+          '(the gateway records only the refunds its keeper sends, not one a buyer claims itself)',
+      });
+    });
+
+    it('names a refunded buyer that is not one of the swarm’s, with no refund in the feed, in a note, counting it at what it was due', async () => {
+      refundedFails({ taken: 101 });
+      chain.seats.get(1)!.push({ buyer: 'stranger.testnet', seats: 1, state: 'refunded' });
+      recordOf('dust', PROVIDER).amount = 42n;
+
+      const report = await run({ poolId: 1, scenario: FAILS });
+
+      expect(lineOf(report, 'refunds and dust')).toEqual({
+        ok: true,
+        detail:
+          'refunds 35350 + dust 42 = 101 × 320 + bonus 3072 = 35392; not checked: stranger.testnet was refunded with no refund ' +
+          "in the activity feed, and is not one of the swarm's buyers",
       });
     });
 
@@ -576,6 +678,7 @@ describe('checkPool', () => {
 
     it('accepts a dust of 0, when the bonus shares come to the whole bonus', async () => {
       refundedFails({ bonus: '3000' });
+      recordOf('dust', PROVIDER).amount = 0n;
 
       const report = await run({ poolId: 1, scenario: FAILS });
 
@@ -785,6 +888,36 @@ describe('checkPool', () => {
       });
     });
 
+    it('fails an ok commit of the feed whose delegate ran no token or pools receipt, its gas unmeasured', async () => {
+      settledFills();
+      const txHash = hashOf('an ok commit with no token receipt');
+      feed.push({ at: NOW_MS, poolId: 0, kind: 'commit', account: buyer(3), seats: 1, amount: 180n, txHash, ok: true });
+      chain.addOutcome(RELAYER, failedDelegate({ txHash, relayer: RELAYER, buyer: buyer(3) }));
+
+      const report = await run({ poolId: 0 });
+
+      expect(lineOf(report, 'commit gas')).toEqual({
+        ok: false,
+        detail: `3 commits, limit 50.00 Tgas: ${txHash} ran no token or pools receipt after the delegate of ${buyer(3)}`,
+      });
+    });
+
+    it('notes, without failing, a commit the feed records as taking no seats, whose delegate failed', async () => {
+      settledFills();
+      const txHash = hashOf('a failed delegate');
+      feed.push({ at: NOW_MS, poolId: 0, kind: 'commit', account: buyer(3), seats: 0, amount: 0n, txHash, ok: false });
+      chain.addOutcome(RELAYER, failedDelegate({ txHash, relayer: RELAYER, buyer: buyer(3) }));
+
+      const report = await run({ poolId: 0 });
+
+      expect(lineOf(report, 'commit gas')).toEqual({
+        ok: true,
+        detail:
+          '3 commits, at most 5.70 Tgas each (limit 50.00 Tgas); ' +
+          `not measured: ${txHash} took no seats, and ran no token or pools receipt after the delegate of ${buyer(3)}`,
+      });
+    });
+
     it('fails a commit whose outcome has no receipt on its buyer', async () => {
       settledFills();
       const txHash = hashOf('a commit of another buyer');
@@ -902,6 +1035,30 @@ describe('checkPool', () => {
       expect(lineOf(report, 'payout gas')).toEqual({
         ok: true,
         detail: '2 transactions, 2 ft_transfers at most 4.99 Tgas, 2 callbacks at most 1.49 Tgas (each under 5.00 Tgas)',
+      });
+    });
+
+    it('fails an ended pool whose keeper transactions made no ft_transfer', async () => {
+      settledFills();
+      feed = feed.filter((record) => record.kind !== 'settle');
+      keeperTx(0, [{ kind: 'settle', account: PROVIDER, seats: 3, amount: 2268n }], []);
+
+      const report = await run({ poolId: 0 });
+
+      expect(lineOf(report, 'payout gas')).toEqual({ ok: false, detail: '1 transaction: none of the keeper transactions made an ft_transfer' });
+    });
+
+    it('takes the ft_transfers of earlier keeper transactions when the one that ended the pool made none', async () => {
+      // A last batch that only passed buyers who had claimed, with a dust of 0, transfers nothing.
+      refundedFails({ bonus: '3000' });
+      feed = feed.filter((record) => record.kind !== 'dust');
+      keeperTx(1, [{ kind: 'dust', account: PROVIDER, seats: 0, amount: 0n }], []);
+
+      const report = await run({ poolId: 1, scenario: FAILS });
+
+      expect(lineOf(report, 'payout gas')).toEqual({
+        ok: true,
+        detail: '2 transactions, 7 ft_transfers at most 1.72 Tgas, 7 callbacks at most 1.49 Tgas (each under 5.00 Tgas)',
       });
     });
 

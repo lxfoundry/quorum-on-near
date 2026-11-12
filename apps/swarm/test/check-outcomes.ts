@@ -85,6 +85,18 @@ export function relayedCommit(opts: {
 }
 
 /**
+ * A relayed commit whose delegate failed before its call reached the token: the relayer's
+ * transaction, the buyer's delegate receipt, failed, and a gas refund to the relayer.
+ */
+export function failedDelegate(opts: { txHash: string; relayer: string; buyer: string }): TxOutcome {
+  return outcomeOf(opts.txHash, [
+    { executor: opts.relayer, gas: COMMIT_STEP_GAS.transaction },
+    { executor: opts.buyer, gas: COMMIT_STEP_GAS.delegate, failed: true },
+    { executor: opts.relayer, gas: COMMIT_STEP_GAS.gasRefund },
+  ]);
+}
+
+/**
  * A keeper call the relayer signed (`settle`, or a `refund` batch, whose last payout may be the
  * dust): the relayer's transaction, the call at the pools contract, then for each payout the
  * token's `ft_transfer`, the pools contract's callback and a gas refund to the relayer, then the

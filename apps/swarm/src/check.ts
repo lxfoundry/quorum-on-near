@@ -97,15 +97,15 @@ export async function snapshot(
  * The gas a relayed commit burnt in the commit itself: the receipts after the buyer's delegate
  * receipt that ran on `contracts` (the token's `ft_transfer_call` and `ft_resolve_transfer`, the
  * pools contract's `ft_on_transfer`). The relayer's transaction, the delegate receipt and the gas
- * refunds are left out. Null when no receipt ran on `buyer`.
+ * refunds are left out. Null, the gas unmeasured, when no receipt ran on `buyer`, or none ran on
+ * `contracts` after it, as for a delegate that failed before its call reached the token.
  */
 export function commitGas(outcome: TxOutcome, buyer: string, contracts: readonly string[]): bigint | null {
   const delegate = outcome.receipts.findIndex((receipt) => receipt.executorId === buyer);
   if (delegate === -1) return null;
-  return outcome.receipts
-    .slice(delegate + 1)
-    .filter((receipt) => contracts.includes(receipt.executorId))
-    .reduce((sum, receipt) => sum + receipt.gasBurnt, 0n);
+  const steps = outcome.receipts.slice(delegate + 1).filter((receipt) => contracts.includes(receipt.executorId));
+  if (steps.length === 0) return null;
+  return steps.reduce((sum, receipt) => sum + receipt.gasBurnt, 0n);
 }
 
 /**
@@ -130,9 +130,10 @@ export function payoutGas(outcome: TxOutcome, poolsContract: string, token: stri
  * read at FINAL, so the balances read after it include every transfer it made. Then, printing each
  * check as it goes:
  * - status: the scenario's expected end;
- * - buyers: each buyer `committed` in a Settled pool, `refunded` in a Refunded one;
- * - refunds and dust, for a Refunded pool (invariant 4): every buyer's refund plus the dust equals
- *   `taken × seat_price + bonus`, from the views;
+ * - buyers: each buyer `committed` in a Settled pool, their seats adding up to `taken` (no buyers
+ *   fail it), and each `refunded` in a Refunded one;
+ * - refunds and dust, for a Refunded pool (invariant 4), on what the activity feed records as
+ *   transferred (refundsLine): each refunded buyer's refund, the dust, and their total;
  * - solvency (invariant 1): the pools contract's token balance covers what every pool still owes,
  *   all read at the height of one final block;
  * - with a baseline, the change in the balance of the pool's seller, the pools contract and each
@@ -140,13 +141,16 @@ export function payoutGas(outcome: TxOutcome, poolsContract: string, token: stri
  *   and each buyer `−seats × price`; once Refunded, the seller `−(bonus − dust)` and each buyer
  *   `+seats × bonus_per_seat`; the pools contract 0 either way;
  * - commit gas: each relayed commit's commitGas at most QUORUM_COMMIT_MIN_GAS, the commits being
- *   the feed's and those of `request.extraCommits` that took seats; once the pool has ended, every
- *   one of the swarm's buyers (buyerIds) holding seats must have an ok commit record or such an
- *   extra commit, and a holder the swarm does not know is named in a note instead;
+ *   the feed's and those of `request.extraCommits` that took seats; a commit whose gas is unmeasured
+ *   fails it if it is an ok record of the feed or an extra commit, and is named in a note if the feed
+ *   records it as taking no seats; once the pool has ended, every one of the swarm's buyers
+ *   (buyerIds) holding seats must have an ok commit record or such an extra commit, and a holder the
+ *   swarm does not know is named in a note instead;
  * - payout gas: each `ft_transfer` and callback of the feed's `settle`, `refund` and `dust`
- *   transactions (payoutGas) under 5 Tgas; once the pool is Refunded, every one of the swarm's
- *   buyers whose seats are `refunded` must have an ok refund record, a buyer the swarm does not know
- *   being named in a note instead.
+ *   transactions (payoutGas) under 5 Tgas, and, once the pool has ended, at least one `ft_transfer`
+ *   across them; once the pool is Refunded, every one of the swarm's buyers whose seats are
+ *   `refunded` must have an ok refund record, a buyer the swarm does not know being named in a note
+ *   instead.
  * The buyer, invariant and balance checks need the pool ended and are left out if it has not.
  * Transactions are looked up with the relayer as their signer.
  *
@@ -181,9 +185,10 @@ export async function checkPool(
 
   const end = endStatus(pool.status);
   const seats = end === null ? [] : await retryRead(deps, 'the buyers', () => allSeats(chain, pool.id));
+  const known = new Set(buyerIds(config));
   if (end !== null) {
-    add(buyersLine(end, seats));
-    if (end === 'refunded') add(refundsLine(pool, seats));
+    add(buyersLine(pool, end, seats));
+    if (end === 'refunded') add(refundsLine(pool, seats, records, known));
   }
   add(await retryRead(deps, 'the solvency figures', () => solvencyLine(chain, config.poolsContract)));
   if (end !== null && request.baseline !== undefined) {
@@ -191,7 +196,7 @@ export async function checkPool(
     for (const line of await balanceLines(balance, config.poolsContract, pool, end, seats, request.baseline)) add(line);
   }
   const learned = await learnedCommits(deps, config, pool.id, request.extraCommits ?? [], outcomes);
-  const holders = end === null ? null : { seats, known: new Set(buyerIds(config)) };
+  const holders = end === null ? null : { seats, known };
   add(commitGasLine(config, records, learned, outcomes, holders));
   add(payoutGasLine(config, end, records, outcomes, holders));
 
@@ -375,34 +380,94 @@ function statusLine(pool: PoolView, scenario: CheckRequest['scenario'], waitedMs
   return { name: 'status', ok, detail: `${seen}; ${scenario.name} ends ${scenario.expectedEnd}` };
 }
 
-function buyersLine(end: EndStatus, seats: readonly SeatView[]): CheckLine {
+/**
+ * Every buyer `committed` in a Settled pool, and `refunded` in a Refunded one. A Settled pool's buyers
+ * must also hold, between them, the seats it took: none, or fewer or more, fails the line.
+ */
+function buyersLine(pool: PoolView, end: EndStatus, seats: readonly SeatView[]): CheckLine {
   const state = end === 'settled' ? 'committed' : 'refunded';
+  const problems: string[] = [];
   const others = seats.filter((seat) => seat.state !== state);
+  if (others.length > 0) {
+    const listed = others.map((seat) => `${seat.buyer} ${seat.state}`).join(', ');
+    problems.push(`${others.length} of ${count(seats.length, 'buyer')} not ${state}: ${listed}`);
+  }
+  if (end === 'settled') {
+    const held = seats.reduce((sum, seat) => sum + seat.seats, 0);
+    if (seats.length === 0) problems.push(`no buyers hold the ${count(pool.taken, 'seat')} the pool took`);
+    else if (held !== pool.taken) problems.push(`${count(seats.length, 'buyer')} hold ${count(held, 'seat')}, not the ${pool.taken} the pool took`);
+  }
+  if (problems.length > 0) return { name: 'buyers', ok: false, detail: problems.join('; ') };
   if (seats.length === 0) return { name: 'buyers', ok: true, detail: 'no buyers' };
-  if (others.length === 0) return { name: 'buyers', ok: true, detail: `${count(seats.length, 'buyer')}, all ${state}` };
-  const listed = others.map((seat) => `${seat.buyer} ${seat.state}`).join(', ');
-  return { name: 'buyers', ok: false, detail: `${others.length} of ${count(seats.length, 'buyer')} not ${state}: ${listed}` };
+  return { name: 'buyers', ok: true, detail: `${count(seats.length, 'buyer')}, all ${state}` };
 }
 
-/** Invariant 4: every buyer's refund, `seats × (seat_price + bonus_per_seat)`, plus the dust is what the pool took in. */
-function refundsLine(pool: PoolView, seats: readonly SeatView[]): CheckLine {
+/**
+ * Invariant 4 for a Refunded pool, on what was transferred as the activity feed records it: the `ok`
+ * refund records of each buyer whose seats the views give as `refunded` carry `seats × (seat_price +
+ * bonus_per_seat)`, the `dust` record carries `bonus − taken × bonus_per_seat`, and the feed's
+ * refunds plus the dust total `taken × seat_price + bonus`. The feed has no record of a refund a buyer
+ * claimed itself: such a buyer counts in the total at what it was due, and fails the line if it is one
+ * of the swarm's buyers (`known`), or is named in a note otherwise. The bonus shares must not come to
+ * more than the bonus.
+ */
+function refundsLine(
+  pool: PoolView,
+  seats: readonly SeatView[],
+  records: readonly ActivityRecord[],
+  known: ReadonlySet<string>,
+): CheckLine {
+  const name = 'refunds and dust';
   const { price, bonus, share } = amounts(pool);
   const shared = priceOf(pool.taken, share);
   if (shared > bonus) {
-    return {
-      name: 'refunds and dust',
-      ok: false,
-      detail: `a bonus share of ${share} for each of ${pool.taken} seats comes to more than the bonus ${bonus}`,
-    };
+    return { name, ok: false, detail: `a bonus share of ${share} for each of ${pool.taken} seats comes to more than the bonus ${bonus}` };
   }
-  const refunds = seats.reduce((sum, seat) => sum + priceOf(seat.seats, price + share), 0n);
-  const dust = bonus - shared;
+  const paid = new Map<string, bigint>();
+  for (const record of records) {
+    if (record.kind === 'refund' && record.ok) paid.set(record.account, (paid.get(record.account) ?? 0n) + record.amount);
+  }
+  let refunds = [...paid.values()].reduce((sum, amount) => sum + amount, 0n);
+  const problems: string[] = [];
+  const unrecorded: SeatView[] = [];
+  for (const seat of seats.filter((row) => row.state === 'refunded')) {
+    const due = priceOf(seat.seats, price + share);
+    const got = paid.get(seat.buyer);
+    if (got === undefined) {
+      unrecorded.push(seat);
+      refunds += due;
+    } else if (got !== due) {
+      problems.push(`${seat.buyer} was refunded ${got}, not ${seat.seats} × (${price} + ${share}) = ${due}`);
+    }
+  }
+  const ids = (rows: readonly SeatView[]): string => rows.map((row) => row.buyer).join(', ');
+  const ours = unrecorded.filter((seat) => known.has(seat.buyer));
+  const strangers = unrecorded.filter((seat) => !known.has(seat.buyer));
+  if (ours.length > 0) {
+    problems.push(
+      `${ids(ours)} ${agree(ours, 'was', 'were')} refunded, but the activity feed has no refund of ${agree(ours, 'it', 'theirs')} ` +
+        '(the gateway records only the refunds its keeper sends, not one a buyer claims itself)',
+    );
+  }
+  const dustRecords = records.filter((record) => record.kind === 'dust' && record.ok);
+  const dust = dustRecords.reduce((sum, record) => sum + record.amount, 0n);
+  const dueDust = bonus - shared;
+  if (dustRecords.length === 0) problems.push('the activity feed has no dust record');
+  else if (dust !== dueDust) problems.push(`the dust record carries ${dust}, not bonus ${bonus} − ${pool.taken} × ${share} = ${dueDust}`);
   const takenIn = priceOf(pool.taken, price) + bonus;
-  const ok = refunds + dust === takenIn;
-  const detail = ok
-    ? `refunds ${refunds} + dust ${dust} = ${pool.taken} × ${price} + bonus ${bonus} = ${takenIn}`
-    : `refunds ${refunds} + dust ${dust} = ${refunds + dust}, not ${pool.taken} × ${price} + bonus ${bonus} = ${takenIn}`;
-  return { name: 'refunds and dust', ok, detail };
+  if (refunds + dust !== takenIn) {
+    problems.push(`refunds ${refunds} + dust ${dust} = ${refunds + dust}, not ${pool.taken} × ${price} + bonus ${bonus} = ${takenIn}`);
+  }
+  const notes =
+    strangers.length === 0
+      ? []
+      : [
+          `not checked: ${ids(strangers)} ${agree(strangers, 'was', 'were')} refunded with no refund in the activity feed, ` +
+            `and ${agree(strangers, 'is', 'are')} not one of the swarm's buyers`,
+        ];
+  const ok = problems.length === 0;
+  const figures = ok ? `refunds ${refunds} + dust ${dust} = ${pool.taken} × ${price} + bonus ${bonus} = ${takenIn}` : problems.join('; ');
+  return { name, ok, detail: [figures, ...notes].join('; ') };
 }
 
 /**
@@ -492,7 +557,9 @@ async function balanceLines(
 
 /**
  * The commit gas check: the gas of the feed's commits and of the `learned` ones, and, once the pool
- * has ended (`holders`), whether every holder among the swarm's buyers has a commit measured.
+ * has ended (`holders`), whether every holder among the swarm's buyers has a commit measured. A
+ * commit whose gas is unmeasured (commitGas is null) fails it, unless the feed records it as taking
+ * no seats: that one is named in a note.
  */
 function commitGasLine(
   config: Pick<SwarmConfig, 'poolsContract' | 'token' | 'commitMinGas'>,
@@ -502,7 +569,7 @@ function commitGasLine(
   holders: Holders | null,
 ): CheckLine {
   const fed = records.filter((record) => record.kind === 'commit');
-  const commits = uniqueByHash<CommitTx>([...fed, ...learned]);
+  const commits = uniqueByHash<CommitTx & { ok?: boolean }>([...fed, ...learned]);
   const problems: string[] = [];
   const notes: string[] = [];
   if (holders !== null) {
@@ -522,7 +589,8 @@ function commitGasLine(
     }
   }
   let most = 0n;
-  for (const { txHash, account } of commits) {
+  for (const commit of commits) {
+    const { txHash, account } = commit;
     const outcome = outcomes.get(txHash) ?? 'unknown';
     if (typeof outcome === 'string') {
       problems.push(missing(txHash, outcome));
@@ -530,7 +598,11 @@ function commitGasLine(
     }
     const gas = commitGas(outcome, account, [config.token, config.poolsContract]);
     if (gas === null) {
-      problems.push(`${txHash} ran no receipt on ${account}`);
+      const ran = outcome.receipts.some((receipt) => receipt.executorId === account);
+      const why = ran ? `ran no token or pools receipt after the delegate of ${account}` : `ran no receipt on ${account}`;
+      // A commit the feed records as taking no seats is a delegate that failed: it has no gas to measure.
+      if ('ok' in commit && !commit.ok) notes.push(`not measured: ${txHash} took no seats, and ${why}`);
+      else problems.push(`${txHash} ${why}`);
       continue;
     }
     if (gas > most) most = gas;
@@ -544,8 +616,9 @@ function commitGasLine(
 }
 
 /**
- * The payout gas check: the gas of each payout of the feed's keeper transactions, and, once the pool
- * is Refunded (`holders`), whether every refunded buyer among the swarm's has a refund recorded.
+ * The payout gas check: the gas of each payout of the feed's keeper transactions; once the pool has
+ * ended, that they made at least one `ft_transfer`; and, once the pool is Refunded (`holders`),
+ * whether every refunded buyer among the swarm's has a refund recorded.
  */
 function payoutGasLine(
   config: Pick<SwarmConfig, 'poolsContract' | 'token'>,
@@ -594,6 +667,9 @@ function payoutGasLine(
       }
     }
   }
+  // A batch that only passed buyers who had claimed may transfer nothing, so this counts every keeper
+  // transaction of the pool, not only the one that ended it.
+  if (end !== null && calls.length > 0 && counted.transfers === 0) problems.push('none of the keeper transactions made an ft_transfer');
   const transactions = calls.length === 0 ? 'no keeper transactions' : count(calls.length, 'transaction');
   if (problems.length > 0) return { name: 'payout gas', ok: false, detail: [`${transactions}: ${problems.join('; ')}`, ...notes].join('; ') };
   const detail =
