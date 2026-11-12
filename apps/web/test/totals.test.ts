@@ -3,6 +3,7 @@ import {
   PageDataError,
   buyerRows,
   countdown,
+  countdownText,
   foreignPoolNotice,
   formatAmount,
   formatUnits,
@@ -827,5 +828,23 @@ describe('countdown', () => {
   it('shows 0:00 at and after the deadline', () => {
     expect(countdown(NOW, NOW)).toBe('0:00');
     expect(countdown(NOW - 5_000, NOW)).toBe('0:00');
+  });
+});
+
+describe('countdownText', () => {
+  const NOW = 1_800_000_000_000;
+
+  it('counts down while the pool is open', () => {
+    expect(countdownText('open', NOW + 600_000, NOW)).toBe('10:00');
+    expect(countdownText('open', NOW + 3_723_000, NOW)).toBe('1:02:03');
+  });
+
+  it('shows 0:00 for an open pool whose deadline has passed on this clock, since only block time decides', () => {
+    expect(countdownText('open', NOW - 5_000, NOW)).toBe('0:00');
+  });
+
+  it.each(['filled', 'settled', 'expired', 'refunded'] as const)('shows closed for a pool that is %s, whatever its deadline', (status) => {
+    expect(countdownText(status, NOW + 600_000, NOW)).toBe('closed');
+    expect(countdownText(status, NOW - 600_000, NOW)).toBe('closed');
   });
 });

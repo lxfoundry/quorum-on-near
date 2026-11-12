@@ -701,3 +701,16 @@ export function countdown(deadlineMs, nowMs) {
   const seconds = String(total % 60).padStart(2, '0');
   return hours > 0 ? `${hours}:${String(minutes).padStart(2, '0')}:${seconds}` : `${minutes}:${seconds}`;
 }
+
+/**
+ * What the pool card's countdown shows: the time left while the pool is Open, and "closed" in every
+ * other status, whatever the deadline says. For display only, like `countdown`.
+ *
+ * @param {PoolStatus} status
+ * @param {number} deadlineMs
+ * @param {number} nowMs
+ * @returns {string}
+ */
+export function countdownText(status, deadlineMs, nowMs) {
+  return status === 'open' ? countdown(deadlineMs, nowMs) : 'closed';
+}

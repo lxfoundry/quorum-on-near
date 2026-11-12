@@ -8,7 +8,7 @@
  */
 import {
   buyerRows,
-  countdown,
+  countdownText,
   formatAmount,
   parseActivity,
   parseBalance,
@@ -240,7 +240,7 @@ function renderPool(pool, token) {
 
 function renderCountdown() {
   if (shown === null) return;
-  ui.poolCountdown.textContent = shown.status === 'open' ? countdown(shown.deadline_ms, Date.now()) : 'closed';
+  ui.poolCountdown.textContent = countdownText(shown.status, shown.deadline_ms, Date.now());
 }
 
 /**
