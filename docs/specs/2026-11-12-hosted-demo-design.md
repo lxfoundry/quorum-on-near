@@ -199,7 +199,8 @@ status line, which keeps showing when the page last refreshed. With `demo: false
 without the endpoint, the page shows neither, and is as the design spec's section 8 describes.
 
 - **Every refresh** (2 seconds) also reads `GET /demo`. The buttons are disabled while a run is in
-  progress, when today's cap is reached, and when `GET /demo` cannot be read.
+  progress, when today's cap is reached, when `GET /demo` cannot be read, and while the page's own
+  request is on its way, so a double click sends one request.
 - **A click** first removes `?pool=` from the page's URL, so that the page follows the provider's
   newest pool (design spec, section 8). It then sends the `POST` with the header `X-Quorum-Demo: 1`.
 - **The demo line** shows the first of these that applies:
