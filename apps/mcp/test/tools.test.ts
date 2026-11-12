@@ -11,7 +11,7 @@ import {
   type OfferAnswer,
   type RedeemAnswer,
 } from '@quorum-on-near/buyer';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { quorumCommit, quorumOffer, quorumPools, quorumStatus } from '../src/tools.ts';
 import {
   BUYER,
@@ -432,6 +432,39 @@ describe('quorum_commit', () => {
       });
       height = 245_000_241n;
       expect(await quorumOffer(deps, { pool: 7, seats: 2 })).toMatchObject({ ok: true, output: { payable: true } });
+    });
+
+    it("lifts only the hold quorum_offer checked: a newer hold a commit set during its height read is kept", async () => {
+      const { deps, calls } = setup({ pay: signed({ kind: 'result_unknown', txHash: TX_HASH }) });
+      await quorumCommit(deps, { pool: 7, seats: 2 });
+      expect(deps.commits.heldUntil(7)).toBe(245_000_240n);
+      // The next payment is signed once the first is settled, so it holds the pool until a later height.
+      const later = { ...SIGNED, nonce: 1_002n, finalHeight: 245_000_241n, maxBlockHeight: 245_000_361n };
+      deps.buyer.pay = async (offer, request) => {
+        calls.pay.push([offer, request]);
+        return { kind: 'result_unknown', txHash: TX_HASH, signed: later };
+      };
+      // quorum_offer's read of the final height is slow; quorum_commit's is not.
+      let answerOffer!: (height: bigint) => void;
+      const slowRead = new Promise<bigint>((resolve) => {
+        answerOffer = resolve;
+      });
+      let reads = 0;
+      deps.buyer.finalHeight = async () => {
+        reads += 1;
+        return reads === 1 ? slowRead : 245_000_241n;
+      };
+
+      const offer = quorumOffer(deps, { pool: 7, seats: 2 });
+      await vi.waitFor(() => expect(reads).toBe(1));
+      expect(await quorumCommit(deps, { pool: 7, seats: 2 })).toMatchObject({ ok: false, error: 'result_unknown' });
+      expect(deps.commits.heldUntil(7)).toBe(245_000_381n);
+      answerOffer(245_000_241n);
+      await offer;
+
+      expect(deps.commits.heldUntil(7)).toBe(245_000_381n);
+      expect(await quorumCommit(deps, { pool: 7, seats: 2 })).toMatchObject({ ok: false, error: 'payment_unsettled' });
+      expect(calls.pay).toHaveLength(2);
     });
 
     it('fails, signing nothing, when the final height cannot be read to tell whether it is settled', async () => {

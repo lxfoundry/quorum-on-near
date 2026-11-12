@@ -442,15 +442,16 @@ function holdUnsettled(deps: ToolDeps, pool: number, amount: bigint, signed: Sig
 
 /**
  * The wait before the last payment to `pool` whose result is unknown is settled, or null when there
- * is none or a final block above its height has been seen (the hold is then dropped). Rejects with the
- * chain's error when the final height cannot be read.
+ * is none or a final block above its height has been seen (the hold it checked is then dropped, and
+ * only that one: quorum_offer runs outside the commit queue, and a commit may set a newer hold while
+ * it reads the final height). Rejects with the chain's error when the final height cannot be read.
  */
 async function unsettledWait(deps: ToolDeps, pool: number): Promise<Unsettled | null> {
   const untilHeight = deps.commits.heldUntil(pool);
   if (untilHeight === undefined) return null;
   const height = await deps.buyer.finalHeight();
   if (height > untilHeight) {
-    deps.commits.release(pool);
+    deps.commits.release(pool, untilHeight);
     return null;
   }
   return { untilHeight, seconds: secondsAbove(deps, untilHeight, height) };

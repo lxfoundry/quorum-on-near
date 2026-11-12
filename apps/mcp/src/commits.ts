@@ -21,9 +21,13 @@ export class Commits {
     return this.#unsettled.get(pool);
   }
 
-  /** Lifts the hold on `pool`, once a final block above its height has been seen. */
-  release(pool: number): void {
-    this.#unsettled.delete(pool);
+  /**
+   * Lifts the hold on `pool` at `untilHeight`, once a final block above that height has been seen.
+   * A hold set since at another height, by a commit that ran while the caller read the final height
+   * (quorum_offer runs outside the queue), is kept.
+   */
+  release(pool: number, untilHeight: bigint): void {
+    if (this.#unsettled.get(pool) === untilHeight) this.#unsettled.delete(pool);
   }
 
   /** Runs `commit` once every commit queued before it has answered or thrown. */
