@@ -386,3 +386,57 @@ describe('the status line', () => {
     expect(writes.filter((write) => write.startsWith('announcement.'))).toEqual([]);
   });
 });
+
+describe('a request that fails', () => {
+  /** The request that `fail` makes fail, and how: before the answer, or while reading its body. */
+  type Failure = { when: (url: string, method: string | undefined) => boolean; at: 'fetch' | 'body'; error: Error };
+
+  function failing(world: World, { when, at, error }: Failure): FakeFetch {
+    const base = worldFetch(world);
+    return async (url, init) => {
+      const method = url === '/rpc' ? (JSON.parse(init?.body ?? '{}') as { params: { method_name: string } }).params.method_name : undefined;
+      if (!when(url, method)) return base(url, init);
+      if (at === 'fetch') throw error;
+      return { ok: true, status: 200, json: () => Promise.reject(error) };
+    };
+  }
+
+  const timeout = () => new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+  const abort = () => new DOMException('This operation was aborted', 'AbortError');
+
+  it.each([
+    ['a view the RPC does not answer in time', (_url: string, method?: string) => method === 'list_pools', 'the list_pools view timed out after 10 seconds'],
+    ['the token metadata', (_url: string, method?: string) => method === 'ft_metadata', 'the ft_metadata view timed out after 10 seconds'],
+    ['the configuration', (url: string) => url === '/config.json', 'the request for /config.json timed out after 10 seconds'],
+    ['the activity feed', (url: string) => url.startsWith('/activity'), 'the request for /activity?pool=3 timed out after 10 seconds'],
+  ])('names %s when it times out', async (_what, when, reason) => {
+    for (const make of [timeout, abort]) {
+      for (const at of ['fetch', 'body'] as const) {
+        // The configuration and the feed are read as JSON by the same path whether the failure is in the request or the body.
+        const page = await openPage(failing(newWorld(), { when, at, error: make() }));
+        await page.refresh();
+        expect(el('status').textContent, `${make.name} ${at}`).toBe(`Could not refresh (${reason}). Retrying every 2 seconds.`);
+      }
+    }
+  });
+
+  it('reports an RPC answer that is not JSON as one, with its status', async () => {
+    const world = newWorld();
+    const base = worldFetch(world);
+    const page = await openPage(async (url, init) =>
+      url === '/rpc' ? { ok: true, status: 200, json: () => Promise.reject(new SyntaxError('Unexpected token < in JSON')) } : base(url, init),
+    );
+    expect(el('status').textContent).toBe('Could not refresh (the RPC answered 200 with no JSON). Retrying every 2 seconds.');
+    await page.refresh();
+    expect(el('status').classList.contains('failed')).toBe(true);
+  });
+
+  it('reports any other failure to read an RPC answer as it is, not as a missing JSON', async () => {
+    const world = newWorld();
+    const base = worldFetch(world);
+    await openPage(async (url, init) =>
+      url === '/rpc' ? { ok: true, status: 200, json: () => Promise.reject(new TypeError('network error')) } : base(url, init),
+    );
+    expect(el('status').textContent).toBe('Could not refresh (network error). Retrying every 2 seconds.');
+  });
+});

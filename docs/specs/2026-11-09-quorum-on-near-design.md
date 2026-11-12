@@ -1068,8 +1068,9 @@ answer `404`. Every value it reads is written as text or as an attribute, never 
   is checked for its shape, and a malformed one fails that refresh with a status line naming what
   was wrong; the configuration's explorer link prefix must be an http or https URL that ends in `/`
   or `=` and whose links keep its origin (a hash appended to `https://explorer.example` would become
-  part of its host). Each request times out after 10 seconds, so that a hung request cannot stop
-  the refreshes, which never overlap. A failed refresh shows "Could not refresh" with its reason,
+  part of its host). Each request times out after 10 seconds, and the status line names the
+  request or view that timed out, so that a hung request cannot stop the refreshes, which never
+  overlap. A failed refresh shows "Could not refresh" with its reason,
   keeps the last data on screen, and is tried again at the next 2-second tick. The status line is
   not a live region, since it is rewritten at every refresh: a screen reader is told, through a
   visually hidden live region, only of a failed refresh and of the recovery from one.

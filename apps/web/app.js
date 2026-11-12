@@ -131,21 +131,44 @@ let failing = false;
 let rpcId = 0;
 
 /**
+ * Runs a request, and names it if it is cut short by its timeout. A request aborted by its signal
+ * fails with a `TimeoutError` (or an `AbortError`), in the request or while its body is read, and
+ * that is reported for the request that timed out, not as an answer that was bad.
+ *
+ * @template T
+ * @param {string} what names the request in the failure
+ * @param {() => Promise<T>} send
+ * @returns {Promise<T>}
+ */
+async function timed(what, send) {
+  try {
+    return await send();
+  } catch (error) {
+    if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')) {
+      throw new Error(`${what} timed out after ${REQUEST_TIMEOUT_MS / 1000} seconds`);
+    }
+    throw error;
+  }
+}
+
+/**
  * GETs a path of the gateway and returns its JSON. Throws unless the answer is a 2xx.
  *
  * @param {string} path
  * @returns {Promise<unknown>}
  */
-async function getJson(path) {
-  const response = await fetch(path, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
-  if (!response.ok) throw new Error(`${path} answered ${response.status}`);
-  return response.json();
+function getJson(path) {
+  return timed(`the request for ${path}`, async () => {
+    const response = await fetch(path, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+    if (!response.ok) throw new Error(`${path} answered ${response.status}`);
+    return response.json();
+  });
 }
 
 /**
  * Calls a view through the configured RPC at `block`, and returns what it returned and the hash of
  * the block it was read at. The answer's JSON is read whatever its HTTP status, so that an error the
- * RPC explains is reported by name.
+ * RPC explains is reported by name. A view that times out is reported by its method.
  *
  * @param {PageConfig} config
  * @param {string} accountId
@@ -154,22 +177,26 @@ async function getJson(path) {
  * @param {BlockRef} block
  * @returns {Promise<ViewAnswer>}
  */
-async function view(config, accountId, methodName, args, block) {
+function view(config, accountId, methodName, args, block) {
   rpcId += 1;
-  const response = await fetch(config.rpcUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(viewRequest(rpcId, accountId, methodName, args, block)),
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  const id = rpcId;
+  return timed(`the ${methodName} view`, async () => {
+    const response = await fetch(config.rpcUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(viewRequest(id, accountId, methodName, args, block)),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    /** @type {unknown} */
+    let body;
+    try {
+      body = await response.json();
+    } catch (error) {
+      if (error instanceof SyntaxError) throw new Error(`the RPC answered ${response.status} with no JSON`);
+      throw error;
+    }
+    return viewResult(body);
   });
-  /** @type {unknown} */
-  let body;
-  try {
-    body = await response.json();
-  } catch {
-    throw new Error(`the RPC answered ${response.status} with no JSON`);
-  }
-  return viewResult(body);
 }
 
 /** Reads what the page needs once: the gateway's configuration and the token's decimals. */
