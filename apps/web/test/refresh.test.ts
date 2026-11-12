@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { isAllowedViewCall } from '../../gateway/src/view-call.ts';
 
 /**
  * Runs app.js against a hand-written stand-in for the few parts of the DOM, `fetch` and the timers
@@ -13,7 +14,12 @@ const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const POOLS = 'pools.quorum.testnet';
 const TOKEN = '3e2210e1184b45b64c8a434c0a7e7b23cc04ea7eb7a6c3c32520d03d4afcb8af';
 const PROVIDER = 'provider.quorum.testnet';
+/** The block the pool list, the token and any other read at final finality is answered from. */
 const BLOCK_HASH = 'GZ3Ya1qXp7kN8mWcT4vB9rHfJ2sLdE6uQyKxM5nPaRtV';
+/** The block `get_pool` is answered from: not the list's, since the final block moves between two reads. */
+const POOL_BLOCK_HASH = 'H7Wq4rN2xY9bKfTe5CmZdPa8vLsJ3uQgR6yXnMhVtB1c';
+/** Another seller's account. */
+const OTHER_SELLER = 'other-seller.testnet';
 const COMMIT_1 = 'Ev64qpcqroBNeET1xax4ei5vDc1sJTyNSZRpj5GdYYTy';
 const COMMIT_2 = 'FmHDvha1UrjFE2KZN9NKRTrygpw2iXNsQquSFVHcfGyM';
 const SETTLE = '9BAD9UzcJxWNppT8pPBVfpzbu4P9yqgu1nCdnTCYkBjY';
@@ -120,6 +126,36 @@ interface World {
   seats: Record<string, unknown>[];
   balance: string;
   activity: Record<string, unknown>[];
+  /** The hash of the block `get_pool` is answered from. */
+  poolBlockHash: string;
+  /** Every request the page sent, in order. */
+  sent: Sent[];
+}
+
+/** A request the page sent, with its JSON body parsed. */
+interface Sent {
+  url: string;
+  method: string;
+  body: unknown;
+}
+
+/** A view call the page sent through the RPC: what it called, with what, and at which block. */
+interface ViewCall {
+  method: string;
+  args: Record<string, unknown>;
+  block: { finality?: string; block_id?: string };
+  body: unknown;
+}
+
+/** The view calls among `world.sent`, in order. */
+function viewCalls(world: World): ViewCall[] {
+  return world.sent
+    .filter((sent) => sent.url === '/rpc')
+    .map(({ body }) => {
+      const { params } = body as { params: { method_name: string; args_base64: string; finality?: string; block_id?: string } };
+      const block = params.finality === undefined ? { block_id: params.block_id } : { finality: params.finality };
+      return { method: params.method_name, args: JSON.parse(atob(params.args_base64)) as Record<string, unknown>, block, body };
+    });
 }
 
 function openPool(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -152,6 +188,8 @@ function newWorld(): World {
     ],
     balance: '2088',
     activity: [commit('buyer-01.quorum.testnet', COMMIT_1)],
+    poolBlockHash: POOL_BLOCK_HASH,
+    sent: [],
   };
 }
 
@@ -193,6 +231,7 @@ function methodOf(url: string, init?: { body?: string }): string | undefined {
 
 function worldFetch(world: World): FakeFetch {
   return async (url, init) => {
+    world.sent.push({ url, method: init?.method ?? 'GET', body: init?.body === undefined ? undefined : JSON.parse(init.body) });
     if (url === '/config.json') {
       return answering({
         network: 'near:testnet',
@@ -205,11 +244,16 @@ function worldFetch(world: World): FakeFetch {
     }
     if (url.startsWith('/activity?pool=')) return answering(world.activity);
     if (url === '/rpc') {
-      const { params, id } = JSON.parse(init?.body ?? '{}') as { id: number; params: { method_name: string; args_base64: string } };
+      const { params, id } = JSON.parse(init?.body ?? '{}') as {
+        id: number;
+        params: { method_name: string; args_base64: string; block_id?: string };
+      };
       const args = JSON.parse(atob(params.args_base64)) as Record<string, number | string>;
       const value = viewValue(world, params.method_name, args);
       const bytes = [...new TextEncoder().encode(JSON.stringify(value))];
-      return answering({ jsonrpc: '2.0', id, result: { result: bytes, logs: [], block_height: 10, block_hash: BLOCK_HASH } });
+      // A read at a block is answered from that block; a read at final finality, from the final block of that moment.
+      const blockHash = params.block_id ?? (params.method_name === 'get_pool' ? world.poolBlockHash : BLOCK_HASH);
+      return answering({ jsonrpc: '2.0', id, result: { result: bytes, logs: [], block_height: 10, block_hash: blockHash } });
     }
     throw new Error(`unexpected request: ${url}`);
   };
@@ -318,6 +362,140 @@ describe('a refresh', () => {
     world.activity.push({ ...commit(PROVIDER, SETTLE), kind: 'settle' });
     await page.refresh();
     expect(writes).toEqual(['payout-links.replaceChildren']);
+  });
+});
+
+describe('the reads of a refresh', () => {
+  const only = (world: World, method: string) => viewCalls(world).filter((call) => call.method === method);
+
+  it('reads the pool list, the pool and the token at final finality, and its seats and the balance at the block of the pool', async () => {
+    const world = newWorld();
+    const page = await openPage(worldFetch(world));
+    for (const method of ['list_pools', 'get_pool', 'ft_metadata']) {
+      expect(only(world, method).length, method).toBeGreaterThan(0);
+      for (const call of only(world, method)) expect(call.block, method).toEqual({ finality: 'final' });
+    }
+    for (const method of ['get_seats', 'ft_balance_of']) {
+      expect(only(world, method).length, method).toBeGreaterThan(0);
+      for (const call of only(world, method)) expect(call.block, method).toEqual({ block_id: POOL_BLOCK_HASH });
+    }
+    // Each refresh reads at the block of its own get_pool answer, not at one it kept.
+    const next = 'Dq6Jr2WzKx9nPaYhT4mVbN8cSfE3uLgHyR5tXMeCvB7k';
+    world.poolBlockHash = next;
+    world.sent.length = 0;
+    await page.refresh();
+    for (const method of ['get_seats', 'ft_balance_of']) {
+      expect(only(world, method).length, method).toBeGreaterThan(0);
+      for (const call of only(world, method)) expect(call.block, method).toEqual({ block_id: next });
+    }
+  });
+
+  it("sends the pass-through only bodies it forwards, and the gateway only the two requests it serves the page", async () => {
+    const world = newWorld();
+    const page = await openPage(worldFetch(world));
+    await page.refresh();
+    const rpc = world.sent.filter((sent) => sent.url === '/rpc');
+    expect(rpc.length).toBeGreaterThan(0);
+    for (const { body, method } of rpc) {
+      expect(method).toBe('POST');
+      expect(isAllowedViewCall(JSON.parse(JSON.stringify(body)), [POOLS, TOKEN]), JSON.stringify(body)).toBe(true);
+    }
+    const gateway = world.sent.filter((sent) => sent.url !== '/rpc');
+    expect(gateway.every((sent) => sent.method === 'GET')).toBe(true);
+    expect(new Set(gateway.map((sent) => sent.url))).toEqual(new Set(['/config.json', '/activity?pool=3']));
+  });
+});
+
+describe('a pool another seller opened', () => {
+  const NOTICE = `Pool 4 was opened by ${OTHER_SELLER}, not by this gateway's provider ${PROVIDER}: this page shows only the provider's pools.`;
+  const withForeignPool = () => {
+    const world = newWorld();
+    world.pools.push(openPool({ id: 4, seller: OTHER_SELLER }));
+    return world;
+  };
+  /** The requests that read a pool's seats, the contract's balance or the pool's feed. */
+  const dataReads = (world: World) => [
+    ...viewCalls(world).filter((call) => call.method === 'get_seats' || call.method === 'ft_balance_of'),
+    ...world.sent.filter((sent) => sent.url.startsWith('/activity')),
+  ];
+
+  it('shows the notice in place of the card, the ledger and the buyers, and makes none of the requests for their data', async () => {
+    const world = withForeignPool();
+    const page = await openPage(worldFetch(world));
+    expect(el('pool').hidden).toBe(false);
+    expect(el('ledger').hidden).toBe(false);
+    expect(el('buyers').hidden).toBe(false);
+    location.search = '?pool=4';
+    world.sent.length = 0;
+    await page.refresh();
+    expect(el('no-pool').textContent).toBe(NOTICE);
+    expect(el('no-pool').hidden).toBe(false);
+    expect(el('pool').hidden).toBe(true);
+    expect(el('ledger').hidden).toBe(true);
+    expect(el('buyers').hidden).toBe(true);
+    expect(viewCalls(world).map((call) => call.method)).toEqual(['list_pools', 'get_pool']);
+    expect(dataReads(world)).toEqual([]);
+  });
+
+  it('shows the notice, and makes none of those requests, when the page is opened on the pool', async () => {
+    const world = withForeignPool();
+    await openPage(worldFetch(world), '?pool=4');
+    expect(el('no-pool').textContent).toBe(NOTICE);
+    expect(el('pool').hidden).toBe(true);
+    expect(el('ledger').hidden).toBe(true);
+    expect(el('buyers').hidden).toBe(true);
+    expect(dataReads(world)).toEqual([]);
+    expect(el('pool-select').children.map((option) => (option as unknown as { value: string }).value)).toEqual(['3']);
+  });
+});
+
+describe('a change of pool while a refresh reads', () => {
+  it.each(['get_seats', 'ft_balance_of', '/activity?pool=3'])('renders nothing of the old pool when the URL changes during %s', async (inFlight) => {
+    const world = newWorld();
+    world.pools.push(openPool({ id: 4, taken: 1 }));
+    const base = worldFetch(world);
+    const hooks = { onRequest: (_what: string) => {} };
+    const page = await openPage(async (url, init) => {
+      hooks.onRequest(methodOf(url, init) ?? url);
+      return base(url, init);
+    }, '?pool=3');
+    // Everything shown of pool 3 has changed since, so that a refresh that rendered it would write.
+    world.seats.push({ buyer: 'buyer-03.quorum.testnet', seats: 1, state: 'committed' });
+    world.pools[0] = openPool({ taken: 3 });
+    world.balance = '2268';
+    hooks.onRequest = (what) => {
+      if (what === inFlight) location.search = '?pool=4';
+    };
+    writes = [];
+    await page.refresh();
+    expect(writes).toEqual([]);
+    expect(el('pool-title').textContent).toBe('Pool 3');
+    // The next refresh shows the pool the viewer chose.
+    hooks.onRequest = () => {};
+    await page.refresh();
+    expect(el('pool-title').textContent).toBe('Pool 4');
+  });
+});
+
+describe('a change of pool while a refresh reads a pool another seller opened', () => {
+  it('shows no notice for a pool the viewer has left', async () => {
+    const world = newWorld();
+    world.pools.push(openPool({ id: 4, seller: OTHER_SELLER }));
+    const base = worldFetch(world);
+    const hooks = { onRequest: (_what: string) => {} };
+    const page = await openPage(async (url, init) => {
+      hooks.onRequest(methodOf(url, init) ?? url);
+      return base(url, init);
+    }, '?pool=3');
+    location.search = '?pool=4';
+    hooks.onRequest = (what) => {
+      if (what === 'get_pool') location.search = '?pool=3';
+    };
+    writes = [];
+    await page.refresh();
+    expect(writes).toEqual([]);
+    expect(el('no-pool').hidden).toBe(true);
+    expect(el('pool-title').textContent).toBe('Pool 3');
   });
 });
 
