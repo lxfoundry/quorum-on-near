@@ -683,10 +683,13 @@ setup prints the parent's ID, what it holds free, what it sends, the margin and 
 shortfall, and exits with an error.
 
 Each write waits until its transaction is final, and fails if any of its receipts failed. Calls are
-batched at most 10 to a transaction, each given 20 Tgas. A transaction the RPC refuses for its nonce
-(it did not run) is signed again with a nonce read afresh. A write that gets no result (a timeout, a
-server error or a failed request) stops setup with an error saying that the transaction may still
-run, and that setup can be run again once it is final.
+batched at most 10 to a transaction, each given 20 Tgas. A write is signed before it is sent, so a
+read that fails before then (the key's nonce, the latest block) stops setup with that error, nothing
+having been sent. A transaction the RPC refuses for its nonce (it did not run) is signed again with
+a nonce read afresh, up to 10 times. Once a write is sent, only an answer that shows the RPC refused
+it is a refusal. A write that gets no result (a timeout, a server error, a failed request, or any
+other answer), or an answer from before it was final, stops setup with an error that names the
+transaction, says that it may still run, and that setup can be run again once it is final.
 
 Steps 1 to 4 always run, so the first setup creates and registers the funding account, ready to
 receive USDC from the faucet. Before step 5, setup checks that the funding account covers every

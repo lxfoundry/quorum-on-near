@@ -106,9 +106,11 @@ export class NonceTakenError extends Error {
 }
 
 /**
- * A write that may have been sent, but whose result the RPC did not give: the request timed out or
- * failed. The transaction may still run. `txHash` names it when it was signed before it was sent
- * (ftTransferCall), else it is null; `reason` is `timeout`, or the failed request's transportReason.
+ * A write that was sent, but whose result the swarm does not know: the RPC gave no answer that shows
+ * it refused the transaction, answered before the transaction was final, or gave a final answer that
+ * cannot be read. The transaction may still run, or have run. `txHash` names it (null only where a
+ * chain cannot know it); `reason` is `timeout`, the failed request's transportReason, `not final` or
+ * `unreadable result`.
  */
 export class OutcomeUnknownError extends Error {
   override name = 'OutcomeUnknownError';
@@ -159,12 +161,14 @@ export class TransactionFailedError extends Error {
  * are the configured ones.
  *
  * Each write is one transaction signed by `signer` and resolves with its outcome. It throws
- * TransactionFailedError when any receipt of the outcome failed, except where noted, passes on the
- * RPC's error when the transaction was refused, and rejects OutcomeUnknownError when the request
- * timed out or failed once the transaction may have been sent. A transaction refused for its nonce
- * (InvalidNonce: it did not run, and another transaction of the key, such as one of another process,
- * took the nonce) is signed again with a nonce read afresh, except by ftTransferCall. Writes signed
- * with one key are sent one after another, so their nonces never race.
+ * TransactionFailedError when any receipt of the outcome failed, except where noted, and passes on
+ * the error of a read made before the transaction is sent, and the RPC's error when it shows the
+ * transaction was refused. Any other failure once the transaction is sent, a response that is not
+ * final and one that cannot be read reject OutcomeUnknownError naming the transaction. A transaction
+ * refused for its nonce (InvalidNonce: it did not run, and another transaction of the key, such as
+ * one of another process, took the nonce) is signed again with a nonce read afresh, a bounded number
+ * of times, except by ftTransferCall. Writes signed with one key are sent one after another, so their
+ * nonces never race.
  */
 export interface SwarmChain {
   /** The `chain_id` the RPC node reports, for checkChainId. */

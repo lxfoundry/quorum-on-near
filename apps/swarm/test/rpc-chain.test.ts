@@ -1,10 +1,23 @@
 import { createHash } from 'node:crypto';
 import { poolsEvents, type TxOutcome } from '@quorum-on-near/protocol';
-import { baseEncode, encodeTransaction, KeyPair, type Action, type Provider, type SignedTransaction } from 'near-api-js';
 import {
+  baseEncode,
+  decodeSignedTransaction,
+  encodeTransaction,
+  KeyPair,
+  type Action,
+  type Provider,
+  type SignedTransaction,
+} from 'near-api-js';
+import {
+  AccountDoesNotExistActionError,
   AccountDoesNotExistError,
+  InternalRpcError,
   InvalidNonceError,
   InvalidTransactionError,
+  RequestRoutedError,
+  RpcRequestParseError,
+  ShardCongestedError,
   TransactionTimeoutError,
   UnknownBlockError,
   UnknownTransactionError,
@@ -74,6 +87,8 @@ const PANIC = { Failure: { ActionError: { index: 0, kind: { FunctionCallError: {
 class FakeRpc {
   chainNonce = 40n;
   accessKeyReads = 0;
+  /** When set, the key's nonce read throws it: a read that fails before anything is sent. */
+  accessKeyError: unknown = undefined;
   sent: SentTx[] = [];
   reads: Array<[method: string, params: unknown]> = [];
   /** The send's response; by default the transaction and one receipt at its receiver succeed. */
@@ -106,6 +121,7 @@ class FakeRpc {
       viewTransactionStatus: (params: unknown) => this.answer('send.viewTransactionStatus', params),
       viewAccessKey: async () => {
         this.accessKeyReads += 1;
+        if (this.accessKeyError !== undefined) throw this.accessKeyError;
         return { nonce: this.chainNonce, permission: 'FullAccess', block_height: 1_000, block_hash: BLOCK_HASH };
       },
       viewBlock: async () => ({ header: { height: 1_000, hash: BLOCK_HASH } }),
@@ -558,7 +574,11 @@ describe('RpcSwarmChain failure detection', () => {
     ['a 408', () => new Error('Timeout error', { cause: 408 }), 'timeout'],
     ['a 503', () => new Error('http://rpc.invalid unavailable', { cause: 503 }), 'HTTP 503'],
     ['a failed request', () => new TypeError('fetch failed', { cause: Object.assign(new Error('reset'), { code: 'ECONNRESET' }) }), 'ECONNRESET'],
-  ])('rejects OutcomeUnknownError, its cause kept, when a send gets %s instead of a result', async (_, error, reason) => {
+    ['a routed request', () => new RequestRoutedError('RoutedTx1'), 'error'],
+    ['an internal error', () => new InternalRpcError('boom'), 'error'],
+    ['an answer that is not JSON', () => new SyntaxError('Unexpected token \'<\''), 'error'],
+    ['an action error', () => new AccountDoesNotExistActionError(BUYER, 0, 'Tx1', BLOCK_HASH), 'error'],
+  ])('rejects OutcomeUnknownError naming the transaction, its cause kept, when a send gets %s instead of a result', async (_, error, reason) => {
     const { rpc, chain } = setup();
     const thrown = error();
     rpc.onSend = async () => {
@@ -566,25 +586,56 @@ describe('RpcSwarmChain failure detection', () => {
     };
     const rejected = await chain.transferNear(signer(PARENT), BUYER, 1n).catch((e: unknown) => e);
     expect(rejected).toBeInstanceOf(OutcomeUnknownError);
-    expect(rejected).toMatchObject({ txHash: null, reason, cause: thrown });
+    expect(rpc.sent).toHaveLength(1);
+    const hash = rpc.sent[0]?.hash;
+    expect(rejected).toMatchObject({ txHash: hash, reason, cause: thrown });
     expect((rejected as Error).message).toBe(
-      `a transaction from ${PARENT} to ${BUYER} may have been sent, but the RPC gave no result (${reason}): it may still run`,
+      `transaction ${hash} from ${PARENT} to ${BUYER} was sent, but the RPC gave no result (${reason}): it may still run`,
     );
   });
 
-  it('passes on the error of a send the RPC refused', async () => {
+  it.each([
+    ['an invalid transaction', () => new InvalidTransactionError()],
+    ['a congested shard', () => new ShardCongestedError(1, 0, 'Tx1', BLOCK_HASH)],
+    ['a request that does not validate', () => new RpcRequestParseError('bad')],
+    ['an HTTP 429', () => new Error('slow down', { cause: 429 })],
+  ])('passes on, as it is, a refusal that shows the transaction did not run: %s', async (_, error) => {
     const { rpc, chain } = setup();
-    const refusal = new InvalidTransactionError();
+    const refusal = error();
     rpc.onSend = async () => {
       throw refusal;
     };
     await expect(chain.transferNear(signer(PARENT), BUYER, 1n)).rejects.toBe(refusal);
+    expect(rpc.sent).toHaveLength(1);
   });
 
-  it('passes on the conversion error of a response that is not final', async () => {
+  it.each(['INCLUDED', 'EXECUTED_OPTIMISTIC'])(
+    'rejects OutcomeUnknownError naming the transaction for a response that is %s, not final',
+    async (status) => {
+      const { rpc, chain } = setup();
+      rpc.onSend = async (tx) => ({ ...finalResponse(tx, [{ executorId: BUYER }]), final_execution_status: status });
+      const rejected = await chain.transferNear(signer(PARENT), BUYER, 1n).catch((e: unknown) => e);
+      expect(rejected).toBeInstanceOf(OutcomeUnknownError);
+      expect(rejected).toMatchObject({ txHash: rpc.sent[0]?.hash, reason: 'not final' });
+    },
+  );
+
+  it('rejects OutcomeUnknownError naming the transaction for a final response that cannot be read', async () => {
     const { rpc, chain } = setup();
-    rpc.onSend = async (tx) => ({ ...finalResponse(tx, []), final_execution_status: 'INCLUDED' });
-    await expect(chain.transferNear(signer(PARENT), BUYER, 1n)).rejects.toThrow('not executed yet');
+    rpc.onSend = async (tx) => ({ ...finalResponse(tx, []), receipts_outcome: 'none' });
+    const rejected = await chain.transferNear(signer(PARENT), BUYER, 1n).catch((e: unknown) => e);
+    expect(rejected).toBeInstanceOf(OutcomeUnknownError);
+    expect(rejected).toMatchObject({ txHash: rpc.sent[0]?.hash, reason: 'unreadable result' });
+    expect((rejected as Error).message).toContain(`transaction ${rpc.sent[0]?.hash} from ${PARENT} to ${BUYER} is final`);
+  });
+
+  it('passes on, as it is, a read that failed before anything was sent', async () => {
+    const { rpc, chain } = setup();
+    const failure = new Error('http://rpc.invalid unavailable', { cause: 503 });
+    rpc.accessKeyError = failure;
+    const rejected = await chain.transferNear(signer(PARENT), BUYER, 1n).catch((e: unknown) => e);
+    expect(rejected).toBe(failure);
+    expect(rpc.sent).toEqual([]);
   });
 });
 
@@ -620,13 +671,44 @@ describe('RpcSwarmChain.ftTransferCall', () => {
   });
 
   it.each([[successValue(1728)], [{ SuccessValue: '' }], [successValue('-1')]])(
-    'refuses a result %j that is not an amount',
+    'rejects OutcomeUnknownError naming the transaction for a result %j that is not an amount',
     async (status) => {
       const { rpc, chain } = setup();
       rpc.onSend = async (tx) => finalResponse(tx, [{ executorId: TOKEN }], status);
-      await expect(chain.ftTransferCall(signer(PROVIDER), call)).rejects.toThrow(TypeError);
+      const rejected = await chain.ftTransferCall(signer(PROVIDER), call).catch((e: unknown) => e);
+      expect(rejected).toBeInstanceOf(OutcomeUnknownError);
+      expect(rejected).toMatchObject({ txHash: rpc.sent[0]?.hash, reason: 'unreadable result' });
+      expect(rpc.sent).toHaveLength(1);
     },
   );
+
+  it('rejects OutcomeUnknownError naming the transaction for a response that is not final, sent once', async () => {
+    const { rpc, chain } = setup();
+    rpc.onSend = async (tx) => ({ ...finalResponse(tx, [{ executorId: TOKEN }], successValue('1728')), final_execution_status: 'INCLUDED' });
+    const rejected = await chain.ftTransferCall(signer(PROVIDER), call).catch((e: unknown) => e);
+    expect(rejected).toBeInstanceOf(OutcomeUnknownError);
+    expect(rejected).toMatchObject({ txHash: rpc.sent[0]?.hash, reason: 'not final' });
+    expect(rpc.sent).toHaveLength(1);
+  });
+
+  it('names the bonus transfer in the OutcomeUnknownError of a routed request, and never signs it again', async () => {
+    const { rpc, chain } = setup();
+    rpc.onSend = async () => {
+      throw new RequestRoutedError('RoutedTx1');
+    };
+    const rejected = await chain.ftTransferCall(signer(PROVIDER), call).catch((e: unknown) => e);
+    expect(rejected).toBeInstanceOf(OutcomeUnknownError);
+    expect(rejected).toMatchObject({ txHash: rpc.sent[0]?.hash });
+    expect(rpc.sent).toHaveLength(1);
+  });
+
+  it('passes on, as it is, a read that failed before the bonus transfer was sent', async () => {
+    const { rpc, chain } = setup();
+    const failure = new TypeError('fetch failed');
+    rpc.accessKeyError = failure;
+    expect(await chain.ftTransferCall(signer(PROVIDER), call).catch((e: unknown) => e)).toBe(failure);
+    expect(rpc.sent).toEqual([]);
+  });
 });
 
 describe('RpcSwarmChain signers', () => {
@@ -709,6 +791,24 @@ describe('RpcSwarmChain nonces', () => {
     expect(rpc.sent.map((tx) => tx.nonce)).toEqual([41n, 46n]);
     expect(new Set(rpc.sent.map((tx) => tx.hash)).size).toBe(2);
     expect(outcome.txHash).toBe(rpc.sent[1]?.hash);
+  });
+
+  it('re-signs a write refused for its nonce at most 10 times, each with a nonce read afresh, then passes the refusal on', async () => {
+    const { rpc, chain } = setup();
+    let refusal: unknown;
+    rpc.onSend = async (tx) => {
+      rpc.chainNonce = tx.nonce + 3n;
+      refusal = invalidNonce(tx, rpc.chainNonce);
+      throw refusal;
+    };
+    const rejected = await chain.transferNear(signer(PARENT), BUYER, 1n).catch((e: unknown) => e);
+    expect(rejected).toBe(refusal);
+    expect(rpc.sent).toHaveLength(11);
+    expect(rpc.accessKeyReads).toBe(11);
+    // The key's next write reads its nonce afresh.
+    rpc.onSend = async (tx) => finalResponse(tx, [{ executorId: tx.receiverId }]);
+    await chain.transferNear(signer(PARENT), BUYER, 1n);
+    expect(rpc.accessKeyReads).toBe(12);
   });
 
   it('signs the bonus ft_transfer_call with a nonce read for it alone, and numbers the key’s later writes from it', async () => {
@@ -798,12 +898,27 @@ describe('createRpcSwarmChain', () => {
     expect(waits).toEqual(['NONE', 'FINAL']);
   });
 
-  it('posts each signed transaction once, even when the RPC answers 503', async () => {
+  /**
+   * An RPC behind a stub fetch: `send_tx` is answered by `sendTx`, a key's nonce read (`query`) and
+   * the block read by `reads`, or else with a key of nonce 40 and block 1000. Records each method
+   * posted and the hash of each transaction sent.
+   */
+  function stubRpc(
+    sendTx: (id: string) => Response,
+    reads: (method: string, id: string) => Response | undefined = () => undefined,
+  ) {
     const methods: string[] = [];
+    const hashes: string[] = [];
     vi.stubGlobal('fetch', async (_url: string, init: { body: string }) => {
       const request = JSON.parse(init.body) as { id: string; method: string; params: Record<string, unknown> };
       methods.push(request.method);
-      if (request.method === 'send_tx') return new Response('unavailable', { status: 503 });
+      if (request.method === 'send_tx') {
+        const signed = decodeSignedTransaction(Buffer.from(String(request.params.signed_tx_base64), 'base64'));
+        hashes.push(baseEncode(createHash('sha256').update(encodeTransaction(signed.transaction)).digest()));
+        return sendTx(request.id);
+      }
+      const answer = reads(request.method, request.id);
+      if (answer !== undefined) return answer;
       const result =
         request.method === 'block'
           ? { header: { height: 1_000, hash: BLOCK_HASH, timestamp_nanosec: '0' } }
@@ -811,7 +926,41 @@ describe('createRpcSwarmChain', () => {
       return new Response(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }), { status: 200 });
     });
     const chain = createRpcSwarmChain({ rpcUrl: 'http://rpc.invalid', token: TOKEN, poolsContract: POOLS });
-    await expect(chain.transferNear(signer(PARENT), BUYER, 1n)).rejects.toThrow();
+    return { chain, methods, hashes };
+  }
+
+  /** A JSON-RPC error body, as the RPC writes one, answered with HTTP 200. */
+  const rpcError = (id: string, error: Record<string, unknown>) =>
+    new Response(JSON.stringify({ jsonrpc: '2.0', id, error: { code: -32000, message: 'Server error', ...error } }), { status: 200 });
+
+  it.each<[string, (id: string) => Response]>([
+    ['a 503', () => new Response('unavailable', { status: 503 })],
+    ['a 504 with an HTML body', () => new Response('<html><body>504 Gateway Time-out</body></html>', { status: 504 })],
+    ['a 504 with a JSON body', () => new Response(JSON.stringify({ message: 'Gateway Timeout' }), { status: 504 })],
+    ['REQUEST_ROUTED', (id) => rpcError(id, { name: 'HANDLER_ERROR', cause: { name: 'REQUEST_ROUTED', info: { transaction_hash: 'RoutedTx1' } } })],
+    ['INTERNAL_ERROR', (id) => rpcError(id, { name: 'INTERNAL_ERROR', cause: { name: 'INTERNAL_ERROR', info: { error_message: 'boom' } } })],
+  ])('posts a signed transaction once, and rejects OutcomeUnknownError naming it, when the RPC answers it %s', async (_, sendTx) => {
+    const { chain, methods, hashes } = stubRpc(sendTx);
+    const rejected = await chain.transferNear(signer(PARENT), BUYER, 1n).catch((e: unknown) => e);
     expect(methods.filter((method) => method === 'send_tx')).toHaveLength(1);
+    expect(rejected).toBeInstanceOf(OutcomeUnknownError);
+    expect(rejected).toMatchObject({ txHash: hashes[0] });
+  });
+
+  it.each<[string, (method: string) => Response | undefined]>([
+    ["the key's nonce read answered 503", (method) => (method === 'query' ? new Response('unavailable', { status: 503 }) : undefined)],
+    [
+      'the block read refused',
+      (method) => {
+        if (method === 'block') throw new TypeError('fetch failed', { cause: Object.assign(new Error('refused'), { code: 'ECONNREFUSED' }) });
+        return undefined;
+      },
+    ],
+  ])('passes on the error of a read before sending, sending nothing, when %s', async (_, reads) => {
+    const { chain, methods } = stubRpc(() => new Response('unexpected', { status: 500 }), reads);
+    const rejected = await chain.transferNear(signer(PARENT), BUYER, 1n).catch((e: unknown) => e);
+    expect(rejected).toBeInstanceOf(Error);
+    expect(rejected).not.toBeInstanceOf(OutcomeUnknownError);
+    expect(methods).not.toContain('send_tx');
   });
 });
