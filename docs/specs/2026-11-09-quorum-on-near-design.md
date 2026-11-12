@@ -992,7 +992,7 @@ at once; their problem with a URL never quotes the URL, which may carry an API k
 | Average block time | gateway, swarm, MCP server | Converts `maxTimeoutSeconds` into blocks (section 6.4, check 5) |
 | Keeper settings | gateway | The keeper's interval, the refund batch `limit` (1 to 10), and the gas attached to `settle` and `refund` (section 6.7): at least what the contract requires at entry (section 5.4) plus 17 Tgas for what a call uses before that check, so 50 Tgas for `settle` and 27 + 23 × (`limit` + 1) Tgas for `refund` (280 Tgas at `limit` 10, the figure with which section 5.4 shows a full batch completing), and at most 300 Tgas. The gateway refuses less: a call that attaches only the entry figure always fails at entry |
 | RPC pass-through | gateway | Turns `POST /rpc` on (section 6.1) |
-| Live page folder | gateway | The folder served at `/` (section 8). The gateway refuses to start if it is, or contains, the gateway's own folder |
+| Live page folder | gateway | The folder whose four page files are served at `/` (sections 6.1 and 8). The gateway refuses to start if it is, or contains, the gateway's own folder |
 
 **One value for every app.** `swarm env gateway` and `swarm env mcp` write the gateway's and the MCP
 server's configuration files from the swarm's configuration, so that a shared value is the same in
