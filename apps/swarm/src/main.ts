@@ -19,6 +19,7 @@ import { checkChain, type SwarmChain } from './chain.ts';
 import { checkPool, snapshot, type CheckReport } from './check.ts';
 import { loadSwarmConfig, type SwarmConfig } from './config.ts';
 import { aclNotice, envFilePath, writeGatewayEnv, writeMcpEnv, type EnvApp } from './env-files.ts';
+import { defaultLockDir, lockFilePath, takeLock } from './lock.ts';
 import { assertNoPoolOpen, openPool } from './provider.ts';
 import { runReset } from './reset.ts';
 import { createRpcSwarmChain } from './rpc-chain.ts';
@@ -176,13 +177,25 @@ export interface Cli {
   platform: NodeJS.Platform;
   /** The name of the user the process runs as, read only for aclNotice on Windows. */
   userName: () => string;
+  /** The folder of the swarm's lock files: the repository's data/ folder (defaultLockDir). */
+  lockDir: string;
 }
+
+/**
+ * The commands that write to the chain or sign payments: each takes the lock of its network and
+ * parent for the time it runs, so that two swarms never act on the same accounts at once.
+ */
+const LOCKED: ReadonlySet<SwarmCommand['name']> = new Set(['setup', 'open', 'run', 'demo', 'reset']);
 
 /**
  * Runs the command that `argv`, the arguments after `swarm`, names, and returns the exit code: 0
  * when it is done; 1 when the configuration is invalid, the RPC serves another chain than
  * QUORUM_NETWORK names, the command threw, a check failed, or (`run`, `demo`) a buyer did not end as
  * the scenario expects (unexpectedOutcomes); 2 for a usage error, with the usage.
+ * `setup`, `open`, `run`, `demo` and `reset` first take the lock of the network and the parent
+ * (lockFilePath in `cli.lockDir`), and remove it when they end, whatever the outcome; while another
+ * process holds it, they run nothing and exit with 1, saying that another swarm is running. `demo`
+ * holds its one lock across its steps. `check`, `env` and `help` take none.
  * Every command but `env` and `help` checks the RPC's chain before it runs. An error is printed as
  * its message and its causes', never with a stack, with QUORUM_RPC_URL written in place of the RPC
  * URL.
@@ -209,7 +222,7 @@ async function execute(command: SwarmCommand, cli: Cli): Promise<boolean> {
     cli.out(USAGE);
     return true;
   }
-  const { modules, runtime, out: log } = cli;
+  const { modules, out: log } = cli;
   const config = loadSwarmConfig(cli.env);
   if (command.name === 'env') {
     const path = envFilePath(command.app);
@@ -221,6 +234,18 @@ async function execute(command: SwarmCommand, cli: Cli): Promise<boolean> {
     return true;
   }
 
+  if (!LOCKED.has(command.name)) return executeOnChain(command, cli, config);
+  const lock = await takeLock(lockFilePath(cli.lockDir, config.network, config.parent));
+  try {
+    return await executeOnChain(command, cli, config);
+  } finally {
+    await lock.release();
+  }
+}
+
+/** Runs a command that reads the chain, once its lock, if it takes one, is held. */
+async function executeOnChain(command: Exclude<SwarmCommand, { name: 'help' | 'env' }>, cli: Cli, config: SwarmConfig): Promise<boolean> {
+  const { modules, runtime, out: log } = cli;
   const { chain, gateway, buyerChain, pools } = cli.connect(config);
   await checkChain(config.network, chain);
   const runDeps = { gateway, chain: buyerChain, pools, log, runtime };
@@ -339,6 +364,7 @@ if (import.meta.main) {
         modules: { runSetup, snapshot, openPool, runSwarm, checkPool, runReset, writeGatewayEnv, writeMcpEnv },
         platform: process.platform,
         userName: () => userInfo().username,
+        lockDir: defaultLockDir(),
       })
     : 1;
 }

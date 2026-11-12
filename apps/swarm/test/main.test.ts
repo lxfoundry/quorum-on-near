@@ -1,11 +1,12 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { keyFilePath, writeKeyFile, type BuyerChainReads, type Env, type PoolReads } from '@quorum-on-near/buyer';
 import { KeyPair } from 'near-api-js';
-import { describe, expect, it, vi, type Mock } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi, type Mock } from 'vitest';
 import type { AgentRuntime, BuyerOutcome } from '../src/buyer-agent.ts';
 import type { Baseline, CheckReport } from '../src/check.ts';
 import { aclNotice, EnvFileExistsError } from '../src/env-files.ts';
@@ -23,6 +24,25 @@ const MCP_ENV = fileURLToPath(new URL('../../mcp/.env', import.meta.url));
 const ENV: Env = { QUORUM_PARENT_ACCOUNT: PARENT, QUORUM_SCENARIO_DEADLINE_SECONDS: '45', QUORUM_SWARM_SPREAD_SECONDS: '9' };
 const BASELINE: Baseline = new Map([[PROVIDER, 10_000n]]);
 const OPENED_POOL = 7;
+
+/** A temporary folder for the tests' lock files, so that no test writes into the repository's data/ folder. */
+let lockRoot: string;
+/** The folder the commands take their lock in: created by the first command that takes one. */
+let lockDir: string;
+
+beforeAll(async () => {
+  lockRoot = await mkdtemp(join(tmpdir(), 'quorum-swarm-main-'));
+  lockDir = join(lockRoot, 'data');
+});
+
+afterAll(async () => {
+  await rm(lockRoot, { recursive: true, force: true });
+});
+
+/** The lock file of ENV's network and parent. */
+function lockPath(parent = PARENT): string {
+  return join(lockDir, `swarm-testnet-${parent}.lock`);
+}
 
 function report(oks: readonly boolean[]): CheckReport {
   const lines = oks.map((ok, i) => ({ name: `check ${i}`, ok, detail: '' }));
@@ -91,6 +111,7 @@ function harness(env: Env = ENV) {
     modules,
     platform: 'linux',
     userName: () => 'ada',
+    lockDir,
   };
   return { cli, out, err, order, chain, gateway, buyerChain, pools, runtime, modules, connect };
 }
@@ -435,6 +456,111 @@ describe('runCli: commands', () => {
     expect(await runCli(['env', 'mcp'], h.cli)).toBe(1);
     expect(h.err).toEqual([new EnvFileExistsError(MCP_ENV).message]);
     expect(h.out).toEqual([]);
+  });
+});
+
+/** Makes each module record what the lock file holds when it is called: its text, or `no lock`. */
+function watchLock(modules: StubModules): string[] {
+  const seen: string[] = [];
+  for (const mock of Object.values(modules) as Array<Mock<(...args: unknown[]) => Promise<unknown>>>) {
+    const answer = mock.getMockImplementation();
+    mock.mockImplementation(async (...args: unknown[]) => {
+      seen.push(existsSync(lockPath()) ? await readFile(lockPath(), 'utf8') : 'no lock');
+      return answer?.(...args);
+    });
+  }
+  return seen;
+}
+
+describe('runCli: one swarm at a time', () => {
+  it.each([[['setup']], [['open', 'fills']], [['run', '3', 'fills']], [['reset']]])(
+    '%j holds a lock for the network and the parent, holding its PID, while it runs, and removes it once done',
+    async (argv) => {
+      const h = harness();
+      const seen = watchLock(h.modules);
+
+      await runCli(argv, h.cli);
+
+      expect(seen).toEqual([`${process.pid}\n`]);
+      expect(existsSync(lockPath())).toBe(false);
+    },
+  );
+
+  it('demo holds its one lock across setup, the baseline, open, run and check, never locking itself out', async () => {
+    const h = harness();
+    const seen = watchLock(h.modules);
+
+    expect(await runCli(['demo', 'fills'], h.cli)).toBe(0);
+
+    expect(h.order).toEqual(['setup', 'snapshot', 'open', 'run', 'check']);
+    expect(seen).toEqual(Array(5).fill(`${process.pid}\n`));
+    expect(existsSync(lockPath())).toBe(false);
+  });
+
+  it.each([[['setup']], [['open', 'fails']], [['run', '3', 'fails']], [['demo', 'fails']], [['reset']]])(
+    '%j refuses while another swarm holds the lock: exits 1, names the lock, its PID and what to do if it is stale, and runs nothing',
+    async (argv) => {
+      const h = harness();
+      await mkdir(lockDir, { recursive: true });
+      await writeFile(lockPath(), '4242\n');
+      try {
+        expect(await runCli(argv, h.cli)).toBe(1);
+
+        expect(h.order).toEqual([]);
+        expect(h.connect).not.toHaveBeenCalled();
+        expect(h.err).toHaveLength(1);
+        expect(h.err[0]).toContain('another swarm is running');
+        expect(h.err[0]).toContain(lockPath());
+        expect(h.err[0]).toContain('process 4242');
+        expect(h.err[0]).toContain(`remove ${lockPath()}`);
+        expect(await readFile(lockPath(), 'utf8')).toBe('4242\n');
+      } finally {
+        await rm(lockPath(), { force: true });
+      }
+    },
+  );
+
+  it('creates the folder of its lock when it does not exist yet', async () => {
+    const h = harness();
+    h.cli.lockDir = join(lockRoot, 'fresh', 'data');
+
+    expect(await runCli(['setup'], h.cli)).toBe(0);
+
+    expect(existsSync(h.cli.lockDir)).toBe(true);
+  });
+
+  it('removes its lock when the command fails', async () => {
+    const h = harness();
+    h.modules.runSetup.mockRejectedValue(new Error('stopped'));
+
+    expect(await runCli(['setup'], h.cli)).toBe(1);
+
+    expect(existsSync(lockPath())).toBe(false);
+  });
+
+  it.each([[['check', '3', 'fills']], [['env', 'mcp']], [['help']]])('%j takes no lock, and runs while another swarm holds one', async (argv) => {
+    const h = harness();
+    const seen = watchLock(h.modules);
+    await mkdir(lockDir, { recursive: true });
+    await writeFile(lockPath(), '4242\n');
+    try {
+      expect(await runCli(argv, h.cli)).toBe(0);
+
+      expect(seen.every((text) => text === '4242\n')).toBe(true);
+    } finally {
+      await rm(lockPath(), { force: true });
+    }
+  });
+
+  it('is not stopped by the lock of another parent', async () => {
+    const h = harness();
+    await mkdir(lockDir, { recursive: true });
+    await writeFile(lockPath('other.testnet'), '4242\n');
+    try {
+      expect(await runCli(['setup'], h.cli)).toBe(0);
+    } finally {
+      await rm(lockPath('other.testnet'), { force: true });
+    }
   });
 });
 
