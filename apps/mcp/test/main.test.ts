@@ -26,9 +26,12 @@ const VALID = {
 };
 
 const servers: Server[] = [];
+/** Every JSON-RPC request the stubs received: its method and params. */
+const received: Array<{ method: string; params: unknown }> = [];
 
 afterEach(async () => {
   for (const server of servers.splice(0)) await new Promise((resolve) => server.close(resolve));
+  received.splice(0);
 });
 
 /**
@@ -41,7 +44,8 @@ async function rpcStub(chainId?: string): Promise<string> {
     let body = '';
     request.on('data', (chunk: Buffer) => (body += chunk.toString()));
     request.on('end', () => {
-      const { id, method } = JSON.parse(body) as { id: string; method: string };
+      const { id, method, params } = JSON.parse(body) as { id: string; method: string; params: unknown };
+      received.push({ method, params });
       if (method === 'status' && chainId !== undefined) {
         response.writeHead(200, { 'content-type': 'application/json' });
         response.end(JSON.stringify({ jsonrpc: '2.0', id, result: { chain_id: chainId } }));
@@ -83,6 +87,18 @@ describe('main', () => {
     expect(stderr).toContain('cannot read the chain id from QUORUM_RPC_URL: QUORUM_RPC_URL Bad Gateway');
     expect(stderr).not.toContain('TEST-RPC-KEY');
     expect(stderr).not.toContain('127.0.0.1');
+  });
+
+  it('exits with code 1 when the RPC serves another chain, before any call_function reaches it', async () => {
+    const url = await rpcStub('mainnet');
+    const { code, stdout, stderr } = await run([MAIN], { ...VALID, QUORUM_RPC_URL: url });
+    expect(code).toBe(1);
+    expect(stdout).toBe('');
+    expect(stderr).toContain('QUORUM_NETWORK is near:testnet, but QUORUM_RPC_URL serves the chain "mainnet", not "testnet"');
+    expect(stderr).not.toContain('TEST-RPC-KEY');
+    const calls = received.filter(({ method, params }) => method === 'query' && JSON.stringify(params).includes('call_function'));
+    expect(calls).toEqual([]);
+    expect(received.map(({ method }) => method)).toEqual(['status']);
   });
 
   it("redacts the RPC URL from the error when the token's metadata cannot be read", async () => {
