@@ -1234,6 +1234,14 @@ keys) and the NEP-141, NEP-145, NEP-297, NEP-366 and NEP-413 standards:
 - **`/rpc` has no rate limit.** With the pass-through on, anyone can send view calls on the pools
   contract and the token through the gateway, up to 16 KiB each, and the RPC's own limits then
   apply to the gateway as a whole. A production version would rate-limit it per client.
+- **The live page reads every seller's pools on every refresh.** It lists them all through
+  `list_pools` to build its selector, one request per 100 pools at each 2-second refresh of each
+  viewer, and anyone can add pools cheaply (storage is open to abuse, above), so the number of
+  requests per refresh is not bounded by the provider. The page asks for 100 rows at a time, which is
+  the contract's page size: `PAGE_SIZE` in the page must equal `MAX_PAGE` in the contract, since a
+  page that the contract cuts short is taken for the last one. Through the pass-through, every
+  viewer's reads reach the RPC from the gateway's address, so a public RPC's rate limit applies to
+  all viewers together and shows on the page as "Could not refresh" lines.
 - **Credentials are issued at optimistic execution, not finality.** The relayer waits for the
   commit to execute optimistically, and redemption reads the pool at optimistic finality, so a
   credential can be issued before the block holding the commit is final. If that block were not
