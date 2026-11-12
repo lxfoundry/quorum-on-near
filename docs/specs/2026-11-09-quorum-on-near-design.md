@@ -1071,8 +1071,11 @@ answer `404`. Every value it reads is written as text or as an attribute, never 
   part of its host). Each request times out after 10 seconds, so that a hung request cannot stop
   the refreshes, which never overlap. A failed refresh shows "Could not refresh" with its reason,
   keeps the last data on screen, and is tried again at the next 2-second tick.
-- `totals.js` is a pure module that computes the totals from the contract's data. It is the one
-  piece of logic on the page, and it is unit-tested.
+- `totals.js` holds all the page's logic, as pure functions: the body of a view call and the
+  decoding of its answer, the shape checks of everything read from the RPC, the gateway and the page
+  URL, the ledger totals, the buyer rows and the explorer links, the choice of pool and what a
+  refresh shows in its place (the notices), and the countdown. It is unit-tested. `app.js` only
+  fetches and renders.
 
 ## 9. Error handling
 
