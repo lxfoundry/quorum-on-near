@@ -1104,7 +1104,9 @@ seconds apart. It then prints one line per check:
 - **payout gas**: each `ft_transfer` and each callback of the keeper's `settle`, `refund` and dust
   transactions, a failed transfer included, burns under 5 Tgas, the feed holds the record that ended
   the pool, and the pool's keeper transactions made at least one `ft_transfer` between them (a last
-  refund batch that only passed buyers who had claimed their own refunds may make none).
+  refund batch that only passed buyers who had claimed their own refunds may make none). That last
+  is judged only when the outcome of every keeper transaction was read: one that was unknown to the
+  RPC or not yet final fails the check on its own, and may hold the transfer.
 
 Once the pool has ended, the commit gas check also fails for every buyer of the swarm (the 20
 scripted buyers and the MCP server's) that holds seats with neither an `ok` commit record nor a
