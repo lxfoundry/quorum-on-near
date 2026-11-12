@@ -188,8 +188,8 @@ async function poolOnChain(deps: ToolDeps, tool: string, pool: number): Promise<
  * `signal` is the client's cancellation of the call, after which the MCP SDK sends no answer. A call
  * cancelled when it leaves the queue, or before its payment goes through the spend ledger, signs and
  * spends nothing (`cancelled`). One cancelled once the payment was handed over runs to its answer;
- * the pool is then held whatever the answer, as for a payment whose result is unknown, and the answer
- * goes to the log, since no client receives it.
+ * the pool is then held whatever the answer, once a payment was signed, as for a payment whose result
+ * is unknown, and the answer goes to the log, since no client receives it.
  */
 export function quorumCommit(deps: ToolDeps, request: SeatsInput, signal?: AbortSignal): Promise<ToolResult<CommitOutput>> {
   return deps.commits.serial(() => commit(deps, request, signal));

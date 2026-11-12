@@ -678,7 +678,7 @@ describe('quorum_commit cancelled by the client', () => {
     ['a 200 with a credential', filled(24)],
     ['a 502 relay_failed', signed({ kind: 'relay_failed', txHash: TX_HASH })],
     ['no documented answer', new PaymentUnknownError(SIGNED, new TypeError('fetch failed'))],
-  ])('holds the pool whatever the answer, and logs the answer, when it is cancelled once the payment was handed over: %s', async (_, pay) => {
+  ])('holds the pool whatever the answer, once a payment was signed, and logs the answer, when it is cancelled once the payment was handed over: %s', async (_, pay) => {
     const controller = new AbortController();
     const { deps, calls, logs } = setup({ pay, duringPay: async () => controller.abort() });
 
