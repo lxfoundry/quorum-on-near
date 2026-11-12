@@ -154,7 +154,8 @@ type Step =
  * 1. waits `random() × spreadMs`;
  * 2. lists the pools (`GET /pools`), asking again after a 503 or a failed request; a pool that is not
  *    listed is asked for an offer, whose answer says why;
- * 3. declines a pool whose seat price is above its top price;
+ * 3. declines a listed pool whose seat price, as the pools contract holds it (`ctx.pool`), is above its
+ *    top price: the price the gateway lists is its word;
  * 4. redeems once before each payment. A buyer that already holds seats in the pool, such as one that
  *    paid in an earlier run on it, follows its redemption (step 7) and never pays. After a 503 or a
  *    failed request it asks again, and with no answer after MAX_ATTEMPTS it ends `failed`, having paid
@@ -221,7 +222,8 @@ class ScriptedBuyer {
     if (listed.listing === undefined) {
       this.#log(`${arrival}: pool ${poolId} is not listed, asks for an offer`);
     } else {
-      const price = listed.listing.seat_price;
+      // The seat price on chain, never the listing's: the gateway's word does not decide what is paid.
+      const price = this.#ctx.pool.seatPrice;
       if (price > topPrice) return this.#end('declined', `seat price ${price} above top price ${topPrice}`);
       this.#log(`${arrival}: seat price ${price}, top price ${topPrice}: wants ${seats} seats`);
     }

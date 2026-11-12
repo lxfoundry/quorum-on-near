@@ -224,9 +224,32 @@ describe('runBuyer: arrival and rule', () => {
   });
 
   it('declines a pool whose seat price is above its top price, without asking for an offer', async () => {
-    const { run, events } = agent({ pools: [listed({ seat_price: '320' })] }, { profile: { ...PROFILE, topPrice: 250n } });
+    const { run, events } = agent(
+      { pools: [listed({ seat_price: '320' })] },
+      { profile: { ...PROFILE, topPrice: 250n }, pool: { ...CHAIN_POOL, seatPrice: 320n } },
+    );
     expect(await run()).toEqual(nothingPaid('declined', 'seat price 320 above top price 250'));
     expect(events).toEqual(['sleep 0', 'pools']);
+  });
+
+  it('declines by the seat price the pools contract holds when the gateway lists a lower one', async () => {
+    const { run, events, lines } = agent(
+      { pools: [listed({ seat_price: '180' })] },
+      { profile: { ...PROFILE, topPrice: 250n }, pool: { ...CHAIN_POOL, seatPrice: 320n } },
+    );
+    expect(await run()).toEqual(nothingPaid('declined', 'seat price 320 above top price 250'));
+    expect(events).toEqual(['sleep 0', 'pools']);
+    expect(lines.join('\n')).not.toContain('180');
+  });
+
+  it('commits by the seat price the pools contract holds when the gateway lists a higher one', async () => {
+    const { run, events, lines } = agent(
+      { pools: [listed({ seat_price: '320' })], payments: [pending(18)], redemptions: [NO_SEATS, FILLED] },
+      { profile: { ...PROFILE, topPrice: 250n } },
+    );
+    expect((await run()).kind).toBe('credential');
+    expect(events).toContain('pay 0 18');
+    expect(lines).toContain('buyer-03  arrives after 0.0 s: seat price 180, top price 250: wants 18 seats');
   });
 
   it('commits to a pool whose seat price is its top price', async () => {
@@ -237,7 +260,7 @@ describe('runBuyer: arrival and rule', () => {
         payments: [pending(18)],
         redemptions: [NO_SEATS, FILLED],
       },
-      { profile: { ...PROFILE, topPrice: 250n } },
+      { profile: { ...PROFILE, topPrice: 250n }, pool: { ...CHAIN_POOL, seatPrice: 250n } },
     );
     expect((await run()).kind).toBe('credential');
     expect(events).toContain('pay 0 18');
