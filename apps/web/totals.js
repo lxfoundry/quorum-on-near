@@ -124,7 +124,10 @@ export class PageDataError extends Error {
 
 /** A whole number written in decimal, with no sign and no leading zero: an amount or a pool id. */
 const DECIMAL = /^(0|[1-9][0-9]*)$/;
-/** The most rows `list_pools` and `get_seats` return in one call (the contract's page size). */
+/**
+ * The rows the page asks `list_pools` and `get_seats` for at a time. It must not exceed the most the
+ * contract returns in one call (`MAX_PAGE`): a page the contract cuts short is taken for the last.
+ */
 const PAGE_SIZE = 100;
 
 /**

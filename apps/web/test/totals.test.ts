@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   PageDataError,
@@ -671,6 +672,19 @@ describe('readAll', () => {
       [0, 100],
       [100, 100],
     ]);
+  });
+
+  // A page the contract cuts short would be taken for the last one, and the rows after it never read;
+  // a smaller page only costs more requests.
+  it('asks for no more rows than the pools contract returns in one call, its MAX_PAGE', async () => {
+    const source = readFileSync(new URL('../../../contracts/pools/src/types.rs', import.meta.url), 'utf8');
+    const maxPage = Number(/pub const MAX_PAGE: u64 = (\d+);/.exec(source)?.[1]);
+    expect(Number.isSafeInteger(maxPage) && maxPage > 0, 'MAX_PAGE is read from the contract').toBe(true);
+    const { readPage, calls } = pagedView(0);
+    await readAll(readPage);
+    const limit = calls[0]?.[1] ?? Number.NaN;
+    expect(limit).toBeGreaterThan(0);
+    expect(limit).toBeLessThanOrEqual(maxPage);
   });
 });
 

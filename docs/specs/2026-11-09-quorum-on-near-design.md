@@ -1247,8 +1247,9 @@ keys) and the NEP-141, NEP-145, NEP-297, NEP-366 and NEP-413 standards:
   `list_pools` to build its selector, one request per 100 pools at each 2-second refresh of each
   viewer, and anyone can add pools cheaply (storage is open to abuse, above), so the number of
   requests per refresh is not bounded by the provider. The page asks for 100 rows at a time, which is
-  the contract's page size: `PAGE_SIZE` in the page must equal `MAX_PAGE` in the contract, since a
-  page that the contract cuts short is taken for the last one. Through the pass-through, every
+  the contract's page size: `PAGE_SIZE` in the page must not exceed `MAX_PAGE` in the contract
+  (a smaller page only costs more requests), since a page that the contract cuts short is taken for
+  the last one, and a test checks it. Through the pass-through, every
   viewer's reads reach the RPC from the gateway's address, so a public RPC's rate limit applies to
   all viewers together and shows on the page as "Could not refresh" lines.
 - **Credentials are issued at optimistic execution, not finality.** The relayer waits for the
