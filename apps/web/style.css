@@ -134,6 +134,19 @@ select {
   color: var(--bad);
 }
 
+/* Text for a screen reader only: it is in the accessibility tree, takes no room and is not seen. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 .empty {
   margin: 0;
   color: var(--muted);

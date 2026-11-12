@@ -92,6 +92,7 @@ const ui = {
   picker: element('picker', HTMLElement),
   select: element('pool-select', HTMLSelectElement),
   status: element('status', HTMLElement),
+  announcement: element('announcement', HTMLElement),
   noPool: element('no-pool', HTMLElement),
   pool: element('pool', HTMLElement),
   poolTitle: element('pool-title', HTMLElement),
@@ -125,6 +126,8 @@ let setup = null;
  */
 let shown = null;
 let polling = false;
+/** Whether the last refresh failed, so that the recovery from it is announced. */
+let failing = false;
 let rpcId = 0;
 
 /**
@@ -369,15 +372,33 @@ function showStatus(text, failed) {
   ui.status.classList.toggle('failed', failed);
 }
 
+/**
+ * Tells a screen reader something, through the live region. The status line is not one, since it is
+ * rewritten at every refresh; only a failure and the recovery from one are announced, and the same
+ * words twice in a row are not.
+ *
+ * @param {string} text
+ */
+function announce(text) {
+  setText(ui.announcement, text);
+}
+
 /** Runs one poll, unless the previous one is still running, and reports how it went. */
 async function tick() {
   if (polling) return;
   polling = true;
   try {
-    if (await poll()) showStatus(`Updated at ${new Date().toLocaleTimeString()}`, false);
+    if (await poll()) {
+      showStatus(`Updated at ${new Date().toLocaleTimeString()}`, false);
+      if (failing) announce('The page is up to date again.');
+      failing = false;
+    }
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    showStatus(`Could not refresh (${reason}). Retrying every ${POLL_INTERVAL_MS / 1000} seconds.`, true);
+    const text = `Could not refresh (${reason}). Retrying every ${POLL_INTERVAL_MS / 1000} seconds.`;
+    showStatus(text, true);
+    announce(text);
+    failing = true;
   } finally {
     polling = false;
   }

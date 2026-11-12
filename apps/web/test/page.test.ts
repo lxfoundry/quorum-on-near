@@ -5,6 +5,7 @@ const folder = new URL('../', import.meta.url);
 const read = (name: string): string => readFileSync(new URL(name, folder), 'utf8');
 const html = read('index.html');
 const app = read('app.js');
+const css = read('style.css');
 const scripts = readdirSync(folder).filter((name) => name.endsWith('.js'));
 
 describe('index.html', () => {
@@ -21,6 +22,20 @@ describe('index.html', () => {
 
   it('declares its icon inline, so the browser does not ask the gateway for /favicon.ico, which it answers 404', () => {
     expect(html).toMatch(/<link rel="icon" href="data:,">/);
+  });
+
+  it('does not make the status line a live region, which would announce its update every 2 seconds', () => {
+    const tag = /<[^>]*\bid="status"[^>]*>/.exec(html)?.[0] ?? '';
+    expect(tag).not.toBe('');
+    expect(tag).not.toMatch(/aria-live|role=/);
+  });
+
+  it('has a visually hidden live region for the failures and the recoveries that app.js announces', () => {
+    const tag = /<[^>]*\bid="announcement"[^>]*>/.exec(html)?.[0] ?? '';
+    expect(tag).toMatch(/role="status"/);
+    expect(tag).toMatch(/aria-live="polite"/);
+    expect(tag).toMatch(/class="visually-hidden"/);
+    expect(css).toMatch(/\.visually-hidden\s*\{[^}]*clip-path:[^}]*\}/);
   });
 
   it('has every element app.js looks up', () => {

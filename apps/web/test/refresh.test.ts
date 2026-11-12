@@ -315,3 +315,74 @@ describe('a refresh', () => {
     expect(writes).toEqual(['payout-links.replaceChildren']);
   });
 });
+
+describe('the status line', () => {
+  /** A fetch that answers from `world` until `down.value` is set, then fails as a network error does. */
+  function flaky(world: World) {
+    const down = { value: false };
+    const base = worldFetch(world);
+    const fetch: FakeFetch = (url, init) => (down.value ? Promise.reject(new Error('offline')) : base(url, init));
+    return { down, fetch };
+  }
+
+  it('shows when the page was updated, and says nothing to a screen reader about it', async () => {
+    const page = await openPage(worldFetch(newWorld()));
+    await page.refresh();
+    expect(el('status').textContent).toMatch(/^Updated at /);
+    expect(writes.filter((write) => write.startsWith('announcement.'))).toEqual([]);
+  });
+
+  it('shows a failed refresh with its reason, and announces it once however long it lasts', async () => {
+    const { down, fetch } = flaky(newWorld());
+    const page = await openPage(fetch);
+    down.value = true;
+    await page.refresh();
+    expect(el('status').textContent).toBe('Could not refresh (offline). Retrying every 2 seconds.');
+    expect(el('status').classList.contains('failed')).toBe(true);
+    expect(el('announcement').textContent).toBe('Could not refresh (offline). Retrying every 2 seconds.');
+    writes = [];
+    await page.refresh();
+    await page.refresh();
+    expect(writes.filter((write) => write.startsWith('announcement.'))).toEqual([]);
+  });
+
+  it('announces the recovery from a failure, once', async () => {
+    const { down, fetch } = flaky(newWorld());
+    const page = await openPage(fetch);
+    down.value = true;
+    await page.refresh();
+    down.value = false;
+    writes = [];
+    await page.refresh();
+    expect(el('status').textContent).toMatch(/^Updated at /);
+    expect(el('announcement').textContent).toBe('The page is up to date again.');
+    expect(writes.filter((write) => write.startsWith('announcement.'))).toEqual(['announcement.textContent']);
+    writes = [];
+    await page.refresh();
+    expect(writes.filter((write) => write.startsWith('announcement.'))).toEqual([]);
+  });
+
+  it('announces a failure again after a recovery', async () => {
+    const { down, fetch } = flaky(newWorld());
+    const page = await openPage(fetch);
+    down.value = true;
+    await page.refresh();
+    down.value = false;
+    await page.refresh();
+    down.value = true;
+    writes = [];
+    await page.refresh();
+    expect(el('announcement').textContent).toBe('Could not refresh (offline). Retrying every 2 seconds.');
+    expect(writes.filter((write) => write.startsWith('announcement.'))).toEqual(['announcement.textContent']);
+  });
+
+  it('announces nothing while a pool is chosen from the selector', async () => {
+    await openPage(worldFetch(newWorld()));
+    writes = [];
+    el('pool-select').value = '3';
+    el('pool-select').listeners.get('change')?.();
+    expect(el('status').textContent).toBe('Loading pool 3…');
+    await vi.waitFor(() => expect(el('status').textContent).toMatch(/^Updated at /));
+    expect(writes.filter((write) => write.startsWith('announcement.'))).toEqual([]);
+  });
+});
