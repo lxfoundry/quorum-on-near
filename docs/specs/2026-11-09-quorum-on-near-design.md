@@ -1211,8 +1211,10 @@ keys) and the NEP-141, NEP-145, NEP-297, NEP-366 and NEP-413 standards:
   differ, as they do by default in two checkouts or on two machines, do not see each other's lock.
 - **One MCP server per spend file.** A server runs its payments through the cap one at a time within
   its own process, and keeps its holds in memory. Two servers sharing one spend file can each pass
-  the cap check before the other has counted its payment, and so overshoot the cap by one payment,
-  and neither sees the pools the other holds.
+  the cap check before the other has counted its payment, and when their reservations interleave one
+  of the two writes is lost, so the total misses a payment each time. The overshoot of the cap
+  therefore grows by one payment per race, and is not bounded by one. Neither sees the pools the
+  other holds.
 - **The spend cap counts the gateway's answers.** A gateway that misreports what it relayed can make
   the cap count less than was spent; the buyer's token balance is the bound that does not depend on
   the gateway.
