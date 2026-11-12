@@ -574,6 +574,38 @@ describe('runBuyer: a payment whose result is unknown', () => {
     expect(lines).toContain('buyer-03  the payment did not land by block 5140, tries again');
   });
 
+  it('still waits at a final height of exactly its expiry plus the margin, and pays again only above it', async () => {
+    // Signed at 5,000 to expire at 5,120: the bound is 5,140. The polls read 5,140, then 5,141.
+    const heights = [START_HEIGHT, 5_140n, 5_141n];
+    const { run, events, lines } = agent(
+      {
+        offers: [offered(18), offered(18)],
+        payments: [new TypeError('fetch failed'), pending(18)],
+        redemptions: [NO_SEATS, NO_SEATS, NO_SEATS, NO_SEATS, FILLED],
+      },
+      { finalHeight: () => heights.shift() ?? 5_141n },
+    );
+    expect(await run()).toMatchObject({ kind: 'credential' });
+    expect(events).toEqual([
+      'sleep 0',
+      'pools',
+      'redeem 0',
+      'offer 0 18',
+      'pay 0 18',
+      'sleep 5000',
+      'redeem 0',
+      'sleep 5000',
+      'redeem 0',
+      'redeem 0',
+      'offer 0 18',
+      'pay 0 18',
+      'sleep 5000',
+      'redeem 0',
+    ]);
+    expect(lines).toContain('buyer-03  no answer to the payment (error): learns by redemption whether it lands by block 5140');
+    expect(lines).toContain('buyer-03  the payment did not land by block 5140, tries again');
+  });
+
   it('follows the seats that a payment which got no answer took, paying once', async () => {
     const { run, events } = agent({ payments: [new TypeError('fetch failed')], redemptions: [NO_SEATS, NO_SEATS, WAITING, FILLED] });
     expect(await run()).toEqual({ buyer: ACCOUNT, kind: 'credential', seats: 18, paid: 3_240n, detail: 'pool filled', txHashes: [] });

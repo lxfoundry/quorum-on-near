@@ -143,10 +143,11 @@ type Step =
   /** The payment took seats: follow its redemption. */
   | { next: 'follow' }
   /**
-   * A payment of the buyer's account may still take seats until block `untilHeight`: learn whether it
-   * did before any new payment. `kind` and `detail` end the run when it did not and no attempt is left.
+   * A payment of the buyer's account may still take seats until block `lastHeight`, its expiry plus
+   * SETTLE_MARGIN_BLOCKS: learn whether it did before any new payment. `kind` and `detail` end the run
+   * when it did not and no attempt is left.
    */
-  | { next: 'settle'; untilHeight: bigint; kind: 'refused' | 'failed'; detail: string };
+  | { next: 'settle'; lastHeight: bigint; kind: 'refused' | 'failed'; detail: string };
 
 /**
  * Runs one scripted buyer against a pool. It signs a payment only while the gateway says it holds no
@@ -257,7 +258,7 @@ class ScriptedBuyer {
         case 'follow':
           return this.#redeem();
         case 'settle': {
-          const settled = await this.#settle(step.untilHeight);
+          const settled = await this.#settle(step.lastHeight);
           if (settled !== 'not_landed') return settled;
           if (attempt === MAX_ATTEMPTS) return this.#end(step.kind, step.detail);
           // Nothing of the payment can land any more: the next attempt pays at once.
@@ -425,26 +426,27 @@ class ScriptedBuyer {
   }
 
   /**
-   * The step that settles a payment which may take seats until block `untilHeight`, and its log line:
-   * `what` happened, then what the buyer learns by redemption (`whether`) and by which block.
+   * The step that settles a payment whose delegate expires at block `maxBlockHeight`, and its log line:
+   * `what` happened, then what the buyer learns by redemption (`whether`) and by which block. The
+   * bound, `maxBlockHeight` plus SETTLE_MARGIN_BLOCKS, is computed here alone: the log line and the
+   * gate in #settle use this one value.
    */
-  #settling(untilHeight: bigint, kind: 'refused' | 'failed', what: string, whether: string): Step {
-    const lastHeight = untilHeight + SETTLE_MARGIN_BLOCKS;
+  #settling(maxBlockHeight: bigint, kind: 'refused' | 'failed', what: string, whether: string): Step {
+    const lastHeight = maxBlockHeight + SETTLE_MARGIN_BLOCKS;
     this.#log(`${what}: learns by redemption whether ${whether} by block ${lastHeight}`);
     const detail = kind === 'failed' ? `the payment did not land by block ${lastHeight}` : what;
-    return { next: 'settle', untilHeight, kind, detail };
+    return { next: 'settle', lastHeight, kind, detail };
   }
 
   /**
    * Redeems, signing nothing, until it learns whether a payment of the buyer's account that may still
    * land took seats: seats appear, which it follows, or a redemption read after a final block above
-   * `untilHeight` plus SETTLE_MARGIN_BLOCKS finds none (`not_landed`), so that a new payment is safe.
+   * `lastHeight` (the bound #settling gives) finds none (`not_landed`), so that a new payment is safe.
    * A final height that cannot be read counts as not passed yet; a 503 or a failed request is asked
    * again. It gives up as #redeem does.
    */
-  async #settle(untilHeight: bigint): Promise<BuyerOutcome | 'not_landed'> {
+  async #settle(lastHeight: bigint): Promise<BuyerOutcome | 'not_landed'> {
     const { buyer, poolId } = this.#ctx;
-    const lastHeight = untilHeight + SETTLE_MARGIN_BLOCKS;
     this.#state = '';
     for (;;) {
       await this.#pause();
