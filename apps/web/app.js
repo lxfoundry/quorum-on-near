@@ -27,8 +27,10 @@ import {
   viewResult,
 } from './totals.js';
 
-/** @import { ActivityRecord, BuyerRow, PageConfig, PoolStatus, PoolView, SeatView, TokenInfo, TxLink } from './totals.js' */
+/** @import { ActivityRecord, BlockRef, BuyerRow, PageConfig, PoolStatus, PoolView, SeatView, TokenInfo, TxLink, ViewAnswer } from './totals.js' */
 
+/** @type {BlockRef} */
+const FINAL = { finality: 'final' };
 const POLL_INTERVAL_MS = 2_000;
 const COUNTDOWN_INTERVAL_MS = 1_000;
 /** How long one request may take. A poll waits for its requests, and the next poll waits for it. */
@@ -109,21 +111,23 @@ async function getJson(path) {
 }
 
 /**
- * Calls a view through the configured RPC and returns what it returned. The answer's JSON is read
- * whatever its HTTP status, so that an error the RPC explains is reported by name.
+ * Calls a view through the configured RPC at `block`, and returns what it returned and the hash of
+ * the block it was read at. The answer's JSON is read whatever its HTTP status, so that an error the
+ * RPC explains is reported by name.
  *
  * @param {PageConfig} config
  * @param {string} accountId
  * @param {string} methodName
  * @param {Record<string, unknown>} args
- * @returns {Promise<unknown>}
+ * @param {BlockRef} block
+ * @returns {Promise<ViewAnswer>}
  */
-async function view(config, accountId, methodName, args) {
+async function view(config, accountId, methodName, args, block) {
   rpcId += 1;
   const response = await fetch(config.rpcUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(viewRequest(rpcId, accountId, methodName, args)),
+    body: JSON.stringify(viewRequest(rpcId, accountId, methodName, args, block)),
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   /** @type {unknown} */
@@ -139,7 +143,7 @@ async function view(config, accountId, methodName, args) {
 /** Reads what the page needs once: the gateway's configuration and the token's decimals. */
 async function loadSetup() {
   const config = parseConfig(await getJson('/config.json'));
-  const token = parseToken(await view(config, config.token, 'ft_metadata', {}));
+  const token = parseToken((await view(config, config.token, 'ft_metadata', {}, FINAL)).value);
   ui.source.textContent = `Read from the pools contract ${config.poolsContract} on ${config.network}; token ${config.token}.`;
   return { config, token };
 }
@@ -147,7 +151,9 @@ async function loadSetup() {
 /**
  * Reads the chain and the feed, then renders the pool the URL asks for, or the provider's newest.
  * A pool another seller opened is not rendered: the page shows a notice naming its seller instead.
- * Returns false, rendering nothing, when the choice of pool changed while it read.
+ * `get_pool` is read at final finality, and the pool's seats and the contract's balance at the block
+ * of that answer, so that the three agree. Returns false, rendering nothing, when the choice of pool
+ * changed while it read.
  *
  * @returns {Promise<boolean>}
  */
@@ -155,19 +161,26 @@ async function poll() {
   const search = location.search;
   setup ??= await loadSetup();
   const { config, token } = setup;
-  const pools = await readAll(async (from, limit) => parsePools(await view(config, config.poolsContract, 'list_pools', { from, limit })));
+  const pools = await readAll(async (from, limit) =>
+    parsePools((await view(config, config.poolsContract, 'list_pools', { from, limit }, FINAL)).value),
+  );
   const { options, selected } = poolChoices(pools, config.provider, poolParam(search));
   if (selected === null) {
     renderSelector(options, selected);
     renderNoPool('The provider has not opened a pool yet.');
     return true;
   }
-  const [pool, seats, balance, activity] = await Promise.all([
-    view(config, config.poolsContract, 'get_pool', { pool_id: selected }).then((value) => (value === null ? null : parsePool(value))),
-    readAll(async (from, limit) => parseSeats(await view(config, config.poolsContract, 'get_seats', { pool_id: selected, from, limit }))),
-    view(config, config.token, 'ft_balance_of', { account_id: config.poolsContract }).then(parseBalance),
+  const found = await view(config, config.poolsContract, 'get_pool', { pool_id: selected }, FINAL);
+  /** @type {BlockRef} */
+  const atPool = { block_id: found.blockHash };
+  const [seats, balance, activity] = await Promise.all([
+    readAll(async (from, limit) =>
+      parseSeats((await view(config, config.poolsContract, 'get_seats', { pool_id: selected, from, limit }, atPool)).value),
+    ),
+    view(config, config.token, 'ft_balance_of', { account_id: config.poolsContract }, atPool).then((answer) => parseBalance(answer.value)),
     getJson(`/activity?pool=${selected}`).then(parseActivity),
   ]);
+  const pool = found.value === null ? null : parsePool(found.value);
   if (location.search !== search) return false;
   renderSelector(options, selected);
   if (pool === null) {

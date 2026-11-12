@@ -79,6 +79,15 @@
  * }} BuyerRow
  */
 /**
+ * The block a view call reads at: the latest final block, or the block with this hash. A refresh
+ * reads `get_pool` at final finality, then the rest of the pool's data at the block of that answer.
+ * @typedef {{ finality: 'final' } | { block_id: string }} BlockRef
+ */
+/**
+ * What a view returned, and the hash of the block it was read at.
+ * @typedef {{ value: unknown, blockHash: string }} ViewAnswer
+ */
+/**
  * A token's display facts, from its NEP-148 `ft_metadata`.
  * @typedef {{ decimals: number, symbol: string }} TokenInfo
  */
@@ -266,16 +275,17 @@ export function payoutLinks(pool, activity, explorerTxUrl) {
 }
 
 /**
- * The JSON-RPC body of a view call: a `query` of `request_type: "call_function"` at optimistic
- * finality, with `args` as base64 of their JSON. It has exactly the fields the gateway's `/rpc`
- * pass-through accepts.
+ * The JSON-RPC body of a view call: a `query` of `request_type: "call_function"` at the block that
+ * `block` names, final finality or a block hash, with `args` as base64 of their JSON. It has exactly
+ * the fields the gateway's `/rpc` pass-through accepts.
  *
  * @param {number} id
  * @param {string} accountId
  * @param {string} methodName
  * @param {Record<string, unknown>} args
+ * @param {BlockRef} block
  */
-export function viewRequest(id, accountId, methodName, args) {
+export function viewRequest(id, accountId, methodName, args, block) {
   const bytes = new TextEncoder().encode(JSON.stringify(args));
   return {
     jsonrpc: '2.0',
@@ -286,18 +296,21 @@ export function viewRequest(id, accountId, methodName, args) {
       account_id: accountId,
       method_name: methodName,
       args_base64: btoa(String.fromCharCode(...bytes)),
-      finality: 'optimistic',
+      ...block,
     },
   };
 }
 
+/** A block hash as the RPC writes it: base58. */
+const BLOCK_HASH = /^[1-9A-HJ-NP-Za-km-z]+$/;
+
 /**
- * The value a view returned, decoded from the bytes of the RPC's answer as UTF-8 JSON. Throws a
- * PageDataError when the RPC (or the gateway's pass-through) answered an error, when the view
- * failed in the contract, or when the answer is not a view result.
+ * The value a view returned, decoded from the bytes of the RPC's answer as UTF-8 JSON, and the hash
+ * of the block it was read at. Throws a PageDataError when the RPC (or the gateway's pass-through)
+ * answered an error, when the view failed in the contract, or when the answer is not a view result.
  *
  * @param {unknown} response
- * @returns {unknown}
+ * @returns {ViewAnswer}
  */
 export function viewResult(response) {
   if (!isObject(response)) throw new PageDataError('the RPC answer is not a JSON object');
@@ -307,11 +320,16 @@ export function viewResult(response) {
   if (typeof result.error === 'string') throw new PageDataError(`the view failed: ${result.error}`);
   const bytes = result.result;
   if (!Array.isArray(bytes) || !bytes.every(isByte)) throw new PageDataError('the view result is not a list of bytes');
+  const blockHash = result.block_hash;
+  if (typeof blockHash !== 'string' || !BLOCK_HASH.test(blockHash)) throw new PageDataError('the view result has no block hash');
+  /** @type {unknown} */
+  let value;
   try {
-    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Uint8Array.from(bytes)));
+    value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Uint8Array.from(bytes)));
   } catch {
     throw new PageDataError('the view result is not UTF-8 JSON');
   }
+  return { value, blockHash };
 }
 
 /**

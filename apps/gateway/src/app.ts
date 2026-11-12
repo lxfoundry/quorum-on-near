@@ -50,7 +50,7 @@ function hasExactKeys(value: Fields, keys: string[]): boolean {
  * at a `finality` or a `block_id`, with no other field at either level, and `args_base64` of at
  * most MAX_ARGS_BASE64 characters.
  */
-function isAllowedViewCall(body: unknown, accounts: string[]): boolean {
+export function isAllowedViewCall(body: unknown, accounts: string[]): boolean {
   if (!isFields(body) || !hasExactKeys(body, ['jsonrpc', 'id', 'method', 'params'])) return false;
   const { jsonrpc, id, method, params } = body;
   if (jsonrpc !== '2.0' || (typeof id !== 'string' && typeof id !== 'number') || method !== 'query') return false;

@@ -25,8 +25,13 @@ import {
   type PoolView,
   type SeatView,
 } from '../totals.js';
+import { isAllowedViewCall } from '../../gateway/src/app.ts';
 
 const EXPLORER = 'https://testnet.nearblocks.io/txns/';
+const POOLS = 'pools.quorum.testnet';
+const TOKEN = '3e2210e1184b45b64c8a434c0a7e7b23cc04ea7eb7a6c3c32520d03d4afcb8af';
+/** The hash of the block a refresh reads at, as an RPC answer gives it. */
+const BLOCK_HASH = 'GZ3Ya1qXp7kN8mWcT4vB9rHfJ2sLdE6uQyKxM5nPaRtV';
 const COMMIT_1 = 'Ev64qpcqroBNeET1xax4ei5vDc1sJTyNSZRpj5GdYYTy';
 const COMMIT_2 = 'FmHDvha1UrjFE2KZN9NKRTrygpw2iXNsQquSFVHcfGyM';
 const REFUND_1 = '73kVxs4q7MPWXkh1cCTN3iNPk9jRnhUu5TKSE22ZeK55';
@@ -354,33 +359,74 @@ describe('payoutLinks', () => {
 });
 
 describe('viewRequest', () => {
-  it('builds a call_function query at optimistic finality, with the arguments as base64 JSON', () => {
-    expect(viewRequest(7, 'pools.quorum.testnet', 'get_seats', { pool_id: 4, from: 0, limit: 100 })).toStrictEqual({
+  it('builds a call_function query at final finality, with the arguments as base64 JSON', () => {
+    expect(viewRequest(7, POOLS, 'get_pool', { pool_id: 4 }, { finality: 'final' })).toStrictEqual({
       jsonrpc: '2.0',
       id: 7,
       method: 'query',
       params: {
         request_type: 'call_function',
-        account_id: 'pools.quorum.testnet',
-        method_name: 'get_seats',
-        args_base64: 'eyJwb29sX2lkIjo0LCJmcm9tIjowLCJsaW1pdCI6MTAwfQ==',
-        finality: 'optimistic',
+        account_id: POOLS,
+        method_name: 'get_pool',
+        args_base64: 'eyJwb29sX2lkIjo0fQ==',
+        finality: 'final',
       },
     });
+  });
+
+  it('builds a call_function query at a block, given by its hash, with no finality', () => {
+    expect(viewRequest(8, POOLS, 'get_seats', { pool_id: 4, from: 0, limit: 100 }, { block_id: BLOCK_HASH })).toStrictEqual({
+      jsonrpc: '2.0',
+      id: 8,
+      method: 'query',
+      params: {
+        request_type: 'call_function',
+        account_id: POOLS,
+        method_name: 'get_seats',
+        args_base64: 'eyJwb29sX2lkIjo0LCJmcm9tIjowLCJsaW1pdCI6MTAwfQ==',
+        block_id: BLOCK_HASH,
+      },
+    });
+  });
+
+  // The bodies of every view call the page makes, as they reach the gateway once sent as JSON.
+  it.each([
+    ['ft_metadata at final finality', viewRequest(1, TOKEN, 'ft_metadata', {}, { finality: 'final' })],
+    ['list_pools at final finality', viewRequest(2, POOLS, 'list_pools', { from: 0, limit: 100 }, { finality: 'final' })],
+    ['get_pool at final finality', viewRequest(3, POOLS, 'get_pool', { pool_id: 4 }, { finality: 'final' })],
+    ['get_seats at a block', viewRequest(4, POOLS, 'get_seats', { pool_id: 4, from: 100, limit: 100 }, { block_id: BLOCK_HASH })],
+    ['ft_balance_of at a block', viewRequest(5, TOKEN, 'ft_balance_of', { account_id: POOLS }, { block_id: BLOCK_HASH })],
+  ])("builds a body that the gateway's /rpc pass-through forwards: %s", (_call, body) => {
+    expect(isAllowedViewCall(JSON.parse(JSON.stringify(body)), [POOLS, TOKEN])).toBe(true);
   });
 });
 
 describe('viewResult', () => {
   const answer = (result: unknown) => ({ jsonrpc: '2.0', id: 7, result });
 
-  it('decodes the bytes of a view result as UTF-8 JSON', () => {
+  it('decodes the bytes of a view result as UTF-8 JSON, with the hash of the block it was read at', () => {
     // The bytes of {"terms":"8×GPU","decimals":6}, where × takes two bytes.
     const bytes = [123, 34, 116, 101, 114, 109, 115, 34, 58, 34, 56, 195, 151, 71, 80, 85, 34, 44, 34, 100, 101, 99, 105, 109, 97, 108, 115, 34, 58, 54, 125];
-    expect(viewResult(answer({ result: bytes, logs: [], block_height: 1, block_hash: 'h' }))).toEqual({ terms: '8×GPU', decimals: 6 });
+    expect(viewResult(answer({ result: bytes, logs: [], block_height: 1000, block_hash: BLOCK_HASH }))).toStrictEqual({
+      value: { terms: '8×GPU', decimals: 6 },
+      blockHash: BLOCK_HASH,
+    });
   });
 
   it('gives null for a view that returned null, such as get_pool of a pool that does not exist', () => {
-    expect(viewResult(answer({ result: [110, 117, 108, 108], logs: [] }))).toBeNull();
+    expect(viewResult(answer({ result: [110, 117, 108, 108], logs: [], block_height: 1000, block_hash: BLOCK_HASH }))).toStrictEqual({
+      value: null,
+      blockHash: BLOCK_HASH,
+    });
+  });
+
+  it.each([
+    ['no block hash', undefined],
+    ['a block hash that is not text', 1000],
+    ['an empty block hash', ''],
+    ['a block hash that is not base58', 'not/a+hash'],
+  ])('throws a PageDataError for a view result with %s', (_kind, hash) => {
+    expect(() => viewResult(answer({ result: [110, 117, 108, 108], logs: [], block_height: 1000, block_hash: hash }))).toThrow(PageDataError);
   });
 
   it('throws a PageDataError naming the cause of an error the RPC answered', () => {
