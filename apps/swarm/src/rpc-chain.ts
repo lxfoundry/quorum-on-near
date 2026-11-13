@@ -1,5 +1,13 @@
-import { transportReason, type BuyerSettings } from '@quorum-on-near/buyer';
-import { ONE_YOCTO, parseAmount, toTxOutcome, type PoolView, type SeatView } from '@quorum-on-near/protocol';
+import { readPoolView, transportReason, type BuyerSettings } from '@quorum-on-near/buyer';
+import {
+  isAccountId,
+  ONE_YOCTO,
+  parseAmount,
+  toTxOutcome,
+  type BuyerState,
+  type PoolView,
+  type SeatView,
+} from '@quorum-on-near/protocol';
 import {
   Account,
   actions,
@@ -164,17 +172,24 @@ export class RpcSwarmChain implements SwarmChain {
     return balance;
   }
 
+  /** Throws TypeError, naming the field, for an answer that is not the view of pool `poolId`. */
   async getPool(poolId: number): Promise<PoolView | null> {
-    return (await this.#view<PoolView>(this.#poolsContract, 'get_pool', { pool_id: poolId })) ?? null;
+    const view = await this.#view(this.#poolsContract, 'get_pool', { pool_id: poolId });
+    if (view === undefined || view === null) return null;
+    return readPoolView(view, poolId, (detail) => new TypeError(`get_pool returned ${detail}`));
   }
 
+  /** Throws TypeError, naming the row and the field, for an answer that is not a list of pool views. */
   async listPools(from: number, limit: number, at?: ReadAt): Promise<PoolView[]> {
-    return (await this.#view<PoolView[]>(this.#poolsContract, 'list_pools', { from, limit }, at)) ?? [];
+    const rows = await this.#view(this.#poolsContract, 'list_pools', { from, limit }, at);
+    return readRows('list_pools', rows, (row, malformed) => readPoolView(row, null, malformed));
   }
 
+  /** Throws TypeError, naming the row and the field, for an answer that is not a list of seat rows. */
   async getSeats(poolId: number, from: number, limit: number, atHeight?: bigint): Promise<SeatView[]> {
     const args = { pool_id: poolId, from, limit };
-    return (await this.#view<SeatView[]>(this.#poolsContract, 'get_seats', args, atHeight)) ?? [];
+    const rows = await this.#view(this.#poolsContract, 'get_seats', args, atHeight);
+    return readRows('get_seats', rows, readSeatView);
   }
 
   async finalBlock(): Promise<BlockInfo> {
@@ -377,6 +392,35 @@ export class RpcSwarmChain implements SwarmChain {
     const blockQuery = at === undefined ? FINAL : at === 'optimistic' ? OPTIMISTIC : { blockId: blockHeight(at) };
     return this.#read.callFunction<T>({ contractId, method, args, blockQuery });
   }
+}
+
+const BUYER_STATES: readonly BuyerState[] = ['committed', 'refunded', 'claimable'];
+
+/**
+ * `value`, the answer of the view `method`, as a list of rows each read by `readRow`; `malformed` makes
+ * the error of a row, which names its place. A view that answers null (or nothing) has no rows. Throws
+ * TypeError for an answer that is not a list.
+ */
+function readRows<T>(
+  method: string,
+  value: unknown,
+  readRow: (row: unknown, malformed: (detail: string) => Error) => T,
+): T[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw new TypeError(`${method} returned something that is not a list`);
+  return value.map((row: unknown, index) => readRow(row, (detail) => new TypeError(`${method} returned, in row ${index}, ${detail}`)));
+}
+
+/** `row` as a `get_seats` row, field by field, keeping only a row's fields; `malformed` makes the error for one that is not. */
+function readSeatView(row: unknown, malformed: (detail: string) => Error): SeatView {
+  if (typeof row !== 'object' || row === null || Array.isArray(row)) throw malformed('something that is not a JSON object');
+  const { buyer, seats, state } = row as Record<string, unknown>;
+  const bad = (key: string, expected: string): Error => malformed(`a row whose ${key} is not ${expected}`);
+  if (typeof buyer !== 'string' || !isAccountId(buyer)) throw bad('buyer', 'a NEAR account id');
+  if (typeof seats !== 'number' || !Number.isSafeInteger(seats) || seats < 0) throw bad('seats', 'a non-negative integer');
+  const known = BUYER_STATES.find((s) => s === state);
+  if (known === undefined) throw bad('state', `one of ${BUYER_STATES.join(', ')}`);
+  return { buyer, seats, state: known };
 }
 
 /** `height` as the number near-api-js takes for a block id; RangeError unless it is a safe integer. */

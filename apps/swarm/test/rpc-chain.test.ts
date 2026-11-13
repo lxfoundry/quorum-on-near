@@ -25,7 +25,7 @@ import {
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { NonceTakenError, OutcomeUnknownError, TGAS, TransactionFailedError, type AccountKey } from '../src/chain.ts';
 import { createRpcSwarmChain, RpcSwarmChain } from '../src/rpc-chain.ts';
-import { eventLog, PARENT, POOLS, PROVIDER, TOKEN } from './fake-chain.ts';
+import { eventLog, PARENT, poolView, POOLS, PROVIDER, TOKEN } from './fake-chain.ts';
 
 const BUYER = `buyer-01.${PARENT}`;
 const FINAL = { finality: 'final' };
@@ -337,13 +337,89 @@ describe('RpcSwarmChain views', () => {
     expect(await chain.getPool(9)).toBeNull();
   });
 
-  it('listPools and getSeats return the rows of their views', async () => {
+  it('getPool, listPools and getSeats return the rows of their views', async () => {
     const { rpc, chain } = setup();
     const seats = [{ buyer: BUYER, seats: 2, state: 'committed' }];
     rpc.answers.callFunction = seats;
     expect(await chain.getSeats(7, 0, 100)).toEqual(seats);
-    rpc.answers.callFunction = [{ id: 3 }];
-    expect(await chain.listPools(3, 100)).toEqual([{ id: 3 }]);
+    const pools = [poolView({ id: 3 }), poolView({ id: 4, status: 'filled', taken: 192 })];
+    rpc.answers.callFunction = pools;
+    expect(await chain.listPools(3, 100)).toEqual(pools);
+    rpc.answers.callFunction = poolView({ id: 7, taken: 5 });
+    expect(await chain.getPool(7)).toEqual(poolView({ id: 7, taken: 5 }));
+  });
+
+  it('listPools and getSeats return no rows for a null answer', async () => {
+    const { rpc, chain } = setup();
+    rpc.answers.callFunction = null;
+    expect(await chain.listPools(0, 100)).toEqual([]);
+    expect(await chain.getSeats(7, 0, 100)).toEqual([]);
+  });
+
+  it('keeps only the fields of a pool view and of a seat row', async () => {
+    const { rpc, chain } = setup();
+    rpc.answers.callFunction = { ...poolView({ id: 7 }), unexpected: true };
+    expect(await chain.getPool(7)).toEqual(poolView({ id: 7 }));
+    rpc.answers.callFunction = [{ ...poolView({ id: 3 }), unexpected: true }];
+    expect(await chain.listPools(3, 100)).toEqual([poolView({ id: 3 })]);
+    rpc.answers.callFunction = [{ buyer: BUYER, seats: 2, state: 'committed', unexpected: true }];
+    expect(await chain.getSeats(7, 0, 100)).toEqual([{ buyer: BUYER, seats: 2, state: 'committed' }]);
+  });
+
+  it.each([
+    ['a string', 'pool'],
+    ['a list', [poolView({ id: 7 })]],
+  ])('getPool refuses an answer that is %s, not a pool view', async (_what, answer) => {
+    const { rpc, chain } = setup();
+    rpc.answers.callFunction = answer;
+    await expect(chain.getPool(7)).rejects.toThrow(TypeError);
+  });
+
+  it.each([
+    ['a seat price that is a number', { seat_price: 180 }, 'seat_price'],
+    ['a seat price that is not a decimal amount', { seat_price: '1.5' }, 'seat_price'],
+    ['the id of another pool', { id: 8 }, 'id'],
+    ['an unknown status', { status: 'closed' }, 'status'],
+    ['a seller that is not an account id', { seller: 'Not An Account' }, 'seller'],
+    ['a negative count of seats taken', { taken: -1 }, 'taken'],
+    ['a dust flag that is not a boolean', { dust_sent: 'no' }, 'dust_sent'],
+    ['terms of more than 280 bytes', { terms: 'x'.repeat(281) }, 'terms'],
+  ])('getPool refuses a view with %s, naming the field and quoting no value', async (_what, changes, field) => {
+    const { rpc, chain } = setup();
+    rpc.answers.callFunction = { ...poolView({ id: 7 }), ...changes };
+    const error = await chain.getPool(7).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(TypeError);
+    expect((error as Error).message).toMatch(new RegExp(`\\b${field}\\b`));
+    expect((error as Error).message).not.toContain('xxxx');
+  });
+
+  it('listPools names the row of a view that is not a pool', async () => {
+    const { rpc, chain } = setup();
+    rpc.answers.callFunction = [poolView({ id: 3 }), { ...poolView({ id: 4 }), seat_price: 180 }];
+    await expect(chain.listPools(3, 100)).rejects.toThrow(/row 1\b.*\bseat_price\b/);
+  });
+
+  it.each([
+    ['an object', {}],
+    ['a string', 'rows'],
+  ])('listPools and getSeats refuse an answer that is %s, not a list', async (_what, answer) => {
+    const { rpc, chain } = setup();
+    rpc.answers.callFunction = answer;
+    await expect(chain.listPools(0, 100)).rejects.toThrow(TypeError);
+    await expect(chain.getSeats(7, 0, 100)).rejects.toThrow(TypeError);
+  });
+
+  it.each([
+    ['a row that is not an object', 'row', 'object'],
+    ['a buyer that is not an account id', { buyer: 'Not An Account' }, 'buyer'],
+    ['a negative count of seats', { seats: -1 }, 'seats'],
+    ['a count of seats that is a string', { seats: '2' }, 'seats'],
+    ['an unknown state', { state: 'paid' }, 'state'],
+  ])('getSeats refuses %s, naming the row and the field', async (_what, bad, field) => {
+    const { rpc, chain } = setup();
+    const row = { buyer: BUYER, seats: 2, state: 'committed' };
+    rpc.answers.callFunction = [row, typeof bad === 'string' ? bad : { ...row, ...bad }];
+    await expect(chain.getSeats(7, 0, 100)).rejects.toThrow(new RegExp(`get_seats.*\\brow 1\\b.*\\b${field}\\b`));
   });
 });
 

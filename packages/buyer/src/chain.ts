@@ -112,11 +112,15 @@ const POOL_STATUSES: readonly PoolStatus[] = ['open', 'filled', 'settled', 'expi
 /** The most UTF-8 bytes of terms the pools contract keeps for a pool: the bound of a pool view's terms and of the gateway's. */
 export const MAX_TERMS_BYTES = 280;
 
-/** `value` as the view of pool `poolId`, field by field; `malformed` makes the error for one that is not. */
-function readPoolView(value: unknown, poolId: number, malformed: (detail: string) => PoolViewError): PoolView {
+/**
+ * `value` as the view of pool `poolId`, field by field, keeping only a view's fields; a null `poolId`
+ * accepts any pool, as the rows of `list_pools` are read. `malformed` makes the error for a value that
+ * is not one: its detail names the field and never quotes the value, whose terms are the seller's.
+ */
+export function readPoolView(value: unknown, poolId: number | null, malformed: (detail: string) => Error): PoolView {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw malformed('something that is not a JSON object');
   const view = value as Record<string, unknown>;
-  const bad = (key: string, expected: string): PoolViewError => malformed(`a view whose ${key} is not ${expected}`);
+  const bad = (key: string, expected: string): Error => malformed(`a view whose ${key} is not ${expected}`);
   const integer = (key: string, least = 0): number => {
     const field = view[key];
     if (typeof field !== 'number' || !Number.isSafeInteger(field) || field < least) {
@@ -130,7 +134,7 @@ function readPoolView(value: unknown, poolId: number, malformed: (detail: string
     return field;
   };
   const id = integer('id');
-  if (id !== poolId) throw bad('id', `${poolId}`);
+  if (poolId !== null && id !== poolId) throw bad('id', `${poolId}`);
   const { seller, max_seats_per_buyer: perBuyer, terms, status, dust_sent: dustSent } = view;
   if (typeof seller !== 'string' || !isAccountId(seller)) throw bad('seller', 'a NEAR account id');
   if (perBuyer !== null && (typeof perBuyer !== 'number' || !Number.isSafeInteger(perBuyer) || perBuyer < 0)) {
