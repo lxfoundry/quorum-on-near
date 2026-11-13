@@ -31,10 +31,10 @@ Every code block, test and expected output in this plan comes from a run against
 Each task's tests fail first as its steps show and pass after it, and `pnpm typecheck` and
 `pnpm test` pass over the whole workspace after it. The test counts in the steps are observed. Every
 code block in a step is the code as it ran: a new file's full content, or an edit as its exact old
-and new text; the Interfaces blocks give the signatures. Copy the code as written. Expected outputs
+and new text; the Interfaces blocks give the signatures. Copy the code as written. The sentences quoted for the design spec are text, not code, and are
+not part of a run. Expected outputs
 are excerpts of the run's own lines, in order; lines that name the checkout's folder, timings, code
-frames and failure details are left out, and the whitespace in pnpm's error lines and the path
-separator in its header lines are normalised.
+frames and failure details are left out, and the whitespace in pnpm's error lines is normalised.
 
 `main.ts`, `app.ts` and `config.ts` may differ from what this plan quotes. This plan does not change
 `config.ts`, keeps its edits to `main.ts` and `app.ts` small, and quotes the anchor of each. Where
@@ -128,7 +128,8 @@ along than it is, or `null` for a pool opened since.
 | Payment, check 7: `ft_balance_of` (buyer) | `chain.ftBalanceOf`, `apps/gateway/src/handle-payment.ts:174` | optimistic | `insufficient_balance` | No | Not a cached view: the forward's cache is reached only through `POST /rpc`, and the gateway reads through `RpcChain` |
 | Redemption | `servedPool`, `apps/gateway/src/handle-redeem.ts:35` (read before the proof is checked, `:39`); `null` answers `404 unknown_pool` (`:36`); the reply by status (`:63-85`) | optimistic | `202` pending, `200` credential, `410` refund | **Yes** (Task 3), never `null`, cleared after each of the gateway's own transactions | **Delay only.** Since the status only moves forward, a view up to 2 s old answers `202` where `200` or `410` is due, never a credential or a refund the pool does not support, and the buyer polls again. The seats and the `410` status come from the uncached `getBuyer` (`:53`). A cached `null` would answer `404 unknown_pool` for a pool opened since, which ends a scripted buyer `failed` (`apps/swarm/src/buyer-agent.ts:536-537`), so `null` is never stored |
 | Keeper | `listServedPools`, `apps/gateway/src/keeper.ts:103`; the call chosen at `:156-164`; sent at `:167` | optimistic | `settle` or `refund` | **No** | **Wrong decision.** A view older than a `settle` or `refund` already sent (anyone's, or its own when the call's result came back unknown: both methods are open to anyone, spec section 5.4) still shows Filled or Expired, and the keeper sends the call again: it fails on chain or does nothing, spends gas, records a failed call in the feed and backs off |
-| Any other route that reads `get_pool` or `list_pools` | Its own | Its own | Its own | **No** | Reads `deps.chain`, never `deps.redeemPools`. When `apps/gateway/src` holds such a route, give it a row here (its file:line, its decision and what an answer up to 2,000 ms old does to it) and keep it uncached |
+| Demo start route: `list_pools` through `listServedPools(deps.chain, …)`, in the handler of `POST /demo/<scenario>` in `apps/gateway/src/app.ts` (present once the gateway has a demo endpoint; not on `main` before it) | Its handler | optimistic | `409 pool_open`, or start a run | **No** | **Wrong decision.** A view up to 2 s old that does not yet show a pool that has just opened starts a run that stops at once, because the swarm opens no pool while one of the provider's is Open, and the run still counts against the daily cap. A stale Open for a pool that has since filled is only a delay (`409 pool_open` for a moment). Read through `deps.chain`, uncached |
+| Any other route that reads `get_pool` or `list_pools` | Its own | Its own | Its own | **No** | Reads `deps.chain`, never `deps.redeemPools`. A route added later records its own row in the commit that adds it, or in the design spec, with its decision and what an answer up to 2,000 ms old does to it, and stays uncached |
 
 The two caches never share an answer: the page reads at `final` or at a block hash, the gateway at
 `optimistic`, and each cache is its own instance in its own module.
@@ -216,21 +217,8 @@ ends with
 ```
 
 If the counts are higher, write them down, since each task's steps give its increment. No task of
-this plan adds a dependency or changes another package. In `pnpm test` from the root, the other
-packages' lines read, before and after every task:
-
-```text
-packages/protocol test:  Test Files  11 passed (11)
-packages/protocol test:       Tests  367 passed (367)
-apps/web test:  Test Files  3 passed (3)
-apps/web test:       Tests  211 passed (211)
-packages/buyer test:  Test Files  8 passed (8)
-packages/buyer test:       Tests  325 passed | 1 skipped (326)
-apps/mcp test:  Test Files  8 passed (8)
-apps/mcp test:       Tests  205 passed (205)
-apps/swarm test:  Test Files  21 passed (21)
-apps/swarm test:       Tests  696 passed | 1 skipped (697)
-```
+this plan adds a dependency or changes another package. In `pnpm test` from the root, every other package passes before and after every task, with the
+counts it has before Task 1: no task changes them.
 
 ---
 
@@ -757,7 +745,7 @@ apps/gateway test:  Test Files  19 passed (19)
 apps/gateway test:       Tests  652 passed (652)
 ```
 
-and the other packages' counts are those listed in [Before Task 1](#before-task-1).
+and every other package passes with the counts it had before the task.
 
 - [ ] **Step 8: Commit**
 
@@ -1455,9 +1443,9 @@ with:
 ```markdown
   the last one, and a test checks it. Through the pass-through, each of the page's four repeated
   views (section 6.1) reaches the RPC at most once per 2 seconds for the same arguments, whatever the
-  number of viewers; every other request a viewer sends still reaches the RPC from the gateway's
-  address, so a public RPC's rate limit applies to all viewers together and shows on the page as
-  "Could not refresh" lines.
+  number of viewers, while its reads succeed; every other request a viewer sends, and a read that
+  failed, still reaches the RPC from the gateway's address, so a public RPC's rate limit applies to
+  all viewers together and shows on the page as "Could not refresh" lines.
 ```
 
 The bullet's first sentences, and the `/rpc has no rate limit` bullet, are not edited: the page
@@ -2183,14 +2171,14 @@ with:
 | The account holds no seats | `404` |
 
 Redemptions share each pool's `get_pool` answer for 2 seconds after the gateway sent its read, so
-buyers polling the same pool cost one read per 2 seconds; offers, payments, the keeper and
-`GET /pools` never read through this cache. A pool that does not exist is never kept, and every pool
-is forgotten once a transaction the gateway sent (a relayed payment, or the keeper's `settle` or
-`refund`) has returned. When its result is known (executed or rejected), a redemption that comes
-after it reads the pool as that transaction left it, or newer. A transaction whose result is
-unknown, and a change the gateway did not send, such as a deadline passing or seats taken by a
-commit it did not relay, can show up to 2 seconds late, as a `202` where a `200` or a `410` is due,
-and a buyer that asks again later gets it.
+buyers polling the same pool cost at most one read per 2 seconds while its reads succeed; offers,
+payments, the keeper and `GET /pools` never read through this cache. A pool that does not exist is
+never kept, and every pool is forgotten once a transaction the gateway sent (a relayed payment, or
+the keeper's `settle` or `refund`) has returned. When its result is known (executed or rejected), a
+redemption that comes after it reads the pool as that transaction left it, or newer. A transaction
+whose result is unknown, and a change the gateway did not send, such as a deadline passing or seats
+taken by a commit it did not relay, can show up to 2 seconds late, as a `202` where a `200` or a
+`410` is due, and a buyer that asks again later gets it.
 ```
 
 Section 6.4's "The gateway reads the contract's views and access keys at optimistic finality, so it
@@ -2310,7 +2298,7 @@ run time, and a `// @ts-expect-error` checks its type at compile time.
 The retry changes no value a reader gets, only when it gets it. A payment reads the chain up to six
 times before its relay (the pool, the key, the final block, the key again, the balance, the buyer's
 seats; `handle-payment.ts:87-180`), so while the endpoint refuses, it can take up to about 12.6
-seconds longer before the relay, against a buyer's payment timeout of 300 seconds. While the
+seconds longer in waits alone before the relay, against a buyer's payment timeout of 300 seconds. While the
 endpoint answers 429, the pool view and the final block that check 6 judges, read first and third,
 can then be up to about 10 seconds old at relay time. A pool that fills or passes its deadline in
 that window is relayed, which costs relayer gas and answers `409` or `410`, as a stale view would.
@@ -2802,7 +2790,7 @@ with:
 
 ```markdown
 | The RPC times out during a relay | The result is looked up by transaction hash; the payment is never re-signed or re-sent. If the result is still unknown, `502` with the hash, and the buyer checks through redemption. The buyer stays in flight until a final block above the delegate's `max_block_height` plus 20 blocks has been seen (section 6.4) |
-| The RPC answers one of the gateway's reads with HTTP 429 (too many requests) | The read is tried again up to three times, after 200, 400 and 800 ms, each wait stretched by up to half again: less than 2.1 seconds more per read. This covers the reads behind offers, payment checks, redemptions, `GET /pools`, the keeper and the checks at start-up. If the last try is refused too, the read fails as before: `503` (`chain_unavailable`), the keeper's next tick, or a failed start. The relayer's own reads and its send do not go through this retry, so a transaction is never posted twice, and the relayer checks the expiry again once it holds a key (section 6.4). `POST /rpc` is not retried either: the live page reads again at its next refresh |
+| The RPC answers one of the gateway's reads with HTTP 429 (too many requests) | The read is tried again up to three times, after 200, 400 and 800 ms, each wait stretched by up to half again: under 2.1 seconds of waiting more per read, besides the time of the extra requests. This covers the reads behind offers, payment checks, redemptions, `GET /pools`, the keeper and the checks at start-up. If the last try is refused too, the read fails as before: `503` (`chain_unavailable`), the keeper's next tick, or a failed start. The relayer's own reads and its send do not go through this retry: the relayer posts each request once, so a transaction is never posted twice, and a read of the relayer's that is refused before it sends fails as before. The relayer checks the expiry again once it holds a key (section 6.4). `POST /rpc` is not retried either: the live page reads again at its next refresh |
 ```
 
 Section 12 is not edited in this task: the `/rpc has no rate limit` bullet stays true, and the page
@@ -2858,8 +2846,8 @@ apps/gateway test:  Test Files  22 passed (22)
 apps/gateway test:       Tests  723 passed (723)
 ```
 
-and the other packages' counts are those listed in [Before Task 1](#before-task-1): this plan
-changes no other package.
+and every other package passes with the counts it had before the task: this plan changes no other
+package.
 
 - [ ] **Step 13: Commit**
 
