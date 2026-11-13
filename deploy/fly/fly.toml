@@ -1,8 +1,10 @@
 # The hosted gateway and live page on Fly.io: one machine, on NEAR testnet. From the repository's
 # root:
 #   fly deploy --config deploy/fly/fly.toml --dockerfile deploy/fly/Dockerfile --ha=false
-# Three settings are Fly secrets, set with `fly secrets` (for example NAME=VALUE lines piped to
-# `fly secrets import`) and never written in this file or anywhere in the repository:
+# Three settings are Fly secrets. Set them with `fly secrets import`, which reads NAME=VALUE lines
+# on standard input. Never set them with `fly secrets set`, which takes each value as an argument,
+# where it shows in the process list and the shell history, and never write them in this file or in
+# any other file in the repository:
 #   QUORUM_SEED_PHRASE   the seed phrase that every key file and the gateway's two keys come from
 #   QUORUM_RPC_URL       the gateway's RPC endpoint (reads, relayer, keeper, keys from-seed at boot)
 #   QUORUM_DEMO_RPC_URL  optional: the endpoint a demo run uses; unset, a run uses the gateway's
