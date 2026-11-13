@@ -70,12 +70,29 @@ export function gatewayEnvText(config: SwarmConfig, relayerKeys: readonly KeyPai
       ...sharedEntries(config),
       ['QUORUM_RELAYER_ACCOUNT', config.relayer],
       ['QUORUM_PROVIDER_ACCOUNT', config.provider],
-      ['QUORUM_RELAYER_KEYS', relayerKeys.map((key) => key.toString()).join(',')],
-      ['QUORUM_CREDENTIAL_JWK', JSON.stringify(credentialJwk)],
+      ...secretEntries(relayerKeys, credentialJwk),
       ['QUORUM_COMMIT_MIN_GAS', config.commitMinGas.toString()],
       ['QUORUM_COMMIT_MAX_GAS', config.commitMaxGas.toString()],
       ['QUORUM_BLOCK_TIME_MS', config.blockTimeMs.toString()],
     ],
+  );
+}
+
+/**
+ * The gateway's two secrets alone, as `swarm keys from-seed --gateway-env` writes them: the relayer's
+ * keys (QUORUM_RELAYER_KEYS), in the order given, and the credential key (QUORUM_CREDENTIAL_JWK), on
+ * the lines gatewayEnvText writes for them, checked with Node's parser in the same way. The gateway
+ * reads its other variables from its environment. The same keys always give the same text. Throws
+ * RangeError without a relayer key.
+ */
+export function gatewaySecretsEnvText(relayerKeys: readonly KeyPair[], credentialJwk: CredentialJwk): string {
+  if (relayerKeys.length === 0) throw new RangeError('the gateway needs at least one key of the relayer');
+  return envText(
+    [
+      'Written by `swarm keys from-seed --gateway-env` from the seed phrase.',
+      "Secret: it holds the relayer's keys and the credential key. Keep it private, and never commit it.",
+    ],
+    secretEntries(relayerKeys, credentialJwk),
   );
 }
 
@@ -151,6 +168,14 @@ function sharedEntries(config: SwarmConfig): EnvEntry[] {
     ['QUORUM_PARENT_ACCOUNT', config.parent],
     ['QUORUM_TOKEN_ACCOUNT', config.token],
     ['QUORUM_POOLS_ACCOUNT', config.poolsContract],
+  ];
+}
+
+/** The relayer's keys and the credential key, as the gateway reads them. */
+function secretEntries(relayerKeys: readonly KeyPair[], credentialJwk: CredentialJwk): EnvEntry[] {
+  return [
+    ['QUORUM_RELAYER_KEYS', relayerKeys.map((key) => key.toString()).join(',')],
+    ['QUORUM_CREDENTIAL_JWK', JSON.stringify(credentialJwk)],
   ];
 }
 

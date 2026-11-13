@@ -1,6 +1,7 @@
 // The swarm's command line: `node src/main.ts <command>` (see USAGE). It reads QUORUM_* variables
 // from the environment and from apps/swarm/.env, wherever it is started from.
 import { userInfo } from 'node:os';
+import { isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   ConfigError,
@@ -19,6 +20,7 @@ import { checkChain, type SwarmChain } from './chain.ts';
 import { checkPool, snapshot, type CheckReport } from './check.ts';
 import { loadSwarmConfig, type SwarmConfig } from './config.ts';
 import { aclNotice, envFilePath, writeGatewayEnv, writeMcpEnv, type EnvApp } from './env-files.ts';
+import { createRpcSeedChain, keysFromSeed, parentPublicKey, readSeedPhrase, type SeedChain } from './keys-from-seed.ts';
 import { lockFilePath, takeLock, type SwarmLock } from './lock.ts';
 import { assertNoPoolOpen, openPool } from './provider.ts';
 import { runReset } from './reset.ts';
@@ -36,6 +38,7 @@ export type SwarmCommand =
   | { name: 'check'; poolId: number; scenario: ScenarioName }
   | { name: 'demo'; scenario: ScenarioName }
   | { name: 'env'; app: EnvApp }
+  | { name: 'keys'; parentKey: boolean; gatewayEnv: string | null }
   | { name: 'reset' }
   | { name: 'help' };
 
@@ -47,6 +50,10 @@ const COMMANDS: Record<SwarmCommand['name'], { synopsis: string; does: string }>
   check: { synopsis: 'check <pool-id> <fills|fails>', does: 'wait until the pool has ended, then check what the chain holds' },
   demo: { synopsis: 'demo <fills|fails>', does: 'setup, open, run, then check against the balances read before the pool opened' },
   env: { synopsis: 'env <gateway|mcp>', does: 'write apps/<gateway|mcp>/.env from this configuration, never over a file' },
+  keys: {
+    synopsis: 'keys from-seed [--gateway-env <path> | --parent-key]',
+    does: "write every missing key file from one seed phrase; --gateway-env also writes the gateway's keys, --parent-key prints the parent's key only",
+  },
   reset: { synopsis: 'reset', does: "send each buyer's and the provider's surplus back to the funding account" },
   help: { synopsis: 'help', does: 'print this text' },
 };
@@ -59,6 +66,12 @@ export const USAGE = [
   '',
   'swarm run on a pool that buyers have paid in resumes them: each asks the gateway what it holds',
   'before it pays, and a buyer that holds seats in the pool follows them and never buys again.',
+  '',
+  'swarm keys from-seed derives every key from one BIP-39 phrase, read from QUORUM_SEED_PHRASE or from',
+  'the file QUORUM_SEED_PHRASE_FILE names (set one of them), checks the keys against the chain, then',
+  'writes each missing key file under QUORUM_CREDENTIALS_DIR. It never writes over a file that holds',
+  'something else, and never prints the phrase or a private key: one line per key, the account and its',
+  'public key.',
   '',
   'The configuration is read from QUORUM_* variables, set in the environment or in apps/swarm/.env',
   '(see apps/swarm/.env.example). Exits with 0 when done, 1 when a command or a check failed, and 2',
@@ -110,6 +123,8 @@ export function parseCommand(argv: readonly string[]): SwarmCommand {
       const [app] = argsOf(name, args, 1);
       return { name, app: appArg(app) };
     }
+    case 'keys':
+      return keysArgs(args);
     default:
       throw new UsageError(`unknown command ${JSON.stringify(name)}`);
   }
@@ -118,6 +133,25 @@ export function parseCommand(argv: readonly string[]): SwarmCommand {
 function argsOf<N extends 0 | 1 | 2>(name: SwarmCommand['name'], args: readonly string[], count: N): Args<N> {
   if (args.length !== count) throw new UsageError(`wrong arguments: the command is swarm ${COMMANDS[name].synopsis}`);
   return args as Args<N>;
+}
+
+/**
+ * `keys from-seed`, then nothing, `--parent-key`, or `--gateway-env` and an absolute path. The file
+ * holds the gateway's secrets, so a relative path, or a flag taken for one, is refused rather than
+ * written in the current folder, where no ignore file covers it.
+ */
+function keysArgs(args: readonly string[]): SwarmCommand {
+  const [action, option, path, ...rest] = args;
+  const synopsis = `the command is swarm ${COMMANDS.keys.synopsis}`;
+  if (action === 'from-seed' && rest.length === 0) {
+    if (option === undefined) return { name: 'keys', parentKey: false, gatewayEnv: null };
+    if (option === '--parent-key' && path === undefined) return { name: 'keys', parentKey: true, gatewayEnv: null };
+    if (option === '--gateway-env' && path !== undefined && path !== '') {
+      if (isAbsolute(path)) return { name: 'keys', parentKey: false, gatewayEnv: path };
+      throw new UsageError(`wrong arguments: the path after --gateway-env must be absolute, got ${JSON.stringify(path)}; ${synopsis}`);
+    }
+  }
+  throw new UsageError(`wrong arguments: ${synopsis}`);
 }
 
 function scenarioArg(raw: string): ScenarioName {
@@ -158,7 +192,13 @@ export interface SwarmModules {
   runReset: typeof runReset;
   writeGatewayEnv: typeof writeGatewayEnv;
   writeMcpEnv: typeof writeMcpEnv;
+  keysFromSeed: typeof keysFromSeed;
 }
+
+/** The signals that ask a swarm to stop: Ctrl-C, and the stop a supervisor such as the gateway sends. */
+export type StopSignal = 'SIGINT' | 'SIGTERM';
+
+const STOP_SIGNALS: readonly StopSignal[] = ['SIGINT', 'SIGTERM'];
 
 /** What runCli works with: the process's environment and output, and what the commands run on. */
 export interface Cli {
@@ -170,6 +210,8 @@ export interface Cli {
   err: (line: string) => void;
   /** Builds the connections for a configuration, sending nothing; called by the commands that use the chain. */
   connect: (config: SwarmConfig) => Connections;
+  /** Builds the chain reads of `swarm keys from-seed` for a configuration, sending nothing. */
+  seedChain: (config: SwarmConfig) => SeedChain;
   /** The clock, timers and randomness of the scripted buyers, and of the check's wait. */
   runtime: AgentRuntime;
   modules: SwarmModules;
@@ -177,6 +219,16 @@ export interface Cli {
   platform: NodeJS.Platform;
   /** The name of the user the process runs as, read only for aclNotice on Windows. */
   userName: () => string;
+  /**
+   * Until the function it returns is called, calls `stop` when the process receives SIGINT or
+   * SIGTERM, in place of their default, which ends the process at once.
+   */
+  onStop: (stop: (signal: StopSignal) => void) => () => void;
+  /**
+   * Sends `signal` to this process. Once onStop's listeners are removed, the signal's default ends
+   * the process, so that its parent sees which signal ended it.
+   */
+  raise: (signal: StopSignal) => void;
 }
 
 /**
@@ -194,8 +246,14 @@ const LOCKED: ReadonlySet<SwarmCommand['name']> = new Set(['setup', 'open', 'run
  * (lockFilePath in QUORUM_SWARM_LOCK_DIR), and remove it when they end, whatever the outcome; while
  * another process holds it, they run nothing and exit with 1, saying that another swarm is running.
  * A lock that cannot be removed is reported on stderr, and does not change the command's result or
- * error. `demo` holds its one lock across its steps. `check`, `env` and `help` take none.
- * Every command but `env` and `help` checks the RPC's chain before it runs. An error is printed as
+ * error. SIGINT or SIGTERM while a command holds its lock removes the lock, stops listening for both,
+ * then raises the same signal again, so that the process ends by that signal and its parent sees it
+ * (a shell reports 130 or 143; on Windows, a process that signals itself ends with exit code 1); a
+ * second signal of the same kind ends it at once. `demo` holds its one lock across its steps. `check`,
+ * `env`, `keys` and `help` take none.
+ * Every command but `env`, `keys` and `help` checks the RPC's chain before it runs; `keys from-seed`
+ * checks it itself, after the configuration's accounts, and `--parent-key` reads no chain and no
+ * swarm configuration, only the phrase. An error is printed as
  * its message and its causes', never with a stack, with QUORUM_RPC_URL written in place of the RPC
  * URL.
  */
@@ -222,6 +280,19 @@ async function execute(command: SwarmCommand, cli: Cli): Promise<boolean> {
     return true;
   }
   const { modules, out: log } = cli;
+  if (command.name === 'keys') {
+    // The phrase before the configuration: --parent-key needs nothing else, so that it runs before
+    // the parent account exists.
+    const phrase = await readSeedPhrase(cli.env);
+    if (command.parentKey) {
+      log(parentPublicKey(phrase));
+      return true;
+    }
+    const keysConfig = loadSwarmConfig(cli.env);
+    const deps = { chain: cli.seedChain(keysConfig), log };
+    await modules.keysFromSeed(keysConfig, phrase, deps, { gatewayEnv: command.gatewayEnv });
+    return true;
+  }
   const config = loadSwarmConfig(cli.env);
   if (command.name === 'env') {
     const path = envFilePath(command.app);
@@ -235,10 +306,23 @@ async function execute(command: SwarmCommand, cli: Cli): Promise<boolean> {
 
   if (!LOCKED.has(command.name)) return executeOnChain(command, cli, config);
   const lock = await takeLock(lockFilePath(config.lockDir, config.network, config.parent));
+  // One removal, which a stop signal and the command's own end both wait for: a signal that comes
+  // while the command's end is removing the lock ends the process only once the file is gone.
+  let released: Promise<void> | undefined;
+  const release = (): Promise<void> => (released ??= releaseLock(lock, cli));
+  // Once the lock is gone, the signal is raised again with no listener of the swarm's left, so that
+  // its default ends the process and a supervisor reads the signal, not an exit code.
+  const stopListening = cli.onStop((signal) => {
+    void release().then(() => {
+      stopListening();
+      cli.raise(signal);
+    });
+  });
   try {
     return await executeOnChain(command, cli, config);
   } finally {
-    await releaseLock(lock, cli);
+    await release();
+    stopListening();
   }
 }
 
@@ -255,7 +339,7 @@ async function releaseLock(lock: SwarmLock, cli: Cli): Promise<void> {
 }
 
 /** Runs a command that reads the chain, once its lock, if it takes one, is held. */
-async function executeOnChain(command: Exclude<SwarmCommand, { name: 'help' | 'env' }>, cli: Cli, config: SwarmConfig): Promise<boolean> {
+async function executeOnChain(command: Exclude<SwarmCommand, { name: 'help' | 'env' | 'keys' }>, cli: Cli, config: SwarmConfig): Promise<boolean> {
   const { modules, runtime, out: log } = cli;
   const { chain, gateway, buyerChain, pools } = cli.connect(config);
   await checkChain(config.network, chain);
@@ -348,6 +432,18 @@ function connectRpc(config: SwarmConfig): Connections {
 }
 
 /**
+ * Cli's onStop for this process: each stop signal calls `stop` once, and a second one of the same
+ * kind gets Node's default, which ends the process at once.
+ */
+function onStopSignal(stop: (signal: StopSignal) => void): () => void {
+  const listeners = STOP_SIGNALS.map((signal) => [signal, () => stop(signal)] as const);
+  for (const [signal, listener] of listeners) process.once(signal, listener);
+  return () => {
+    for (const [signal, listener] of listeners) process.off(signal, listener);
+  };
+}
+
+/**
  * Loads apps/swarm/.env into the environment when the file exists. process.loadEnvFile keeps every
  * variable that is already set, so the environment wins over the file. False, with the problem on
  * stderr, when the file exists but cannot be read.
@@ -371,10 +467,13 @@ if (import.meta.main) {
         out: (line) => console.log(line),
         err: (line) => console.error(line),
         connect: connectRpc,
+        seedChain: createRpcSeedChain,
         runtime: systemRuntime,
-        modules: { runSetup, snapshot, openPool, runSwarm, checkPool, runReset, writeGatewayEnv, writeMcpEnv },
+        modules: { runSetup, snapshot, openPool, runSwarm, checkPool, runReset, writeGatewayEnv, writeMcpEnv, keysFromSeed },
         platform: process.platform,
         userName: () => userInfo().username,
+        onStop: onStopSignal,
+        raise: (signal) => process.kill(process.pid, signal),
       })
     : 1;
 }

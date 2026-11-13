@@ -1,0 +1,61 @@
+# Kept out of the image that deploy/fly/Dockerfile builds; the build context is the repository's
+# root. No key file belongs in the repository folder; .near-credentials is listed in case one is
+# made there by mistake.
+.git
+**/target
+**/node_modules
+**/.env
+**/.env.*
+**/data
+**/.near-credentials
+# Local agent state, never tracked.
+**/.superpowers
+
+# Further guards: these mirror the secret and wallet patterns of the root .gitignore.
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*.asc
+**/*.gpg
+**/id_rsa*
+**/id_ed25519*
+**/*.keystore
+**/secrets
+**/credentials
+**/*credentials*.json
+**/*secret*
+**/*.mnemonic
+**/*mnemonic*
+**/*.wallet
+**/wallets
+**/keystore
+
+# The build context is the working tree, untracked files included: an env file or a phrase file
+# under any other name stays out too, such as one that keys from-seed --gateway-env wrote.
+**/*.env
+**/*phrase*
+
+# These mirror the root .gitignore's local agent and editor state. Local settings can quote a
+# command line, and NEAR's Agent Skills carry no licence, so neither is redistributed.
+**/CLAUDE.local.md
+.claude/settings.local.json
+.claude/*.local.*
+.claude/skills/near-*
+**/.vscode
+**/.idea
+**/*.swp
+**/.DS_Store
+**/Thumbs.db
+
+# These mirror the root .gitignore's build, dependency and test output. A log can quote an endpoint.
+**/dist
+**/build
+**/*.tsbuildinfo
+**/__pycache__
+**/*.py[cod]
+**/.venv
+**/*.log
+**/coverage
+**/test-results
+**/.cache

@@ -1,6 +1,7 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { createServer, type AddressInfo, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,12 +11,15 @@ import { afterAll, beforeAll, describe, expect, it, vi, type Mock } from 'vitest
 import type { AgentRuntime, BuyerOutcome } from '../src/buyer-agent.ts';
 import type { Baseline, CheckReport } from '../src/check.ts';
 import { aclNotice, EnvFileExistsError } from '../src/env-files.ts';
-import { parseCommand, runCli, USAGE, UsageError, type Cli, type Connections, type SwarmModules } from '../src/main.ts';
+import { keysFromSeed } from '../src/keys-from-seed.ts';
+import { parseCommand, runCli, USAGE, UsageError, type Cli, type Connections, type StopSignal, type SwarmModules } from '../src/main.ts';
 import { PROFILES, profileAccount } from '../src/profiles.ts';
 import { openPool, PoolAlreadyOpenError } from '../src/provider.ts';
 import { runSwarm, SeatPriceMismatchError } from '../src/run.ts';
+import { bip39Seed, nearKey } from '../src/seed.ts';
 import { ShortfallError } from '../src/setup.ts';
 import { FakeChain, PARENT, POOLS, poolView, PROVIDER } from './fake-chain.ts';
+import { StubSeedChain } from './stub-seed-chain.ts';
 
 const MAIN = fileURLToPath(new URL('../src/main.ts', import.meta.url));
 const GATEWAY_ENV = fileURLToPath(new URL('../../gateway/.env', import.meta.url));
@@ -24,6 +28,10 @@ const MCP_ENV = fileURLToPath(new URL('../../mcp/.env', import.meta.url));
 const ENV: Env = { QUORUM_PARENT_ACCOUNT: PARENT, QUORUM_SCENARIO_DEADLINE_SECONDS: '45', QUORUM_SWARM_SPREAD_SECONDS: '9' };
 const BASELINE: Baseline = new Map([[PROVIDER, 10_000n]]);
 const OPENED_POOL = 7;
+/** BIP-39's public 12-word test phrase: anyone can derive its keys. */
+const PHRASE = `${'abandon '.repeat(11)}about`;
+/** The parent key PHRASE gives, at m/44'/397'/0'. */
+const PARENT_KEY = nearKey(bip39Seed(PHRASE), "m/44'/397'/0'").publicKey;
 
 /** A temporary folder for the tests' lock files, which QUORUM_SWARM_LOCK_DIR names, so that no test writes into the repository's data/ folder. */
 let lockRoot: string;
@@ -84,6 +92,9 @@ function stubModules(order: string[]): StubModules {
     writeMcpEnv: vi.fn<SwarmModules['writeMcpEnv']>(async () => {
       order.push('env mcp');
     }),
+    keysFromSeed: vi.fn<SwarmModules['keysFromSeed']>(async () => {
+      order.push('keys');
+    }),
   };
 }
 
@@ -102,17 +113,30 @@ function harness(env: Env = ENV) {
   const runtime: AgentRuntime = { now: () => 1_234, sleep: vi.fn(async () => {}), random: () => 0.5 };
   const modules = stubModules(order);
   const connect = vi.fn<Cli['connect']>(() => ({ chain, gateway, buyerChain, pools }));
+  const keysChain = new StubSeedChain();
+  const seedChain = vi.fn<Cli['seedChain']>(() => keysChain);
+  /** The listeners runCli gave onStop, in order, for a test to send a stop signal to. */
+  const stops: Array<(signal: StopSignal) => void> = [];
+  const stopListening = vi.fn<() => void>();
+  const onStop = vi.fn<Cli['onStop']>((stop) => {
+    stops.push(stop);
+    return stopListening;
+  });
+  const raise = vi.fn<Cli['raise']>();
   const cli: Cli = {
     env: { QUORUM_SWARM_LOCK_DIR: lockDir, ...env },
     out: (line) => out.push(line),
     err: (line) => err.push(line),
     connect,
+    seedChain,
     runtime,
     modules,
     platform: 'linux',
     userName: () => 'ada',
+    onStop,
+    raise,
   };
-  return { cli, out, err, order, chain, gateway, buyerChain, pools, runtime, modules, connect };
+  return { cli, out, err, order, chain, gateway, buyerChain, pools, runtime, modules, connect, keysChain, seedChain, stops, onStop, stopListening, raise };
 }
 
 describe('parseCommand', () => {
@@ -168,7 +192,7 @@ describe('parseCommand', () => {
   });
 
   it('is what USAGE lists, command by command', () => {
-    for (const name of ['setup', 'open', 'run', 'check', 'demo', 'env', 'reset', 'help']) {
+    for (const name of ['setup', 'open', 'run', 'check', 'demo', 'env', 'keys', 'reset', 'help']) {
       expect(USAGE).toMatch(new RegExp(`^  ${name}\\b`, 'm'));
     }
   });
@@ -618,6 +642,93 @@ describe('runCli: one swarm at a time', () => {
     expect(existsSync(lockPath())).toBe(false);
   });
 
+  it.each(['SIGTERM', 'SIGINT'] as const)(
+    'on %s while it holds its lock, removes the lock, stops listening, then raises the same signal, which ends the process',
+    async (signal) => {
+      const h = harness();
+      const seen: string[] = [];
+      const lockState = (): string => (existsSync(lockPath()) ? 'lock held' : 'lock removed');
+      let finish = (): void => {};
+      h.modules.runSetup.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            seen.push('setup running');
+            finish = () => resolve({ actions: [] });
+          }),
+      );
+      h.stopListening.mockImplementation(() => void seen.push(`not listening, ${lockState()}`));
+      h.raise.mockImplementation((raised) => void seen.push(`raise ${raised}, ${lockState()}`));
+
+      const done = runCli(['setup'], h.cli);
+      try {
+        await vi.waitFor(() => expect(seen).toEqual(['setup running']));
+        expect(h.stops).toHaveLength(1);
+        h.stops[0]?.(signal);
+        await vi.waitFor(() => expect(h.raise).toHaveBeenCalled());
+
+        expect(seen).toEqual(['setup running', 'not listening, lock removed', `raise ${signal}, lock removed`]);
+        expect(h.err).toEqual([]);
+      } finally {
+        // The process has ended by now; here the command goes on, and its own end removes its lock.
+        finish();
+        await done;
+      }
+      expect(h.raise).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([[['setup']], [['open', 'fills']], [['run', '3', 'fills']], [['demo', 'fills']], [['reset']]])(
+    '%j listens for SIGINT and SIGTERM from when it holds its lock until it has removed it',
+    async (argv) => {
+      const h = harness();
+      const seen: string[] = [];
+      const lockState = (): string => (existsSync(lockPath()) ? 'lock held' : 'no lock');
+      h.onStop.mockImplementation(() => {
+        seen.push(`listening, ${lockState()}`);
+        return () => seen.push(`not listening, ${lockState()}`);
+      });
+
+      expect(await runCli(argv, h.cli)).toBe(0);
+
+      expect(seen).toEqual(['listening, lock held', 'not listening, no lock']);
+      expect(h.raise).not.toHaveBeenCalled();
+    },
+  );
+
+  it('stops listening for stop signals once it has removed its lock, when the command fails', async () => {
+    const h = harness();
+    h.modules.runSetup.mockRejectedValue(new Error('stopped'));
+
+    expect(await runCli(['setup'], h.cli)).toBe(1);
+
+    expect(h.onStop).toHaveBeenCalledTimes(1);
+    expect(h.stopListening).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([[['check', '3', 'fills']], [['env', 'mcp']], [['help']], [['keys', 'from-seed']]])(
+    '%j takes no lock, and listens for no stop signal',
+    async (argv) => {
+      const h = harness({ ...ENV, QUORUM_SEED_PHRASE: PHRASE });
+
+      expect(await runCli(argv, h.cli)).toBe(0);
+
+      expect(h.onStop).not.toHaveBeenCalled();
+    },
+  );
+
+  it('listens for no stop signal when another swarm holds the lock', async () => {
+    const h = harness();
+    await mkdir(lockDir, { recursive: true });
+    await writeFile(lockPath(), '4242\n');
+    try {
+      expect(await runCli(['setup'], h.cli)).toBe(1);
+
+      expect(h.onStop).not.toHaveBeenCalled();
+    } finally {
+      await rm(lockPath(), { force: true });
+    }
+  });
+
   it.each([[['check', '3', 'fills']], [['env', 'mcp']], [['help']]])('%j takes no lock, and runs while another swarm holds one', async (argv) => {
     const h = harness();
     const seen = watchLock(h.modules);
@@ -788,6 +899,156 @@ describe('runCli: errors', () => {
   });
 });
 
+describe('parseCommand: keys', () => {
+  it.each([
+    [['keys', 'from-seed'], { name: 'keys', parentKey: false, gatewayEnv: null }],
+    [['keys', 'from-seed', '--parent-key'], { name: 'keys', parentKey: true, gatewayEnv: null }],
+    [['keys', 'from-seed', '--gateway-env', '/run/quorum/gateway.env'], { name: 'keys', parentKey: false, gatewayEnv: '/run/quorum/gateway.env' }],
+  ])('reads %j', (argv, command) => {
+    expect(parseCommand(argv)).toEqual(command);
+  });
+
+  it.each([
+    [['keys']],
+    [['keys', 'from-phrase']],
+    [['keys', 'from-seed', '--gateway-env']],
+    [['keys', 'from-seed', '--gateway-env', '']],
+    [['keys', 'from-seed', '--parent-key', '--gateway-env', '/tmp/gateway.env']],
+    [['keys', 'from-seed', '--gateway-env', '/tmp/gateway.env', '--parent-key']],
+    [['keys', 'from-seed', '--parent-key', 'now']],
+    [['keys', 'from-seed', '--verbose']],
+  ])("refuses %j, giving the command's synopsis", (argv) => {
+    expect(() => parseCommand(argv)).toThrow(UsageError);
+    expect(() => parseCommand(argv)).toThrow('wrong arguments: the command is swarm keys from-seed [--gateway-env <path> | --parent-key]');
+  });
+
+  // A relative path, or a flag taken for one, would put the gateway's secrets in the current folder.
+  it.each([['--parent-key'], ['gateway.env']])(
+    "refuses the --gateway-env path %j, which is not absolute, naming the problem and giving the command's synopsis",
+    (path) => {
+      const argv = ['keys', 'from-seed', '--gateway-env', path];
+      expect(() => parseCommand(argv)).toThrow(UsageError);
+      expect(() => parseCommand(argv)).toThrow(
+        `wrong arguments: the path after --gateway-env must be absolute, got ${JSON.stringify(path)}; ` +
+          'the command is swarm keys from-seed [--gateway-env <path> | --parent-key]',
+      );
+    },
+  );
+});
+
+describe('runCli: keys from-seed', () => {
+  /** Runs `test` with a temporary credentials folder, removed after it. */
+  async function withCredentials(test: (credentialsDir: string) => Promise<void>): Promise<void> {
+    const credentialsDir = await mkdtemp(join(tmpdir(), 'quorum-main-keys-'));
+    try {
+      await test(credentialsDir);
+    } finally {
+      await rm(credentialsDir, { recursive: true, force: true });
+    }
+  }
+
+  it('--parent-key prints the parent key alone, from the phrase alone: no configuration, no chain, no key file', async () => {
+    // An invalid configuration without a parent account: --parent-key never reads it.
+    const h = harness({ QUORUM_SEED_PHRASE: PHRASE, QUORUM_NETWORK: 'near:mainnet' });
+    expect(await runCli(['keys', 'from-seed', '--parent-key'], h.cli)).toBe(0);
+    expect(h.out).toEqual([PARENT_KEY]);
+    expect(h.err).toEqual([]);
+    expect(h.seedChain).not.toHaveBeenCalled();
+    expect(h.connect).not.toHaveBeenCalled();
+    expect(h.modules.keysFromSeed).not.toHaveBeenCalled();
+  });
+
+  it('runs keysFromSeed with the configuration, the phrase as normalised, the seed chain and the env file path, and connects nothing else', async () => {
+    const h = harness({ ...ENV, QUORUM_SEED_PHRASE: `\n${PHRASE.toUpperCase()}  ` });
+    expect(await runCli(['keys', 'from-seed', '--gateway-env', '/run/quorum/gateway.env'], h.cli)).toBe(0);
+    expect(h.order).toEqual(['keys']);
+    const [config, phrase, deps, options] = h.modules.keysFromSeed.mock.calls[0] ?? [];
+    expect(config?.parent).toBe(PARENT);
+    expect(phrase).toBe(PHRASE);
+    expect(deps?.chain).toBe(h.keysChain);
+    expect(options).toEqual({ gatewayEnv: '/run/quorum/gateway.env' });
+    expect(h.seedChain.mock.calls[0]?.[0]).toBe(config);
+    expect(h.connect).not.toHaveBeenCalled();
+  });
+
+  it('asks for no env file without --gateway-env', async () => {
+    const h = harness({ ...ENV, QUORUM_SEED_PHRASE: PHRASE });
+    expect(await runCli(['keys', 'from-seed'], h.cli)).toBe(0);
+    expect(h.modules.keysFromSeed.mock.calls[0]?.[3]).toEqual({ gatewayEnv: null });
+  });
+
+  it.each<[string, Env, string]>([
+    ['both variables are set', { QUORUM_SEED_PHRASE: PHRASE, QUORUM_SEED_PHRASE_FILE: '/run/secrets/phrase' }, 'QUORUM_SEED_PHRASE and QUORUM_SEED_PHRASE_FILE are both set'],
+    ['neither variable is set', {}, 'QUORUM_SEED_PHRASE or QUORUM_SEED_PHRASE_FILE is required'],
+    ['the phrase has 13 words', { QUORUM_SEED_PHRASE: `${PHRASE} abandon` }, 'must hold a phrase of 12 or 24 words, not 13'],
+  ])('exits 1, running nothing and printing no part of the phrase, when %s', async (_, phraseEnv, problem) => {
+    for (const argv of [['keys', 'from-seed'], ['keys', 'from-seed', '--parent-key']]) {
+      const h = harness({ ...ENV, ...phraseEnv });
+      expect(await runCli(argv, h.cli)).toBe(1);
+      expect(h.err).toHaveLength(1);
+      expect(h.err[0]).toMatch(/^invalid configuration:\n/);
+      expect(h.err[0]).toContain(problem);
+      expect(h.err[0]).not.toContain('abandon');
+      expect(h.out).toEqual([]);
+      expect(h.order).toEqual([]);
+      expect(h.seedChain).not.toHaveBeenCalled();
+    }
+  });
+
+  it('exits 1 naming QUORUM_RELAYER_KEY_COUNT above 90, reading no chain and writing nothing', async () => {
+    await withCredentials(async (credentialsDir) => {
+      const h = harness({ ...ENV, QUORUM_SEED_PHRASE: PHRASE, QUORUM_CREDENTIALS_DIR: credentialsDir, QUORUM_RELAYER_KEY_COUNT: '91' });
+      h.modules.keysFromSeed.mockImplementation(keysFromSeed);
+      expect(await runCli(['keys', 'from-seed'], h.cli)).toBe(1);
+      expect(h.err).toEqual([
+        'invalid configuration:\nQUORUM_RELAYER_KEY_COUNT must be from 1 to 90 for the relayer\'s keys to be derived from the seed phrase, got "91"',
+      ]);
+      expect(h.keysChain.reads).toEqual([]);
+      expect(await readdir(credentialsDir)).toEqual([]);
+    });
+  });
+
+  it('exits 1 when the phrase holds no full-access key of the parent, writing nothing and printing no part of the phrase', async () => {
+    await withCredentials(async (credentialsDir) => {
+      const h = harness({ ...ENV, QUORUM_SEED_PHRASE: PHRASE, QUORUM_CREDENTIALS_DIR: credentialsDir });
+      h.modules.keysFromSeed.mockImplementation(keysFromSeed);
+      h.keysChain.hold(PARENT, PARENT_KEY, 'other');
+      expect(await runCli(['keys', 'from-seed'], h.cli)).toBe(1);
+      expect(h.err).toHaveLength(1);
+      expect(h.err[0]).toContain(`the seed phrase does not hold a full-access key of the parent account ${PARENT}`);
+      expect([...h.out, ...h.err].join('\n')).not.toContain('abandon');
+      expect(await readdir(credentialsDir)).toEqual([]);
+    });
+  });
+
+  it('exits 1 when the RPC cannot be read, writing nothing', async () => {
+    await withCredentials(async (credentialsDir) => {
+      const h = harness({ ...ENV, QUORUM_SEED_PHRASE: PHRASE, QUORUM_CREDENTIALS_DIR: credentialsDir });
+      h.modules.keysFromSeed.mockImplementation(keysFromSeed);
+      h.keysChain.down = true;
+      expect(await runCli(['keys', 'from-seed'], h.cli)).toBe(1);
+      expect(h.err).toEqual(['fetch failed (connect ECONNREFUSED 127.0.0.1:3030)']);
+      expect(await readdir(credentialsDir)).toEqual([]);
+    });
+  });
+
+  it('exits 0 once the chain check passes, with one line per key on stdout and no part of the phrase', async () => {
+    await withCredentials(async (credentialsDir) => {
+      const h = harness({ ...ENV, QUORUM_SEED_PHRASE: PHRASE, QUORUM_CREDENTIALS_DIR: credentialsDir });
+      h.modules.keysFromSeed.mockImplementation(keysFromSeed);
+      h.keysChain.hold(PARENT, PARENT_KEY);
+      expect(await runCli(['keys', 'from-seed'], h.cli)).toBe(0);
+      expect(h.err).toEqual([]);
+      expect(h.out[0]).toBe(`${PARENT}  ${PARENT_KEY}`);
+      expect(h.out.at(-1)).toMatch(/^credential {2}[A-Za-z0-9_-]{43}$/);
+      // The parent, funding, pools, 4 relayer keys (the default count), provider, 20 scripted buyers, the MCP buyer, the credential key.
+      expect(h.out).toHaveLength(30);
+      expect(h.out.join('\n')).not.toContain('abandon');
+      expect(await readdir(credentialsDir)).toEqual(['testnet']);
+    });
+  });
+});
+
 interface Run {
   code: number | null;
   stdout: string;
@@ -823,4 +1084,65 @@ describe('main, as a process', () => {
     expect(stdout).toBe('');
     expect(stderr).toContain('QUORUM_NETWORK must be near:testnet or near:sandbox, got "near:mainnet"');
   });
+
+  it('prints the parent key for keys from-seed --parent-key, with only the phrase set', async () => {
+    // An empty QUORUM_SEED_PHRASE_FILE counts as unset, and keeps out any value apps/swarm/.env may give it.
+    const { code, stdout, stderr } = await runMain(['keys', 'from-seed', '--parent-key'], {
+      QUORUM_SEED_PHRASE: PHRASE,
+      QUORUM_SEED_PHRASE_FILE: '',
+    });
+    expect(stderr).toBe('');
+    expect(code).toBe(0);
+    expect(stdout).toBe(`${PARENT_KEY}\n`);
+  });
+
+  // Windows has no SIGTERM a process can catch: killing it there ends it at once.
+  it.skipIf(process.platform === 'win32')(
+    'removes its lock when SIGTERM stops it, then ends by SIGTERM, as its parent sees',
+    async () => {
+      // An RPC that takes the connection and never answers, so that setup waits on its chain check.
+      const sockets = new Set<Socket>();
+      const rpc = createServer((socket) => void sockets.add(socket));
+      await new Promise<void>((resolve) => rpc.listen(0, '127.0.0.1', resolve));
+      const { port } = rpc.address() as AddressInfo;
+      const dir = await mkdtemp(join(tmpdir(), 'quorum-swarm-signal-'));
+      const lock = join(dir, `swarm-testnet-${PARENT}.lock`);
+      const child = spawn(process.execPath, [MAIN, 'setup'], {
+        env: {
+          ...process.env,
+          QUORUM_NETWORK: 'near:testnet',
+          QUORUM_PARENT_ACCOUNT: PARENT,
+          QUORUM_RPC_URL: `http://127.0.0.1:${port}`,
+          QUORUM_SWARM_LOCK_DIR: dir,
+        },
+        stdio: ['ignore', 'ignore', 'pipe'],
+      });
+      let stderr = '';
+      child.stderr?.on('data', (chunk: Buffer) => (stderr += chunk.toString()));
+      // 'close', as a supervisor that reads the child's output and its end waits for.
+      const ended = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) =>
+        child.on('close', (code, signal) => resolve({ code, signal })),
+      );
+      try {
+        // The chain check's request comes once the lock is held and the stop signals are listened for.
+        await vi.waitFor(() => expect({ connected: sockets.size > 0, stderr }).toEqual({ connected: true, stderr: '' }), {
+          timeout: 20_000,
+          interval: 50,
+        });
+        expect(existsSync(lock)).toBe(true);
+
+        child.kill('SIGTERM');
+
+        expect(await ended).toEqual({ code: null, signal: 'SIGTERM' });
+        expect(existsSync(lock)).toBe(false);
+        expect(stderr).toBe('');
+      } finally {
+        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+        for (const socket of sockets) socket.destroy();
+        await new Promise((resolve) => rpc.close(resolve));
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+    30_000,
+  );
 });
