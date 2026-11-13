@@ -3,16 +3,26 @@
  * every 2 seconds the pools contract's views (through the RPC the configuration names) and the
  * gateway's activity feed, and renders one of the provider's pools. It never signs anything.
  *
+ * When the configuration has `demo: true`, every refresh also reads `GET /demo`, and two buttons ask
+ * the gateway to start a run of the swarm (`POST /demo/fills`, `POST /demo/fails`). A demo line,
+ * apart from the status line, says what the demo is doing.
+ *
  * Every value read from the RPC or the gateway is written with `textContent` or as an attribute,
  * never as HTML. The computing is in `totals.js`; this module only fetches and renders.
  */
 import {
+  DEMO_ANSWER_MS,
   buyerRows,
   countdownText,
+  demoControls,
+  demoLine,
+  demoRequest,
   formatAmount,
   parseActivity,
   parseBalance,
   parseConfig,
+  parseDemoAnswer,
+  parseDemoStatus,
   parsePoolRefs,
   parseSeats,
   parseToken,
@@ -24,9 +34,10 @@ import {
   readAll,
   viewRequest,
   viewResult,
+  withoutPoolParam,
 } from './totals.js';
 
-/** @import { ActivityRecord, BlockRef, BuyerRow, PageConfig, PoolStatus, PoolView, SeatView, TokenInfo, TxLink, ViewAnswer } from './totals.js' */
+/** @import { ActivityRecord, BlockRef, BuyerRow, DemoAnswer, DemoClick, DemoScenario, DemoStatus, PageConfig, PoolStatus, PoolView, SeatView, TokenInfo, TxLink, ViewAnswer } from './totals.js' */
 
 /** @type {BlockRef} */
 const FINAL = { finality: 'final' };
@@ -117,6 +128,10 @@ const ui = {
   buyerRows: element('buyer-rows', HTMLElement),
   noBuyers: element('no-buyers', HTMLElement),
   source: element('source', HTMLElement),
+  demo: element('demo', HTMLElement),
+  demoFills: element('demo-fills', HTMLButtonElement),
+  demoFails: element('demo-fails', HTMLButtonElement),
+  demoLine: element('demo-line', HTMLElement),
 };
 
 /** @type {{ config: PageConfig, token: TokenInfo } | null} */
@@ -130,6 +145,18 @@ let polling = false;
 /** Whether the last refresh failed, so that the recovery from it is announced. */
 let failing = false;
 let rpcId = 0;
+/**
+ * The last `GET /demo`, or null when it could not be read or the demo is off.
+ * @type {DemoStatus | null}
+ */
+let demoStatus = null;
+/**
+ * The last click on a demo button, once its answer (or its failure) has arrived.
+ * @type {DemoClick | null}
+ */
+let demoClick = null;
+/** True while a demo button's request is on its way. */
+let demoSending = false;
 
 /**
  * Runs a request, and names it if it is cut short by its timeout. A request aborted by its signal
@@ -414,16 +441,19 @@ function announce(text) {
 }
 
 /**
- * Runs one poll, unless the previous one is still running, and reports how it went. A poll whose
- * pool the viewer left while it read reports nothing, whether it succeeded or failed: it says
- * nothing of the pool now chosen, and `failing` stays as it was.
+ * Runs one poll, and reads the demo's state when the demo is on, unless the previous one is still
+ * running; reports how the poll went, and renders the demo controls. A poll whose pool the viewer
+ * left while it read reports nothing, whether it succeeded or failed: it says nothing of the pool now
+ * chosen, and `failing` stays as it was.
  */
 async function tick() {
   if (polling) return;
   polling = true;
   const search = location.search;
   try {
-    if (await poll()) {
+    const { config } = (setup ??= await loadSetup());
+    const [rendered] = await Promise.all([poll(), refreshDemo(config)]);
+    if (rendered) {
       showStatus(`Updated at ${new Date().toLocaleTimeString()}`, false);
       if (failing) announce('The page is up to date again.');
       failing = false;
@@ -437,7 +467,76 @@ async function tick() {
     failing = true;
   } finally {
     polling = false;
+    renderDemo();
   }
+}
+
+/**
+ * Reads `GET /demo` when the gateway's demo is on. Never throws: a read that fails, or returns
+ * something malformed, leaves `demoStatus` null, which the demo line reports and which disables the
+ * buttons.
+ *
+ * @param {PageConfig} config
+ */
+async function refreshDemo(config) {
+  if (!config.demo) {
+    demoStatus = null;
+    return;
+  }
+  try {
+    demoStatus = parseDemoStatus(await getJson('/demo'));
+  } catch {
+    demoStatus = null;
+  }
+}
+
+/**
+ * Shows the demo controls only when the demo is on, enables the buttons when a run can start, and
+ * writes the demo line, only when it changed: it is a live region, which a rewrite could announce
+ * again.
+ */
+function renderDemo() {
+  const { shown, enabled } = demoControls({ demo: setup?.config.demo ?? false, status: demoStatus, sending: demoSending });
+  ui.demo.hidden = !shown;
+  ui.demoFills.disabled = !enabled;
+  ui.demoFails.disabled = !enabled;
+  if (shown) {
+    setText(
+      ui.demoLine,
+      demoLine({ now: Date.now(), click: demoClick, status: demoStatus, time: (ms) => new Date(ms).toLocaleTimeString() }),
+    );
+  }
+}
+
+/**
+ * A click on a demo button. It first removes `?pool=` from the URL, so that the page follows the
+ * provider's newest pool, which is the one the run opens; then it asks the gateway to start the run,
+ * shows the answer on the demo line for DEMO_ANSWER_MS, and refreshes.
+ *
+ * @param {DemoScenario} scenario
+ */
+async function startRun(scenario) {
+  history.replaceState(null, '', withoutPoolParam(location.href));
+  demoSending = true;
+  renderDemo();
+  const request = demoRequest(scenario);
+  /** @type {DemoAnswer | null} */
+  let answer = null;
+  try {
+    const response = await fetch(request.url, {
+      method: request.method,
+      headers: request.headers,
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    answer = parseDemoAnswer(response.status, await response.json().catch(() => null));
+  } catch {
+    answer = null;
+  }
+  demoSending = false;
+  demoClick = { at: Date.now(), answer };
+  renderDemo();
+  setTimeout(renderDemo, DEMO_ANSWER_MS);
+  void tick();
 }
 
 ui.select.addEventListener('change', () => {
@@ -447,6 +546,8 @@ ui.select.addEventListener('change', () => {
   showStatus(`Loading pool ${ui.select.value}…`, false);
   void tick();
 });
+ui.demoFills.addEventListener('click', () => void startRun('fills'));
+ui.demoFails.addEventListener('click', () => void startRun('fails'));
 
 void tick();
 setInterval(tick, POLL_INTERVAL_MS);

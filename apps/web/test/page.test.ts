@@ -73,3 +73,31 @@ describe('style.css', () => {
     expect(bodies.some((body) => /overflow-wrap:\s*anywhere/.test(body)), selector).toBe(true);
   });
 });
+
+describe('the demo controls', () => {
+  it('are hidden in the markup until app.js shows them for a gateway whose demo is on', () => {
+    expect(html).toMatch(/<section id="demo" class="demo" aria-label="Demo runs" hidden>/);
+  });
+
+  it('label the two buttons as the spec words them', () => {
+    expect(html).toContain('<button id="demo-fills" type="button">Start a pool that fills</button>');
+    expect(html).toContain('<button id="demo-fails" type="button">Start a pool that fails</button>');
+  });
+
+  it("keep the demo line apart from the page's status line", () => {
+    expect(html).toContain('<p id="demo-line" class="demo-line" role="status" aria-live="polite"></p>');
+    expect(html).toContain('<p id="status" class="status">Loading…</p>');
+  });
+
+  it('remove ?pool= from the URL before sending the request a button sends', () => {
+    const removed = app.indexOf("history.replaceState(null, '', withoutPoolParam(location.href))");
+    const sent = app.indexOf('fetch(request.url');
+    expect(removed).toBeGreaterThan(-1);
+    expect(sent).toBeGreaterThan(removed);
+    expect(app).toContain('const request = demoRequest(scenario);');
+  });
+
+  it('read GET /demo only when the gateway says its demo is on', () => {
+    expect(app).toMatch(/if \(!config\.demo\) \{[^}]*\}\s*try \{\s*demoStatus = parseDemoStatus\(await getJson\('\/demo'\)\);/);
+  });
+});

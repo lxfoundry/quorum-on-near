@@ -2,8 +2,9 @@
  * The live page's logic, as functions with no input or output of their own: the JSON-RPC body of a
  * view call and the decoding of its answer, structural checks of everything read from the RPC and
  * the gateway, the ledger totals, the buyer rows, the explorer links, the choice of pool, the notice
- * shown for another seller's pool and the countdown. Amounts are decimal strings in base units at the
- * edges and `bigint` inside.
+ * shown for another seller's pool, the countdown, and the demo controls: the request a demo button
+ * sends, the page URL without `?pool=`, whether the buttons are shown and enabled, and the demo line.
+ * Amounts are decimal strings in base units at the edges and `bigint` inside.
  */
 
 /**
@@ -102,7 +103,8 @@
  */
 /**
  * The gateway's `/config.json`: what the page needs to read the chain. `rpcUrl` is `/rpc` when the
- * gateway's RPC pass-through is on.
+ * gateway's RPC pass-through is on. `demo` is true when the gateway's demo endpoint is on; a gateway
+ * without the endpoint sends none, which reads as false.
  * @typedef {{
  *   network: string,
  *   rpcUrl: string,
@@ -110,7 +112,56 @@
  *   token: string,
  *   provider: string,
  *   explorerTxUrl: string,
+ *   demo: boolean,
  * }} PageConfig
+ */
+/**
+ * A demo run's scenario: a pool that fills, or a pool that fails.
+ * @typedef {'fills' | 'fails'} DemoScenario
+ */
+/**
+ * The last finished demo run. Times are milliseconds since the epoch. `exitCode` is the code of a
+ * run that exited, `signal` the signal that ended one that did not, and both are null for a program
+ * that could not be started.
+ * @typedef {{
+ *   scenario: DemoScenario,
+ *   startedAt: number,
+ *   endedAt: number,
+ *   exitCode: number | null,
+ *   signal: string | null,
+ * }} DemoLastRun
+ */
+/**
+ * The gateway's `GET /demo`. `scenario` and `startedAt` (milliseconds since the epoch) are set while
+ * a run is in progress, and null otherwise. `runsToday` counts the runs started this UTC day.
+ * @typedef {{
+ *   running: boolean,
+ *   scenario: DemoScenario | null,
+ *   startedAt: number | null,
+ *   last: DemoLastRun | null,
+ *   runsToday: number,
+ *   maxRunsPerDay: number,
+ * }} DemoStatus
+ */
+/**
+ * The gateway's answer to a demo button's `POST`: its HTTP status, and the `error` of its JSON body,
+ * or null when it has none.
+ * @typedef {{ status: number, error: string | null }} DemoAnswer
+ */
+/**
+ * A click on a demo button: when its answer arrived (`at`, milliseconds since the epoch), and that
+ * answer, or null when none came (the request failed or timed out).
+ * @typedef {{ at: number, answer: DemoAnswer | null }} DemoClick
+ */
+/**
+ * What the demo line is chosen from: the time now and the last click (milliseconds since the epoch),
+ * the last `GET /demo` (null when it could not be read), and how the page writes a time.
+ * @typedef {{
+ *   now: number,
+ *   click: DemoClick | null,
+ *   status: DemoStatus | null,
+ *   time: (ms: number) => string,
+ * }} DemoLineInput
  */
 
 /** Thrown when data read from the RPC, the gateway or the page URL does not have the expected shape. */
@@ -555,9 +606,10 @@ function parseRecord(value) {
 }
 
 /**
- * The gateway's `/config.json`. Throws a PageDataError unless every field is a string and the
- * explorer URL is an http(s) URL that ends in `/` or `=` and whose links keep its origin, which
- * `txUrl` relies on.
+ * The gateway's `/config.json`. Throws a PageDataError unless every field is a string, `demo` is
+ * absent or a boolean, and the explorer URL is an http(s) URL that ends in `/` or `=` and whose links
+ * keep its origin, which `txUrl` relies on. A missing `demo`, from a gateway without the demo
+ * endpoint, reads as false.
  *
  * @param {unknown} value
  * @returns {PageConfig}
@@ -566,7 +618,10 @@ export function parseConfig(value) {
   if (!isObject(value) || !CONFIG_KEYS.every((key) => typeof value[key] === 'string')) {
     throw new PageDataError('the gateway configuration (/config.json) is malformed');
   }
-  const config = /** @type {PageConfig} */ (value);
+  if (value.demo !== undefined && typeof value.demo !== 'boolean') {
+    throw new PageDataError('the gateway configuration (/config.json) is malformed');
+  }
+  const config = /** @type {PageConfig} */ ({ ...value, demo: value.demo === true });
   if (!isHttpUrl(config.explorerTxUrl)) throw new PageDataError('the explorer URL in /config.json is not an http(s) URL');
   if (!keepsOrigin(config.explorerTxUrl)) {
     throw new PageDataError('the explorer URL in /config.json must end in / or =, and a hash appended to it must keep its origin');
@@ -716,4 +771,152 @@ export function countdown(deadlineMs, nowMs) {
  */
 export function countdownText(status, deadlineMs, nowMs) {
   return status === 'open' ? countdown(deadlineMs, nowMs) : 'closed';
+}
+
+/**
+ * How long the demo line shows the answer to a click. It is counted from when that answer arrived,
+ * not from the click itself: a request can take up to 10 seconds, and a slow answer counted from the
+ * click would show for almost no time.
+ */
+export const DEMO_ANSWER_MS = 10_000;
+
+const DEMO_SCENARIOS = new Set(['fills', 'fails']);
+
+/**
+ * @param {unknown} value
+ * @returns {value is DemoScenario}
+ */
+function isScenario(value) {
+  return typeof value === 'string' && DEMO_SCENARIOS.has(value);
+}
+
+/**
+ * @param {unknown} value
+ * @returns {value is DemoLastRun}
+ */
+function isLastRun(value) {
+  return (
+    isObject(value) &&
+    isScenario(value.scenario) &&
+    isCount(value.startedAt) &&
+    isCount(value.endedAt) &&
+    (value.exitCode === null || (typeof value.exitCode === 'number' && Number.isSafeInteger(value.exitCode))) &&
+    (value.signal === null || typeof value.signal === 'string')
+  );
+}
+
+/**
+ * The gateway's `GET /demo`, checked field by field: `scenario` and `startedAt` are set exactly
+ * while a run is in progress, and `last` is null or a finished run. Throws a PageDataError for any
+ * other shape.
+ *
+ * @param {unknown} value
+ * @returns {DemoStatus}
+ */
+export function parseDemoStatus(value) {
+  if (
+    isObject(value) &&
+    typeof value.running === 'boolean' &&
+    (value.scenario === null || isScenario(value.scenario)) &&
+    (value.startedAt === null || isCount(value.startedAt)) &&
+    (value.scenario !== null) === value.running &&
+    (value.startedAt !== null) === value.running &&
+    (value.last === null || isLastRun(value.last)) &&
+    isCount(value.runsToday) &&
+    isCount(value.maxRunsPerDay)
+  ) {
+    return /** @type {DemoStatus} */ (value);
+  }
+  throw new PageDataError('the demo status (/demo) is malformed');
+}
+
+/**
+ * The gateway's answer to a demo button's `POST`: its HTTP status, and the `error` of its JSON body
+ * when that is text. `body` is null when the answer had no JSON body.
+ *
+ * @param {number} status
+ * @param {unknown} body
+ * @returns {DemoAnswer}
+ */
+export function parseDemoAnswer(status, body) {
+  return { status, error: isObject(body) && typeof body.error === 'string' ? body.error : null };
+}
+
+/**
+ * The request a demo button sends: a `POST` with the header the gateway requires. A page on another
+ * site cannot send that header without a CORS preflight, which the gateway never answers.
+ *
+ * @param {DemoScenario} scenario
+ * @returns {{ url: string, method: 'POST', headers: Record<string, string> }}
+ */
+export function demoRequest(scenario) {
+  return { url: `/demo/${scenario}`, method: 'POST', headers: { 'X-Quorum-Demo': '1' } };
+}
+
+/**
+ * The page's URL without `?pool=`, so that the page follows the provider's newest pool, which is the
+ * one a run started from the page opens. Every other part of the URL is kept.
+ *
+ * @param {string} href
+ * @returns {string}
+ */
+export function withoutPoolParam(href) {
+  const url = new URL(href);
+  url.searchParams.delete('pool');
+  return url.href;
+}
+
+/**
+ * Whether the demo buttons and line are shown, and whether the buttons can be clicked. They are
+ * shown only when `/config.json` has `demo: true`. The buttons are disabled while a run is in
+ * progress, when today's cap is reached, when `GET /demo` could not be read (`status` null), and
+ * while a button's own request is on its way (`sending`), so that one click sends one request.
+ *
+ * @param {{ demo: boolean, status: DemoStatus | null, sending: boolean }} input
+ * @returns {{ shown: boolean, enabled: boolean }}
+ */
+export function demoControls({ demo, status, sending }) {
+  const enabled = demo && !sending && status !== null && !status.running && status.runsToday < status.maxRunsPerDay;
+  return { shown: demo, enabled };
+}
+
+/**
+ * What the demo line says of the answer to a click.
+ *
+ * @param {DemoAnswer | null} answer
+ * @returns {string}
+ */
+function answerText(answer) {
+  if (answer === null) return 'The gateway could not be reached.';
+  if (answer.status === 202) return 'A run started. Its pool appears here once it opens.';
+  if (answer.status === 409 && answer.error === 'demo_running') return 'A run is already in progress. This page follows its pool once it opens.';
+  if (answer.status === 409 && answer.error === 'pool_open') return 'A pool is still open. This page shows it.';
+  if (answer.status === 429) return 'The demo has reached its limit for today.';
+  return 'The demo is not available right now.';
+}
+
+/**
+ * The demo line: the first of these that applies.
+ * 1. For DEMO_ANSWER_MS after a click's answer arrived, that answer.
+ * 2. `GET /demo` could not be read.
+ * 3. A run in progress: its scenario and when it started.
+ * 4. Today's cap reached.
+ * 5. The last run exited with code 0: its scenario and when it ended.
+ * 6. The last run ended any other way.
+ * 7. No run yet.
+ *
+ * @param {DemoLineInput} input
+ * @returns {string}
+ */
+export function demoLine({ now, click, status, time }) {
+  if (click !== null && now - click.at < DEMO_ANSWER_MS) return answerText(click.answer);
+  if (status === null) return "The demo's status is unavailable.";
+  if (status.running && status.scenario !== null && status.startedAt !== null) {
+    return `A ${status.scenario} run started at ${time(status.startedAt)} is in progress.`;
+  }
+  if (status.runsToday >= status.maxRunsPerDay) return 'The demo has reached its limit for today.';
+  const { last } = status;
+  if (last === null) return 'Start a run to watch a pool from its first seat.';
+  if (last.exitCode === 0) return `The last run (${last.scenario}) ended at ${time(last.endedAt)}.`;
+  return 'The last run ended with an error. Its testnet funds may need a refill.';
 }
