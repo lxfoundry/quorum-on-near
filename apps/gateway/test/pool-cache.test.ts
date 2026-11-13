@@ -163,6 +163,68 @@ describe('clearAfterSends', () => {
     expect(getPoolReads(fake)).toBe(2);
   });
 
+  it("reads every pool again when a keeper's call throws, and rethrows its error", async () => {
+    const { fake, pools } = cachedFake();
+    const writer = clearAfterSends(fake, cache);
+    await pools.getPool(POOL_ID);
+    const failure = new Error('connection reset');
+    fake.onCall = () => {
+      throw failure;
+    };
+    await expect(writer.callPools('refund', { pool_id: POOL_ID }, 100n)).rejects.toBe(failure);
+    expect(fake.calls).toEqual([{ method: 'refund', args: { pool_id: POOL_ID }, gas: 100n }]);
+    await pools.getPool(POOL_ID);
+    expect(getPoolReads(fake)).toBe(2);
+  });
+
+  it("clears the pools once a keeper's call has settled, and before its result reaches the caller", async () => {
+    const { fake } = cachedFake();
+    const events: string[] = [];
+    const writer = clearAfterSends(fake, {
+      clear: () => {
+        events.push('clear');
+      },
+    });
+    const call = deferred<RelayResult>();
+    fake.onCall = () => {
+      events.push('call');
+      return call.promise;
+    };
+    const result = executed('SettleTx1');
+    const sent = writer.callPools('settle', { pool_id: POOL_ID }, 100n).then((value) => {
+      events.push('result');
+      return value;
+    });
+    expect(events).toEqual(['call']);
+    call.resolve(result);
+    expect(await sent).toBe(result);
+    expect(events).toEqual(['call', 'clear', 'result']);
+  });
+
+  it("clears the pools once a keeper's call has thrown, and before its error reaches the caller", async () => {
+    const { fake } = cachedFake();
+    const events: string[] = [];
+    const writer = clearAfterSends(fake, {
+      clear: () => {
+        events.push('clear');
+      },
+    });
+    const call = deferred<RelayResult>();
+    fake.onCall = () => {
+      events.push('call');
+      return call.promise;
+    };
+    const failure = new Error('connection reset');
+    const sent = writer.callPools('settle', { pool_id: POOL_ID }, 100n).catch((error: unknown) => {
+      events.push('error');
+      throw error;
+    });
+    expect(events).toEqual(['call']);
+    call.reject(failure);
+    await expect(sent).rejects.toBe(failure);
+    expect(events).toEqual(['call', 'clear', 'error']);
+  });
+
   it('stores nothing from a pool read sent before the transaction returned', async () => {
     const { fake, pools } = cachedFake();
     const writer = clearAfterSends(fake, cache);
@@ -173,6 +235,23 @@ describe('clearAfterSends', () => {
     const read = vi.spyOn(fake, 'getPool').mockReturnValueOnce(answer.promise);
     const before = pools.getPool(POOL_ID);
     relay.resolve(executed(TX_HASH));
+    await sent;
+    answer.resolve(poolView({ id: POOL_ID }));
+    await before;
+    await pools.getPool(POOL_ID);
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+
+  it("stores nothing from a pool read sent before a keeper's call returned", async () => {
+    const { fake, pools } = cachedFake();
+    const writer = clearAfterSends(fake, cache);
+    const call = deferred<RelayResult>();
+    fake.onCall = () => call.promise;
+    const sent = writer.callPools('settle', { pool_id: POOL_ID }, 100n);
+    const answer = deferred<PoolView | null>();
+    const read = vi.spyOn(fake, 'getPool').mockReturnValueOnce(answer.promise);
+    const before = pools.getPool(POOL_ID);
+    call.resolve(executed('SettleTx1'));
     await sent;
     answer.resolve(poolView({ id: POOL_ID }));
     await before;
