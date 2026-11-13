@@ -4,6 +4,7 @@
 //                   stderr, then exits with 0
 //   exit <code>     writes one line, then exits with <code>
 //   hang            writes "ready", then runs until a signal ends it, or for at most 120 seconds
+//   hang-pid        writes "pid <its process id>", then runs like hang
 //   ignore-sigterm  like hang, but on SIGTERM writes "SIGTERM ignored" and runs on (on POSIX only:
 //                   Windows ends the process instead)
 //   describe        writes its arguments, its working folder and its QUORUM_* variables (any case) as
@@ -36,6 +37,10 @@ switch (mode) {
     break;
   case 'hang':
     console.log('ready');
+    runAtMost120Seconds();
+    break;
+  case 'hang-pid':
+    console.log(`pid ${process.pid}`);
     runAtMost120Seconds();
     break;
   case 'describe': {

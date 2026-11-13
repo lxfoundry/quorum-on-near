@@ -110,6 +110,10 @@ const demo =
       });
 if (demo !== null) {
   console.log(`demo endpoint on: each run starts ${JSON.stringify(config.demoCommand)}, then its scenario`);
+  // An error nothing handles ends the process at once (see redactProcessOutput), with no signal for a
+  // run in progress, which would then run on with nothing left to stop it at its maximum run time.
+  // Kill is synchronous, so the signal is sent before the process is gone.
+  process.once('exit', () => demo.stop());
 }
 
 const server = serve({ fetch: createApp(deps, { demo }).fetch, port: config.port }, (info) => {

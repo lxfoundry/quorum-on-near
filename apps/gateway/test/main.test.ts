@@ -1,18 +1,20 @@
 import { execFile, spawn } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { KeyPair } from 'near-api-js';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TESTNET_USDC } from '../src/config.ts';
 import { generateCredentialJwk } from '../src/credential.ts';
 
 const MAIN = fileURLToPath(new URL('../src/main.ts', import.meta.url));
 /** The stand-in for the swarm's `demo` command. */
 const DEMO_PROGRAM = fileURLToPath(new URL('./fixtures/demo-program.mjs', import.meta.url));
+/** Preloaded into a gateway to make it meet an error nothing handles, once a file exists. */
+const CRASH_PRELOAD = pathToFileURL(fileURLToPath(new URL('./fixtures/crash-on-flag.mjs', import.meta.url))).href;
 /** The stub RPC's path, which holds a fake key where some providers put a real one. */
 const KEY_PATH = '/v2/fake-key-0123456789abcdef/';
 /** Any piece of that key. */
@@ -133,9 +135,9 @@ interface StartedGateway {
   stop(): Promise<void>;
 }
 
-/** Starts `node src/main.ts` in `dir` with `env`; no .env file is read. */
-function startGateway(env: Record<string, string | undefined>, dir: string): StartedGateway {
-  const child = spawn(process.execPath, [MAIN], { env, cwd: dir, stdio: ['ignore', 'pipe', 'pipe'] });
+/** Starts `node <nodeArgs> src/main.ts` in `dir` with `env`; no .env file is read. */
+function startGateway(env: Record<string, string | undefined>, dir: string, nodeArgs: string[] = []): StartedGateway {
+  const child = spawn(process.execPath, [...nodeArgs, MAIN], { env, cwd: dir, stdio: ['ignore', 'pipe', 'pipe'] });
   const output = { stdout: '', stderr: '' };
   child.stdout.setEncoding('utf8').on('data', (chunk: string) => (output.stdout += chunk));
   child.stderr.setEncoding('utf8').on('data', (chunk: string) => (output.stderr += chunk));
@@ -203,18 +205,79 @@ describe('main with the demo on', { timeout: 60_000 }, () => {
   /** A demo run's own RPC URL, with a fake key in its path. */
   const DEMO_RPC_URL = 'https://rpc.demo.example/v1/fake-key-0123456789abcdef/';
 
-  it("gives a run QUORUM_DEMO_RPC_URL as its QUORUM_RPC_URL, and names it by its variable in the run's lines on the gateway's output", async () => {
-    /** The requests the stub has no answer for. */
+  /**
+   * A stub RPC for a gateway with the demo on: the chain id, the token check at startup, and the pools
+   * that the keeper reads and that a run is checked against, of which there are none. `unexpected`
+   * collects the requests it has no answer for.
+   */
+  async function demoRpcStub(): Promise<{ url: string; unexpected: string[] }> {
     const unexpected: string[] = [];
     const { url } = await rpcStub((method, self, params) => {
       if (method === 'status') return { result: { chain_id: 'testnet' } };
       const view = method === 'query' ? (params as { method_name?: string }).method_name : undefined;
-      // The token check at startup, then the pools that the keeper reads and that a run is checked against.
       if (view === 'get_token') return viewAnswer(TESTNET_USDC);
       if (view === 'list_pools') return viewAnswer([]);
       unexpected.push(view ?? method);
       return internalError(self);
     });
+    return { url, unexpected };
+  }
+
+  /** Whether a process with this id is running. */
+  function isAlive(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      // Another user's process: it exists.
+      return (error as NodeJS.ErrnoException).code === 'EPERM';
+    }
+  }
+
+  // Not on Windows, where libuv ends a child with its parent whatever the gateway does.
+  it.skipIf(process.platform === 'win32')('stops a run in progress when the gateway ends on an error nothing handles', async () => {
+    const { url } = await demoRpcStub();
+    const dir = await gatewayFolder();
+    const port = await freePort();
+    const crashFile = join(dir, 'crash');
+    const gateway = startGateway(
+      gatewayEnv(url, dir, {
+        QUORUM_GATEWAY_PORT: String(port),
+        // The stand-in writes its process id, then runs until it is stopped.
+        QUORUM_DEMO_COMMAND: JSON.stringify([process.execPath, DEMO_PROGRAM, 'hang-pid']),
+        GATEWAY_TEST_CRASH_FILE: crashFile,
+      }),
+      dir,
+      ['--import', CRASH_PRELOAD],
+    );
+    const gatewayUrl = `http://127.0.0.1:${port}`;
+    let runPid: number | null = null;
+    try {
+      await until(gateway, 'start listening', async () => gateway.output.stdout.includes('gateway listening on'));
+      const started = await fetch(`${gatewayUrl}/demo/fills`, { method: 'POST', headers: { 'X-Quorum-Demo': '1' } });
+      expect(started.status, gateway.output.stderr).toBe(202);
+      await until(gateway, 'start the run', async () => /\[demo\] pid \d+/.test(gateway.output.stdout));
+      runPid = Number(/\[demo\] pid (\d+)/.exec(gateway.output.stdout)?.[1]);
+      expect(isAlive(runPid)).toBe(true);
+
+      // The error ends the gateway at once, with no signal for the run.
+      await writeFile(crashFile, '');
+      await vi.waitFor(() => expect(gateway.ended(), gateway.output.stderr).toBe(true), { timeout: 10_000, interval: 50 });
+      expect(gateway.output.stderr).toContain('uncaught error:');
+
+      await vi.waitFor(() => expect(isAlive(runPid as number), 'the run is still running').toBe(false), {
+        timeout: 10_000,
+        interval: 50,
+      });
+    } finally {
+      await gateway.stop();
+      // The run is the stand-in, which ends by itself after 120 seconds; a failed test must not leave it.
+      if (runPid !== null && isAlive(runPid)) process.kill(runPid, 'SIGKILL');
+    }
+  });
+
+  it("gives a run QUORUM_DEMO_RPC_URL as its QUORUM_RPC_URL, and names it by its variable in the run's lines on the gateway's output", async () => {
+    const { url, unexpected } = await demoRpcStub();
     const dir = await gatewayFolder();
     const port = await freePort();
     const gateway = startGateway(
