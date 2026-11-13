@@ -334,7 +334,7 @@ network is written in CAIP-2 form: `near:testnet`.
 | `GET /pools/:id/access?seats=N` | With no header: `402` with the offer (`seats` defaults to 1; `N` from 1 to 1000, otherwise `400` with `error` set to `invalid_seats`), `404` (`unknown_pool`) for a pool the gateway does not serve, `409` if the pool is filled or has no seat left, `410` if it has expired, `503` (`chain_unavailable`) if the chain cannot be read. With `X-PAYMENT`: process a payment. With `X-QUORUM-PROOF`: redeem (section 6.5) |
 | `GET /activity?pool=:id` | The activity feed (section 6.7) |
 | `GET /.well-known/jwks.json` | The public key that verifies credentials |
-| `POST /rpc` | Only if the public RPC refuses browser requests: a read-only pass-through that forwards `call_function` view calls on the pools contract and the token, and nothing else. Any other call, or `args_base64` over 1,024 characters, is answered `403` (`not_allowed`); a body over 16 KiB `413` (`body_too_large`); a body that is not JSON `400` (`invalid_json`); and an RPC that cannot be reached `503` (`chain_unavailable`) |
+| `POST /rpc` | Only if the public RPC refuses browser requests: a read-only pass-through that forwards `call_function` view calls on the pools contract and the token, and nothing else. Any other call, or `args_base64` over 1,024 characters, is answered `403` (`not_allowed`); a body over 16 KiB `413` (`body_too_large`); a body that is not JSON `400` (`invalid_json`); and an RPC that cannot be reached `503` (`chain_unavailable`). Four of the live page's views are answered from memory for 2 seconds after the gateway sent their read: `get_pool` and `list_pools` on the pools contract at `final` finality, and `get_seats` on the pools contract and the token's `ft_balance_of` at a block hash. Requests for one of them that arrive while its read is in flight share that read, and each answer carries its caller's JSON-RPC `id`. Only a view's result is kept: an error, or a status other than `200`, is passed on and never kept |
 | `GET /config.json` | What the live page needs: the network, the RPC URL (`/rpc` when the pass-through is on), the pools contract, the token, the provider and the explorer's transaction link prefix (section 7.6) |
 
 **Which pools the gateway serves.** Anyone can open a pool on the contract, but the gateway serves,
@@ -1249,8 +1249,10 @@ keys) and the NEP-141, NEP-145, NEP-297, NEP-366 and NEP-413 standards:
   requests per refresh is not bounded by the provider. The page asks for 100 rows at a time, which is
   the contract's page size: `PAGE_SIZE` in the page must not exceed `MAX_PAGE` in the contract
   (a smaller page only costs more requests), since a page that the contract cuts short is taken for
-  the last one, and a test checks it. Through the pass-through, every
-  viewer's reads reach the RPC from the gateway's address, so a public RPC's rate limit applies to
+  the last one, and a test checks it. Through the pass-through, each of the page's four repeated
+  views (section 6.1) reaches the RPC at most once per 2 seconds for the same arguments, whatever the
+  number of viewers, while its reads succeed; every other request a viewer sends, and a read that
+  failed, still reaches the RPC from the gateway's address, so a public RPC's rate limit applies to
   all viewers together and shows on the page as "Could not refresh" lines.
 - **Credentials are issued at optimistic execution, not finality.** The relayer waits for the
   commit to execute optimistically, and redemption reads the pool at optimistic finality, so a

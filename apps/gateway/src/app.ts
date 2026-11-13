@@ -8,6 +8,7 @@ import type { Deps } from './deps.ts';
 import { handleOffer } from './handle-offer.ts';
 import { handlePayment } from './handle-payment.ts';
 import { handleRedeem } from './handle-redeem.ts';
+import { cachePageViews } from './page-view-cache.ts';
 import { listServedPools, openPoolListings } from './pools.ts';
 import { redactUrls } from './redact.ts';
 import type { Reply } from './reply.ts';
@@ -134,7 +135,7 @@ export function createApp(deps: Deps, options: AppOptions = {}): Hono {
   );
 
   if (config.rpcPassthrough) {
-    const forward = options.fetch ?? fetch;
+    const forward = cachePageViews(options.fetch ?? fetch, config);
     const accounts = [config.poolsContract, config.token];
     const limit = bodyLimit({ maxSize: MAX_RPC_BODY_BYTES, onError: (c) => c.json({ error: 'body_too_large' }, 413) });
     app.post('/rpc', limit, async (c) => {
