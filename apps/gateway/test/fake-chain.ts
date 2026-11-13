@@ -65,6 +65,10 @@ export function testConfig(overrides: Partial<GatewayConfig> = {}): GatewayConfi
     webDir: null,
     rpcPassthrough: false,
     explorerTxUrl: 'https://testnet.nearblocks.io/txns/',
+    demoCommand: null,
+    demoMaxRunsPerDay: 100,
+    demoMaxRunSeconds: 1800,
+    demoRpcUrl: null,
     ...overrides,
   };
 }

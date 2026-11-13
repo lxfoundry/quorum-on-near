@@ -24,6 +24,8 @@ const COMMIT_1 = 'Ev64qpcqroBNeET1xax4ei5vDc1sJTyNSZRpj5GdYYTy';
 const COMMIT_2 = 'FmHDvha1UrjFE2KZN9NKRTrygpw2iXNsQquSFVHcfGyM';
 const SETTLE = '9BAD9UzcJxWNppT8pPBVfpzbu4P9yqgu1nCdnTCYkBjY';
 const NOW = 1_800_000_000_000;
+/** `GET /demo` while no demo run has been started. */
+const DEMO_IDLE = { running: false, scenario: null, startedAt: null, last: null, runsToday: 0, maxRunsPerDay: 100 };
 
 /** What the page wrote, in order. */
 let writes: string[] = [];
@@ -98,6 +100,9 @@ class FakeElement {
 }
 class FakeSelect extends FakeElement {}
 class FakeProgress extends FakeElement {}
+class FakeButton extends FakeElement {
+  disabled = false;
+}
 
 class FakeOption {
   readonly text: string;
@@ -115,9 +120,16 @@ function pageElements(): Map<string, FakeElement> {
   for (const [tag] of html.matchAll(/<[a-z][^>]*\bid="[^"]+"[^>]*>/g)) {
     const id = /\bid="([^"]+)"/.exec(tag)?.[1] ?? '';
     const hidden = /\shidden(\s|>)/.test(tag);
-    elements.set(id, id === 'pool-select' ? new FakeSelect(id, hidden) : id === 'pool-bar' ? new FakeProgress(id, hidden) : new FakeElement(id, hidden));
+    const type = tag.startsWith('<button') ? FakeButton : id === 'pool-select' ? FakeSelect : id === 'pool-bar' ? FakeProgress : FakeElement;
+    elements.set(id, new type(id, hidden));
   }
   return elements;
+}
+
+/** An answer of the gateway: its HTTP status and its JSON body. */
+interface GatewayAnswer {
+  status: number;
+  body: unknown;
 }
 
 /** The chain and the gateway, as the page reads them. */
@@ -128,6 +140,12 @@ interface World {
   activity: Record<string, unknown>[];
   /** The hash of the block `get_pool` is answered from. */
   poolBlockHash: string;
+  /** What `/config.json` says of the demo; left out when undefined, as by a gateway without the demo endpoint. */
+  demo?: boolean;
+  /** The answer to `GET /demo` while the demo is on. */
+  demoStatus: GatewayAnswer;
+  /** The answer to `POST /demo/<scenario>` while the demo is on. */
+  demoAnswer: GatewayAnswer;
   /** Every request the page sent, in order. */
   sent: Sent[];
 }
@@ -189,6 +207,8 @@ function newWorld(): World {
     balance: '2088',
     activity: [commit('buyer-01.quorum.testnet', COMMIT_1)],
     poolBlockHash: POOL_BLOCK_HASH,
+    demoStatus: { status: 200, body: DEMO_IDLE },
+    demoAnswer: { status: 202, body: { scenario: 'fills', startedAt: NOW } },
     sent: [],
   };
 }
@@ -199,7 +219,7 @@ interface FakeResponse {
   json(): Promise<unknown>;
 }
 
-type FakeFetch = (url: string, init?: { method?: string; body?: string }) => Promise<FakeResponse>;
+type FakeFetch = (url: string, init?: { method?: string; body?: string; headers?: Record<string, string> }) => Promise<FakeResponse>;
 
 function answering(body: unknown, status = 200): FakeResponse {
   return { ok: status >= 200 && status < 300, status, json: async () => body };
@@ -240,9 +260,15 @@ function worldFetch(world: World): FakeFetch {
         token: TOKEN,
         provider: PROVIDER,
         explorerTxUrl: 'https://testnet.nearblocks.io/txns/',
+        ...(world.demo === undefined ? {} : { demo: world.demo }),
       });
     }
     if (url.startsWith('/activity?pool=')) return answering(world.activity);
+    if (url === '/demo' || url === '/demo/fills' || url === '/demo/fails') {
+      if (world.demo !== true) return answering({ error: 'not_found' }, 404);
+      const { status, body } = url === '/demo' ? world.demoStatus : world.demoAnswer;
+      return answering(body, status);
+    }
     if (url === '/rpc') {
       const { params, id } = JSON.parse(init?.body ?? '{}') as {
         id: number;
@@ -261,12 +287,32 @@ function worldFetch(world: World): FakeFetch {
 
 let elements = new Map<string, FakeElement>();
 let intervals: { run: () => unknown; ms: number }[] = [];
+/** The timers the page set with `setTimeout`, which run only when a test runs them. */
+let timeouts: { run: () => unknown; ms: number }[] = [];
+/** The URLs the page gave `history.replaceState`, in order. */
+let replaced: string[] = [];
 
 /** The element with this id. */
 function el(id: string): FakeElement {
   const found = elements.get(id);
   if (found === undefined) throw new Error(`no #${id}`);
   return found;
+}
+
+/** The button with this id. */
+function button(id: string): FakeButton {
+  const found = el(id);
+  if (!(found instanceof FakeButton)) throw new Error(`#${id} is not a button`);
+  return found;
+}
+
+/**
+ * Waits until the page has handled every answer it has been given and run every refresh that these
+ * started: the fake fetch answers within microtasks, which all run before the next macrotask. Unlike
+ * `vi.waitFor`, which moves the fake clock at each of its checks, it leaves the clock where it is.
+ */
+function settled(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
 }
 
 /**
@@ -276,20 +322,32 @@ function el(id: string): FakeElement {
 async function openPage(fetch: FakeFetch, search = '') {
   elements = pageElements();
   intervals = [];
+  timeouts = [];
+  replaced = [];
   writes = [];
   vi.resetModules();
   vi.stubGlobal('HTMLElement', FakeElement);
   vi.stubGlobal('HTMLSelectElement', FakeSelect);
   vi.stubGlobal('HTMLProgressElement', FakeProgress);
+  vi.stubGlobal('HTMLButtonElement', FakeButton);
   vi.stubGlobal('Option', FakeOption);
   vi.stubGlobal('document', {
     getElementById: (id: string) => elements.get(id) ?? null,
     createElement: (tag: string) => new FakeElement(tag, false, false),
   });
   vi.stubGlobal('location', { search, href: `http://localhost:8402/${search}` });
-  vi.stubGlobal('history', { replaceState: () => undefined });
+  vi.stubGlobal('history', {
+    // As in a browser, the URL given becomes the page's URL.
+    replaceState: (_state: unknown, _unused: string, url: string | URL) => {
+      const next = new URL(url, location.href);
+      replaced.push(next.href);
+      location.search = next.search;
+      location.href = next.href;
+    },
+  });
   vi.stubGlobal('fetch', fetch);
   vi.stubGlobal('setInterval', (run: () => unknown, ms: number) => intervals.push({ run, ms }));
+  vi.stubGlobal('setTimeout', (run: () => unknown, ms: number) => timeouts.push({ run, ms }));
   await import('../app.js');
   await vi.waitFor(() => expect(el('status').textContent).not.toBe(''));
   const timer = intervals.find((interval) => interval.ms === 2_000);
@@ -431,19 +489,23 @@ describe('the reads of a refresh', () => {
     }
   });
 
-  it("sends the pass-through only bodies it forwards, and the gateway only the two requests it serves the page", async () => {
-    const world = newWorld();
-    const page = await openPage(worldFetch(world));
-    await page.refresh();
-    const rpc = world.sent.filter((sent) => sent.url === '/rpc');
-    expect(rpc.length).toBeGreaterThan(0);
-    for (const { body, method } of rpc) {
-      expect(method).toBe('POST');
-      expect(isAllowedViewCall(JSON.parse(JSON.stringify(body)), [POOLS, TOKEN]), JSON.stringify(body)).toBe(true);
+  it("sends the pass-through only bodies it forwards, and the gateway only the two requests it serves the page while its demo is off, showing no demo controls", async () => {
+    // A gateway without the demo endpoint sends no `demo`; one with the endpoint off sends false.
+    for (const demo of [undefined, false]) {
+      const world = { ...newWorld(), demo };
+      const page = await openPage(worldFetch(world));
+      await page.refresh();
+      const rpc = world.sent.filter((sent) => sent.url === '/rpc');
+      expect(rpc.length).toBeGreaterThan(0);
+      for (const { body, method } of rpc) {
+        expect(method).toBe('POST');
+        expect(isAllowedViewCall(JSON.parse(JSON.stringify(body)), [POOLS, TOKEN]), JSON.stringify(body)).toBe(true);
+      }
+      const gateway = world.sent.filter((sent) => sent.url !== '/rpc');
+      expect(gateway.every((sent) => sent.method === 'GET')).toBe(true);
+      expect(new Set(gateway.map((sent) => sent.url)), `demo: ${demo}`).toEqual(new Set(['/config.json', '/activity?pool=3']));
+      expect(el('demo').hidden, `demo: ${demo}`).toBe(true);
     }
-    const gateway = world.sent.filter((sent) => sent.url !== '/rpc');
-    expect(gateway.every((sent) => sent.method === 'GET')).toBe(true);
-    expect(new Set(gateway.map((sent) => sent.url))).toEqual(new Set(['/config.json', '/activity?pool=3']));
   });
 });
 
@@ -752,5 +814,271 @@ describe('the pool selector', () => {
     await page.refresh();
     expect(writes).toEqual([]);
     expect(el('pool-select').children).toHaveLength(1);
+  });
+});
+
+describe('the demo controls', () => {
+  /** A world whose gateway has its demo on. */
+  const demoWorld = (): World => ({ ...newWorld(), demo: true });
+  const STARTED = 'A run started. Its pool appears here once it opens.';
+
+  it('are shown when /config.json says demo: true, with the buttons enabled and a line inviting a first run, and GET /demo is read at every refresh', async () => {
+    const world = demoWorld();
+    const page = await openPage(worldFetch(world));
+    expect(el('demo').hidden).toBe(false);
+    expect(el('demo-line').textContent).toBe('Start a run to watch a pool from its first seat.');
+    expect(button('demo-fills').disabled).toBe(false);
+    expect(button('demo-fails').disabled).toBe(false);
+    await page.refresh();
+    expect(world.sent.filter((sent) => sent.url === '/demo').map((sent) => sent.method)).toEqual(['GET', 'GET']);
+  });
+
+  it('write nothing to the page at a refresh where nothing has changed', async () => {
+    const page = await openPage(worldFetch(demoWorld()));
+    writes = [];
+    await page.refresh();
+    expect(writes).toEqual([]);
+  });
+
+  it.each([
+    [
+      'a run is in progress',
+      { status: 200, body: { ...DEMO_IDLE, running: true, scenario: 'fails', startedAt: NOW - 90_000, runsToday: 1 } },
+      `A fails run started at ${new Date(NOW - 90_000).toLocaleTimeString()} is in progress.`,
+    ],
+    ["today's cap is reached", { status: 200, body: { ...DEMO_IDLE, runsToday: 100 } }, 'The demo has reached its limit for today.'],
+    ['GET /demo fails', { status: 502, body: null }, "The demo's status is unavailable."],
+    ['GET /demo answers a malformed status', { status: 200, body: { ...DEMO_IDLE, running: 'no' } }, "The demo's status is unavailable."],
+  ])('stay shown with the buttons disabled when %s, and say so on the demo line, not on the status line', async (_kind, demoStatus, line) => {
+    await openPage(worldFetch({ ...demoWorld(), demoStatus }));
+    expect(el('demo').hidden).toBe(false);
+    expect(button('demo-fills').disabled).toBe(true);
+    expect(button('demo-fails').disabled).toBe(true);
+    expect(el('demo-line').textContent).toBe(line);
+    expect(el('status').textContent).toMatch(/^Updated at /);
+    expect(el('status').classList.contains('failed')).toBe(false);
+  });
+
+  it.each([
+    ['demo-fills', 'fills'],
+    ['demo-fails', 'fails'],
+  ])('send, on a click on #%s, POST /demo/%s with the header X-Quorum-Demo: 1, after removing ?pool= from the URL, and keep both buttons disabled from then until a GET /demo reports no run in progress', async (id, scenario) => {
+    const world: World = { ...demoWorld(), demoAnswer: { status: 202, body: { scenario, startedAt: NOW } } };
+    const base = worldFetch(world);
+    /** The demo requests, each with the page's URL when it was sent. */
+    const posts: { url: string; method?: string; headers?: Record<string, string>; href: string }[] = [];
+    let answer = (): void => {};
+    const answered = new Promise<void>((resolve) => {
+      answer = resolve;
+    });
+    const page = await openPage(async (url, init) => {
+      if (url.startsWith('/demo/')) {
+        posts.push({ url, method: init?.method, headers: init?.headers, href: location.href });
+        await answered;
+      }
+      return base(url, init);
+    }, '?pool=3');
+    el(id).listeners.get('click')?.();
+    // From the click on, GET /demo answers the run it started, as the gateway does.
+    world.demoStatus = { status: 200, body: { ...DEMO_IDLE, running: true, scenario, startedAt: NOW, runsToday: 1 } };
+    expect(replaced).toEqual(['http://localhost:8402/']);
+    expect(posts).toEqual([{ url: `/demo/${scenario}`, method: 'POST', headers: { 'X-Quorum-Demo': '1' }, href: 'http://localhost:8402/' }]);
+    expect(button('demo-fills').disabled).toBe(true);
+    expect(button('demo-fails').disabled).toBe(true);
+    answer();
+    await settled();
+    expect(el('demo-line').textContent).toBe(STARTED);
+    expect(button('demo-fills').disabled).toBe(true);
+    expect(button('demo-fails').disabled).toBe(true);
+    // The run ends, and the next refresh's GET /demo says so.
+    world.demoStatus = {
+      status: 200,
+      body: { ...DEMO_IDLE, last: { scenario, startedAt: NOW, endedAt: NOW, exitCode: 0, signal: null }, runsToday: 1 },
+    };
+    await page.refresh();
+    expect(button('demo-fills').disabled).toBe(false);
+    expect(button('demo-fails').disabled).toBe(false);
+    expect(posts).toHaveLength(1);
+  });
+
+  it.each([
+    ['202', { status: 202, body: { scenario: 'fills', startedAt: NOW } }, STARTED, 'fills', NOW],
+    [
+      '409 demo_running',
+      { status: 409, body: { error: 'demo_running', scenario: 'fails', startedAt: NOW - 60_000 } },
+      'A run is already in progress. This page follows its pool once it opens.',
+      'fails',
+      NOW - 60_000,
+    ],
+  ])(
+    'keep both buttons disabled after a click answered %s during a refresh, whose GET /demo, sent before the answer, cannot enable them again',
+    async (_kind, demoAnswer, answerLine, scenario, startedAt) => {
+      const world: World = { ...demoWorld(), demoAnswer };
+      const base = worldFetch(world);
+      const hold = { on: false, release: (): void => {} };
+      const page = await openPage(async (url, init) => {
+        if (url !== '/demo' || !hold.on) return base(url, init);
+        // Answered as the gateway stood when it was sent, before the click, but delivered only on release.
+        const answer = base(url, init);
+        await new Promise<void>((resolve) => {
+          hold.release = resolve;
+        });
+        return answer;
+      });
+      hold.on = true;
+      const inFlight = page.refresh();
+      await settled();
+      hold.on = false;
+      el('demo-fills').listeners.get('click')?.();
+      await settled();
+      const arrived = Date.now();
+      expect(el('demo-line').textContent).toBe(answerLine);
+      expect(button('demo-fills').disabled).toBe(true);
+      expect(button('demo-fails').disabled).toBe(true);
+      // The refresh's GET /demo arrives after the answer, saying that no run is in progress.
+      hold.release();
+      await inFlight;
+      await settled();
+      expect(button('demo-fills').disabled).toBe(true);
+      expect(button('demo-fails').disabled).toBe(true);
+      // Once the answer's 10 seconds are over, the demo line names the run the answer reported.
+      const timer = timeouts.find((timeout) => timeout.ms === 10_000);
+      if (timer === undefined) throw new Error('app.js sets no 10-second timer after the answer');
+      vi.setSystemTime(arrived + 10_000);
+      timer.run();
+      expect(el('demo-line').textContent).toBe(`A ${scenario} run started at ${new Date(startedAt).toLocaleTimeString()} is in progress.`);
+      // A GET /demo sent after the answer reports that the run has ended.
+      world.demoStatus = {
+        status: 200,
+        body: { ...DEMO_IDLE, last: { scenario, startedAt, endedAt: arrived + 10_000, exitCode: 0, signal: null }, runsToday: 1 },
+      };
+      await page.refresh();
+      expect(button('demo-fills').disabled).toBe(false);
+      expect(button('demo-fails').disabled).toBe(false);
+    },
+  );
+
+  describe('at a refresh whose RPC reads fail at once while its GET /demo is slow', () => {
+    /**
+     * Opens the page on a demo world, then has the RPC fail every read and holds every GET /demo
+     * until `open` is called: answered as the gateway stood when it was sent, a run having started
+     * since the page opened.
+     */
+    async function slowDemoRead() {
+      const world = demoWorld();
+      const base = worldFetch(world);
+      const slow = { on: false };
+      let open = (): void => {};
+      const gate = new Promise<void>((resolve) => {
+        open = resolve;
+      });
+      const page = await openPage(async (url, init) => {
+        if (!slow.on) return base(url, init);
+        if (url === '/rpc') throw new Error('overloaded');
+        const answer = base(url, init);
+        if (url === '/demo') await gate;
+        return answer;
+      });
+      world.demoStatus = { status: 200, body: { ...DEMO_IDLE, running: true, scenario: 'fails', startedAt: NOW - 30_000, runsToday: 1 } };
+      slow.on = true;
+      return { world, page, open: () => open() };
+    }
+    const demoReads = (world: World) => world.sent.filter((sent) => sent.url === '/demo');
+    const FAILED = 'Could not refresh (overloaded). Retrying every 2 seconds.';
+
+    it('show what that GET /demo says once it answers, and the failure', async () => {
+      const { page, open } = await slowDemoRead();
+      expect(el('demo-line').textContent).toBe('Start a run to watch a pool from its first seat.');
+      const refreshed = page.refresh();
+      await settled();
+      open();
+      await refreshed;
+      await settled();
+      expect(el('demo-line').textContent).toBe(`A fails run started at ${new Date(NOW - 30_000).toLocaleTimeString()} is in progress.`);
+      expect(button('demo-fills').disabled).toBe(true);
+      expect(button('demo-fails').disabled).toBe(true);
+      expect(el('status').textContent).toBe(FAILED);
+      expect(el('announcement').textContent).toBe(FAILED);
+    });
+
+    it('send no other GET /demo until it answers', async () => {
+      const { world, page, open } = await slowDemoRead();
+      const refreshed = page.refresh();
+      await settled();
+      expect(demoReads(world)).toHaveLength(2);
+      // The 2-second timer fires again while that GET /demo is out.
+      await page.refresh();
+      await settled();
+      expect(demoReads(world)).toHaveLength(2);
+      open();
+      await refreshed;
+      await page.refresh();
+      expect(demoReads(world)).toHaveLength(3);
+    });
+  });
+
+  it("show the click's answer on the demo line for 10 seconds from when it arrived, then what GET /demo says", async () => {
+    const world = demoWorld();
+    const base = worldFetch(world);
+    let answer = (): void => {};
+    const answered = new Promise<void>((resolve) => {
+      answer = resolve;
+    });
+    await openPage(async (url, init) => {
+      if (url.startsWith('/demo/')) await answered;
+      return base(url, init);
+    });
+    // From the click on, GET /demo answers the run it started.
+    const running = { ...DEMO_IDLE, running: true, scenario: 'fills', startedAt: Date.now(), runsToday: 1 };
+    world.demoStatus = { status: 200, body: running };
+    el('demo-fills').listeners.get('click')?.();
+    // The answer arrives 3 seconds after the click.
+    const arrived = Date.now() + 3_000;
+    vi.setSystemTime(arrived);
+    answer();
+    await settled();
+    expect(el('demo-line').textContent).toBe(STARTED);
+    // The refresh that follows the answer reads the run in progress, which disables the buttons.
+    expect(button('demo-fills').disabled).toBe(true);
+    const timer = timeouts.find((timeout) => timeout.ms === 10_000);
+    if (timer === undefined) throw new Error('app.js sets no 10-second timer after the answer');
+    vi.setSystemTime(arrived + 9_999);
+    timer.run();
+    expect(el('demo-line').textContent).toBe(STARTED);
+    vi.setSystemTime(arrived + 10_000);
+    timer.run();
+    expect(el('demo-line').textContent).toBe(`A fills run started at ${new Date(running.startedAt).toLocaleTimeString()} is in progress.`);
+  });
+
+  it.each([
+    ['gets no answer', () => Promise.reject(new TypeError('Failed to fetch')), 'The gateway could not be reached.'],
+    [
+      'gets an answer with no JSON body',
+      () => Promise.resolve({ ok: false, status: 502, json: () => Promise.reject(new SyntaxError('Unexpected token <')) }),
+      'The demo is not available right now.',
+    ],
+  ])('say so on the demo line when a click %s, and enable the buttons again', async (_kind, post, line) => {
+    const base = worldFetch(demoWorld());
+    await openPage((url, init) => (url.startsWith('/demo/') ? post() : base(url, init)));
+    el('demo-fails').listeners.get('click')?.();
+    await settled();
+    expect(el('demo-line').textContent).toBe(line);
+    expect(button('demo-fills').disabled).toBe(false);
+    expect(button('demo-fails').disabled).toBe(false);
+    expect(el('status').textContent).toMatch(/^Updated at /);
+  });
+
+  it('make the page follow the newest pool after a click, which is the pool the run opens', async () => {
+    const world = demoWorld();
+    world.pools = [openPool({ id: 2, status: 'settled' }), openPool({ id: 3, status: 'settled' })];
+    const page = await openPage(worldFetch(world), '?pool=2');
+    expect(el('pool-title').textContent).toBe('Pool 2');
+    el('demo-fills').listeners.get('click')?.();
+    await settled();
+    expect(el('pool-title').textContent).toBe('Pool 3');
+    // The run opens its pool.
+    world.pools.push(openPool({ id: 4 }));
+    await page.refresh();
+    expect(el('pool-title').textContent).toBe('Pool 4');
   });
 });

@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   PAYMENT_HEADER,
   PAYMENT_RESPONSE_HEADER,
@@ -16,8 +17,9 @@ import {
 import { KeyPair } from 'near-api-js';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { ActivityRecord } from '../src/activity.ts';
-import { createApp } from '../src/app.ts';
+import { createApp, type AppOptions } from '../src/app.ts';
 import type { GatewayConfig } from '../src/config.ts';
+import { DemoRunner } from '../src/demo.ts';
 import type { Deps } from '../src/deps.ts';
 import { offerContext } from '../src/handle-offer.ts';
 import { NOW_MS, POOLS, PROVIDER, TERMS, TOKEN, commitOutcome, poolView, testConfig, type FakeChain } from './fake-chain.ts';
@@ -41,7 +43,7 @@ const BUYER_CONFIG: ExpectedOffer = {
 };
 
 /** Deps over a FakeChain holding pool 7, and the app over them. */
-async function setup(config: Partial<GatewayConfig> = {}, options: { fetch?: typeof fetch } = {}) {
+async function setup(config: Partial<GatewayConfig> = {}, options: AppOptions = {}) {
   const deps = await testDeps({ config: testConfig(config) });
   deps.fake.setPool(poolView({ id: POOL_ID }));
   return { deps, fake: deps.fake, app: createApp(deps, options) };
@@ -169,6 +171,53 @@ const INDEX_HTML = '<!doctype html><title>Quorum</title>\n';
 const APP_JS = 'export const ready = true;\n';
 const TOTALS_JS = 'export const total = 0;\n';
 const STYLE_CSS = 'body { margin: 0; }\n';
+
+/** The stand-in for the swarm's demo command (its modes are listed in the file). */
+const DEMO_PROGRAM = fileURLToPath(new URL('./fixtures/demo-program.mjs', import.meta.url));
+/** The header a demo POST must carry. */
+const DEMO_HEADERS = { 'X-Quorum-Demo': '1' };
+/** How long a test waits for the program: starting Node takes a few hundred milliseconds. */
+const DEMO_WAIT = { timeout: 5_000, interval: 10 };
+
+/**
+ * The app with the demo on, over `config`. Its runner starts the stand-in program in `mode`, at most
+ * `maxRunsPerDay` times a day and 1800 seconds a run, over a clock the test moves, gives a run
+ * `config.demoRpcUrl` as main.ts does, and collects its lines in `output`. Pool 7 is settled, so none
+ * of the provider's pools is Open. Once the test has finished, no run is left in progress.
+ */
+async function demoApp(mode: string[] = ['exit', '0'], maxRunsPerDay = 100, config: Partial<GatewayConfig> = {}) {
+  const clock = { now: NOW_MS };
+  const output: string[] = [];
+  const demo = new DemoRunner({
+    command: [process.execPath, DEMO_PROGRAM, ...mode],
+    maxRunsPerDay,
+    maxRunSeconds: 1800,
+    rpcUrl: config.demoRpcUrl,
+    now: () => clock.now,
+    output: { stdout: (line) => output.push(line), stderr: (line) => output.push(line) },
+  });
+  onTestFinished(async () => {
+    demo.stop();
+    await idle(demo);
+  });
+  const { deps, fake, app } = await setup(config, { demo });
+  fake.setPool(poolView({ id: POOL_ID, status: 'settled', taken: 192 }));
+  return { deps, fake, app, demo, clock, output };
+}
+
+/** Waits until `demo` has no run in progress. */
+async function idle(demo: DemoRunner): Promise<void> {
+  await vi.waitFor(() => expect(demo.status().running).toBe(false), DEMO_WAIT);
+}
+
+/** A demo POST for `scenario`, with the demo header unless `headers` says otherwise. */
+function postDemo(
+  app: Awaited<ReturnType<typeof setup>>['app'],
+  scenario: string,
+  headers: Record<string, string> = DEMO_HEADERS,
+): Response | Promise<Response> {
+  return app.request(`/demo/${scenario}`, { method: 'POST', headers });
+}
 
 describe('createApp', () => {
   afterEach(() => {
@@ -309,6 +358,7 @@ describe('createApp', () => {
       token: TOKEN,
       provider: PROVIDER,
       explorerTxUrl: 'https://testnet.nearblocks.io/txns/',
+      demo: false,
     };
 
     it('points the page at the configured RPC when the pass-through is off', async () => {
@@ -322,6 +372,30 @@ describe('createApp', () => {
     it('points the page at /rpc when the pass-through is on', async () => {
       const { app } = await setup({ rpcPassthrough: true });
       expect(await answer(app.request('/config.json'))).toEqual({ status: 200, body: { ...expected, rpcUrl: '/rpc' } });
+    });
+
+    it('says the demo is on when the app has a demo runner', async () => {
+      const { app } = await demoApp();
+      expect(await answer(app.request('/config.json'))).toMatchObject({ status: 200, body: { demo: true } });
+    });
+
+    it("does not give out the demo run's own RPC URL, and neither does GET /demo", async () => {
+      const { app } = await demoApp(['exit', '0'], 100, {
+        demoRpcUrl: 'https://rpc.demo.example/v1/fake-key-0123456789abcdef/',
+      });
+      const config = await (await app.request('/config.json')).text();
+      const status = await (await app.request('/demo')).text();
+      expect(JSON.parse(config)).toEqual({ ...expected, rpcUrl: 'http://rpc.invalid', demo: true });
+      expect(JSON.parse(status)).toEqual({
+        running: false,
+        scenario: null,
+        startedAt: null,
+        last: null,
+        runsToday: 0,
+        maxRunsPerDay: 100,
+      });
+      expect(config).not.toContain('fake-key');
+      expect(status).not.toContain('fake-key');
     });
   });
 
@@ -369,6 +443,24 @@ describe('createApp', () => {
       const error = { jsonrpc: '2.0', id: 'page', error: { name: 'HANDLER_ERROR', cause: { name: 'UNKNOWN_BLOCK' } } };
       const { app } = await passthrough(upstream(error, 408));
       expect(await answer(postRpc(app, viewCall()))).toEqual({ status: 408, body: error });
+    });
+
+    it("names the RPC URL by its variable in the RPC's answer, whose text may quote it, keeping its status", async () => {
+      // A key in the path: with the pass-through on, the URL stays on the server.
+      const rpcUrl = 'https://rpc.example/v2/fake-key-0123456789abcdef/';
+      const failure = (where: string) => ({
+        jsonrpc: '2.0',
+        id: 'page',
+        error: {
+          name: 'INTERNAL_ERROR',
+          cause: { name: 'INTERNAL_ERROR', info: { error_message: `node behind ${where} failed` } },
+          code: -32000,
+          message: 'Server error',
+          data: `node behind ${where} failed`,
+        },
+      });
+      const { app } = await setup({ rpcPassthrough: true, rpcUrl }, { fetch: upstream(failure(rpcUrl), 500) });
+      expect(await answer(postRpc(app, viewCall()))).toEqual({ status: 500, body: failure('QUORUM_RPC_URL') });
     });
 
     it.each([
@@ -533,26 +625,309 @@ describe('createApp', () => {
     });
   });
 
-  describe('static files whose names start with a dot', () => {
-    const FILES = {
+  describe('the demo', { timeout: 20_000 }, () => {
+    it.each([
+      ['POST /demo/fills', 'POST', '/demo/fills', DEMO_HEADERS],
+      ['POST /demo/fails', 'POST', '/demo/fails', DEMO_HEADERS],
+      ['GET /demo', 'GET', '/demo', {}],
+      ['POST /demo/fills without the header', 'POST', '/demo/fills', {}],
+    ] as const)('answers %s with 404 not_found when the demo is off', async (_label, method, path, headers) => {
+      const { app } = await setup();
+      expect(await answer(app.request(path, { method, headers }))).toEqual({ status: 404, body: { error: 'not_found' } });
+    });
+
+    it.each([
+      ['no header', {}],
+      ['another value', { 'X-Quorum-Demo': 'true' }],
+    ] as const)('answers 403 demo_header_required to a POST with %s, and reads and starts nothing', async (_label, headers) => {
+      const { app, fake } = await demoApp();
+      expect(await answer(postDemo(app, 'fills', headers))).toEqual({
+        status: 403,
+        body: { error: 'demo_header_required' },
+      });
+      expect(fake.reads.has('list_pools')).toBe(false);
+      expect(await answer(app.request('/demo'))).toMatchObject({ status: 200, body: { running: false, runsToday: 0 } });
+    });
+
+    it('starts a run of the scenario asked for, and answers 202 with its scenario and start', async () => {
+      const { app, demo, output } = await demoApp(['describe']);
+      expect(await answer(postDemo(app, 'fails'))).toEqual({ status: 202, body: { scenario: 'fails', startedAt: NOW_MS } });
+      await idle(demo);
+      const description = output.find((line) => line.startsWith('[demo] {')) ?? '[demo] null';
+      expect(JSON.parse(description.slice('[demo] '.length))).toMatchObject({ argv: ['describe', 'fails'] });
+      expect(await answer(app.request('/demo'))).toMatchObject({
+        status: 200,
+        body: { running: false, runsToday: 1, last: { scenario: 'fails', exitCode: 0, signal: null } },
+      });
+    });
+
+    it('answers 409 demo_running with the running scenario and start while a run is in progress', async () => {
+      const { app, clock } = await demoApp(['hang']);
+      expect(await answer(postDemo(app, 'fills'))).toEqual({ status: 202, body: { scenario: 'fills', startedAt: NOW_MS } });
+      clock.now = NOW_MS + 30_000;
+      expect(await answer(postDemo(app, 'fails'))).toEqual({
+        status: 409,
+        body: { error: 'demo_running', scenario: 'fills', startedAt: NOW_MS },
+      });
+    });
+
+    it('answers 409 demo_running to a second request sent in the same tick as the first', async () => {
+      const { app, fake } = await demoApp(['hang']);
+      // The first request takes the slot before it reads the pools, so the second, sent before that
+      // read has answered, finds the slot taken.
+      const first = postDemo(app, 'fills');
+      const second = postDemo(app, 'fails');
+      expect(await answer(second)).toEqual({
+        status: 409,
+        body: { error: 'demo_running', scenario: 'fills', startedAt: NOW_MS },
+      });
+      expect(await answer(first)).toEqual({ status: 202, body: { scenario: 'fills', startedAt: NOW_MS } });
+      expect(fake.reads.get('list_pools')).toBe(1);
+    });
+
+    it("answers 409 pool_open with the provider's newest Open pool, and neither starts nor counts a run", async () => {
+      const { app, fake } = await demoApp();
+      fake.setPool(poolView({ id: POOL_ID }));
+      fake.setPool(poolView({ id: 8, seller: 'other-seller.testnet' }));
+      fake.setPool(poolView({ id: 9 }));
+      expect(await answer(postDemo(app, 'fills'))).toEqual({ status: 409, body: { error: 'pool_open', poolId: 9 } });
+      expect(await answer(app.request('/demo'))).toEqual({
+        status: 200,
+        body: { running: false, scenario: null, startedAt: null, last: null, runsToday: 0, maxRunsPerDay: 100 },
+      });
+      // The slot was released. Once the provider's pools have ended, a run starts, although another
+      // seller's pool is still Open.
+      fake.setPool(poolView({ id: POOL_ID, status: 'settled', taken: 192 }));
+      fake.setPool(poolView({ id: 9, status: 'refunded' }));
+      expect(await answer(postDemo(app, 'fills'))).toEqual({ status: 202, body: { scenario: 'fills', startedAt: NOW_MS } });
+    });
+
+    it('answers 503 chain_unavailable when the pools cannot be read, and neither starts nor counts a run', async () => {
+      const { app, fake } = await demoApp();
+      const failure = new Error('RPC down');
+      const listPools = vi.spyOn(fake, 'listPools').mockRejectedValue(failure);
+      const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+      expect(await answer(postDemo(app, 'fills'))).toEqual({ status: 503, body: { error: 'chain_unavailable' } });
+      expect(logged).toHaveBeenCalledExactlyOnceWith(expect.any(String), failure);
+      expect(await answer(app.request('/demo'))).toMatchObject({
+        status: 200,
+        body: { running: false, last: null, runsToday: 0 },
+      });
+      // The slot was released.
+      listPools.mockRestore();
+      expect(await answer(postDemo(app, 'fills'))).toEqual({ status: 202, body: { scenario: 'fills', startedAt: NOW_MS } });
+    });
+
+    it('answers 503 chain_unavailable when the pools have not been read after 8 seconds, and then frees the slot', async () => {
+      const { app, fake, demo } = await demoApp();
+      // A read that never answers; near-api-js would retry a failing RPC for about 85 seconds.
+      const listPools = vi.spyOn(fake, 'listPools').mockReturnValueOnce(new Promise(() => {}));
+      const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+      // Only the timers: the test moves the 8 seconds, and the run it starts afterwards needs the real ones.
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        const res = postDemo(app, 'fills');
+        await vi.advanceTimersByTimeAsync(7_999);
+        // The slot is held while the read is out.
+        expect(await answer(app.request('/demo'))).toMatchObject({ status: 200, body: { running: true, runsToday: 0 } });
+        await vi.advanceTimersByTimeAsync(1);
+        expect(await answer(res)).toEqual({ status: 503, body: { error: 'chain_unavailable' } });
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(logged).toHaveBeenCalledExactlyOnceWith(
+        expect.any(String),
+        expect.objectContaining({ message: expect.stringContaining('8000 ms') }),
+      );
+      expect(await answer(app.request('/demo'))).toMatchObject({
+        status: 200,
+        body: { running: false, last: null, runsToday: 0 },
+      });
+      // The slot was released: the next request reads the pools again and starts its run.
+      expect(await answer(postDemo(app, 'fills'))).toEqual({ status: 202, body: { scenario: 'fills', startedAt: NOW_MS } });
+      await idle(demo);
+      expect(listPools).toHaveBeenCalledTimes(2);
+    });
+
+    it("answers 429 demo_limit once today's cap is reached, and starts runs again after midnight UTC", async () => {
+      const { app, demo, clock } = await demoApp(['exit', '0'], 1);
+      expect(await answer(postDemo(app, 'fills'))).toEqual({ status: 202, body: { scenario: 'fills', startedAt: NOW_MS } });
+      await idle(demo);
+      expect(await answer(postDemo(app, 'fails'))).toEqual({ status: 429, body: { error: 'demo_limit' } });
+      expect(await answer(app.request('/demo'))).toMatchObject({ body: { runsToday: 1, maxRunsPerDay: 1 } });
+      // NOW_MS is 2027-01-15T07:43:20Z; this is the next midnight UTC.
+      const midnight = Date.UTC(2027, 0, 16);
+      clock.now = midnight;
+      expect(await answer(app.request('/demo'))).toMatchObject({ body: { runsToday: 0, maxRunsPerDay: 1 } });
+      expect(await answer(postDemo(app, 'fails'))).toEqual({ status: 202, body: { scenario: 'fails', startedAt: midnight } });
+    });
+
+    it('answers in the order: header, run in progress, cap, then the pools, which only the last of these reads', async () => {
+      const { app, fake, demo } = await demoApp(['hang'], 1);
+      expect(await answer(postDemo(app, 'fills'))).toEqual({ status: 202, body: { scenario: 'fills', startedAt: NOW_MS } });
+      // From here on, a run is in progress, today's cap is reached, and one of the provider's pools is Open.
+      fake.setPool(poolView({ id: POOL_ID }));
+      expect(await answer(postDemo(app, 'fails', {}))).toEqual({ status: 403, body: { error: 'demo_header_required' } });
+      expect(await answer(postDemo(app, 'fails'))).toEqual({
+        status: 409,
+        body: { error: 'demo_running', scenario: 'fills', startedAt: NOW_MS },
+      });
+      demo.stop();
+      await idle(demo);
+      // Today's cap is reached, and a pool is Open.
+      expect(await answer(postDemo(app, 'fails'))).toEqual({ status: 429, body: { error: 'demo_limit' } });
+      // Only the request that started the run read the pools.
+      expect(fake.reads.get('list_pools')).toBe(1);
+    });
+
+    it('answers GET /demo before, during and after a run', async () => {
+      const { app, demo, clock } = await demoApp(['hang']);
+      expect(await answer(app.request('/demo'))).toEqual({
+        status: 200,
+        body: { running: false, scenario: null, startedAt: null, last: null, runsToday: 0, maxRunsPerDay: 100 },
+      });
+      expect((await postDemo(app, 'fills')).status).toBe(202);
+      expect(await answer(app.request('/demo'))).toEqual({
+        status: 200,
+        body: { running: true, scenario: 'fills', startedAt: NOW_MS, last: null, runsToday: 1, maxRunsPerDay: 100 },
+      });
+      clock.now = NOW_MS + 90_000;
+      demo.stop();
+      await idle(demo);
+      expect(await answer(app.request('/demo'))).toEqual({
+        status: 200,
+        body: {
+          running: false,
+          scenario: null,
+          startedAt: null,
+          last: { scenario: 'fills', startedAt: NOW_MS, endedAt: NOW_MS + 90_000, exitCode: null, signal: 'SIGTERM' },
+          runsToday: 1,
+          maxRunsPerDay: 100,
+        },
+      });
+    });
+
+    it('answers GET /demo with the exit code of a run that exited', async () => {
+      const { app, demo } = await demoApp(['exit', '3']);
+      expect((await postDemo(app, 'fails')).status).toBe(202);
+      await idle(demo);
+      expect(await answer(app.request('/demo'))).toMatchObject({
+        status: 200,
+        body: {
+          running: false,
+          last: { scenario: 'fails', startedAt: NOW_MS, endedAt: NOW_MS, exitCode: 3, signal: null },
+        },
+      });
+    });
+
+    it('sends no CORS header and answers no preflight', async () => {
+      const { app } = await demoApp(['hang']);
+      const preflight = await app.request('/demo/fills', {
+        method: 'OPTIONS',
+        headers: {
+          Origin: 'https://elsewhere.example',
+          'Access-Control-Request-Method': 'POST',
+          'Access-Control-Request-Headers': 'x-quorum-demo',
+        },
+      });
+      const started = await postDemo(app, 'fills');
+      const status = await app.request('/demo');
+      expect([preflight.status, started.status, status.status]).toEqual([404, 202, 200]);
+      for (const res of [preflight, started, status]) {
+        expect([...res.headers.keys()].filter((name) => name.startsWith('access-control-'))).toEqual([]);
+      }
+    });
+  });
+
+  describe("only the live page's own files", () => {
+    /**
+     * The page's four files, and a file behind every other path that the tests using this folder ask
+     * for, so that each 404 comes from the page's list of paths and never from a missing file.
+     */
+    const PAGE = {
       'index.html': INDEX_HTML,
+      'app.js': APP_JS,
+      'totals.js': TOTALS_JS,
+      'style.css': STYLE_CSS,
+      'index.htm': INDEX_HTML,
+      // Files of their own on a case-sensitive file system; on one that ignores case, app.js itself.
+      'App.js': APP_JS,
+      'APP.JS': APP_JS,
+      'node_modules/.bin/vitest': '#!/bin/sh\n',
+      'sub/page.js': APP_JS,
       '.env': 'QUORUM_PARENT_ACCOUNT=parent.testnet\n',
       '.git/config': '[core]\n',
       'sub/.hidden': 'hidden\n',
-      'sub/page.js': APP_JS,
       '.well-known/other.json': '{}',
     };
 
-    it.each(['/.env', '/%2Eenv', '/.git/config', '/sub/.hidden', '/.well-known/other.json'])(
-      'answers 404 not_found for %s, which the folder holds',
+    it.each([
+      // Matched after percent-decoding: %61 is "a" and %69 is "i".
+      ['/%61pp.js', 'app.js', 'text/javascript; charset=utf-8'],
+      ['/%69ndex.html', 'index.html', 'text/html; charset=utf-8'],
+      ['/app.js?x=1', 'app.js', 'text/javascript; charset=utf-8'],
+    ] as const)('serves %s from %s', async (path, file, type) => {
+      const { app } = await setup({ webDir: await webFolder(PAGE) });
+      const res = await app.request(path);
+      expect({ status: res.status, type: res.headers.get('Content-Type'), text: await res.text() }).toEqual({
+        status: 200,
+        type,
+        text: PAGE[file],
+      });
+    });
+
+    it.each([
+      '/node_modules/.bin/vitest',
+      '/sub/page.js',
+      '/.env',
+      // Percent-decoded, these two are /.env.
+      '/%2Eenv',
+      '/%2eenv',
+      '/.git/config',
+      '/sub/.hidden',
+      '/.well-known/other.json',
+    ])('answers 404 not_found for %s, which the folder holds but the page is not', async (path) => {
+      const { app } = await setup({ webDir: await webFolder(PAGE) });
+      expect(await answer(app.request(path))).toEqual({ status: 404, body: { error: 'not_found' } });
+    });
+
+    // Each names a file of the folder under a looser match: another case, a trailing or doubled slash,
+    // a NUL byte (%00, decoded) or a shorter name.
+    it.each(['/App.js', '/APP.JS', '/index.html/', '/app.js/', '//app.js', '/app.js%00', '/index.htm'])(
+      'answers 404 not_found for %s, which is not one of the paths of the page',
       async (path) => {
-        const { app } = await setup({ webDir: await webFolder(FILES) });
+        const { app } = await setup({ webDir: await webFolder(PAGE) });
         expect(await answer(app.request(path))).toEqual({ status: 404, body: { error: 'not_found' } });
       },
     );
 
+    it.each([
+      // The URL parser removes dot segments, encoded ones too, before the gateway sees the path:
+      // these two arrive as /package.json.
+      '/../package.json',
+      '/%2E%2E/package.json',
+      // An encoded slash stays encoded, so these two keep their dots.
+      '/..%2Fpackage.json',
+      '/%2e%2e%2fpackage.json',
+    ])('answers 404 not_found for %s, which climbs out of the folder', async (path) => {
+      // The page folder is web/, with a package.json in it and another beside it, where a path that
+      // climbs out of web/ would land.
+      const root = await webFolder({
+        'web/index.html': INDEX_HTML,
+        'web/package.json': '{"name":"@quorum-on-near/web"}\n',
+        'package.json': '{"name":"workspace"}\n',
+      });
+      const { app } = await setup({ webDir: join(root, 'web') });
+      expect(await answer(app.request(path))).toEqual({ status: 404, body: { error: 'not_found' } });
+    });
+
+    it('answers 404 not_found for a path of the page whose file the folder lacks', async () => {
+      const { app } = await setup({ webDir: await webFolder({ 'index.html': INDEX_HTML }) });
+      expect(await answer(app.request('/totals.js'))).toEqual({ status: 404, body: { error: 'not_found' } });
+    });
+
     it('still answers /.well-known/jwks.json', async () => {
-      const { deps, app } = await setup({ webDir: await webFolder(FILES) });
+      const { deps, app } = await setup({ webDir: await webFolder(PAGE) });
       expect(await answer(app.request('/.well-known/jwks.json'))).toEqual({ status: 200, body: deps.credentials.jwks() });
     });
   });

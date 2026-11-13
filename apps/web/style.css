@@ -135,6 +135,40 @@ select {
   color: var(--bad);
 }
 
+.demo {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.demo-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.demo-buttons button {
+  font: inherit;
+  font-weight: 600;
+  padding: 0.4rem 0.9rem;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--surface);
+  cursor: pointer;
+}
+
+.demo-buttons button:disabled {
+  border-color: var(--border);
+  background: var(--track);
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.demo-line {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
 /* Text for a screen reader only: it is in the accessibility tree, takes no room and is not seen. */
 .visually-hidden {
   position: absolute;

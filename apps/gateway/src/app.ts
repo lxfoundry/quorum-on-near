@@ -1,13 +1,15 @@
 import { serveStatic } from '@hono/node-server/serve-static';
-import { PAYMENT_HEADER, PROOF_HEADER } from '@quorum-on-near/protocol';
+import { PAYMENT_HEADER, PROOF_HEADER, type PoolView } from '@quorum-on-near/protocol';
 import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
+import { DEMO_SCENARIOS, type DemoRunner } from './demo.ts';
 import type { Deps } from './deps.ts';
 import { handleOffer } from './handle-offer.ts';
 import { handlePayment } from './handle-payment.ts';
 import { handleRedeem } from './handle-redeem.ts';
-import { openPoolListings } from './pools.ts';
+import { listServedPools, openPoolListings } from './pools.ts';
+import { redactUrls } from './redact.ts';
 import type { Reply } from './reply.ts';
 import { isAllowedViewCall } from './view-call.ts';
 
@@ -17,11 +19,23 @@ const MAX_RPC_BODY_BYTES = 16 * 1024;
 /** How long a `POST /rpc` forward waits for the RPC's whole answer; past it, the request is answered 503. */
 const RPC_FORWARD_TIMEOUT_MS = 10_000;
 /**
+ * How long a demo `POST` waits for the provider's pools, which it reads while it holds the slot; past
+ * it, the request is answered 503 and the slot is freed. Below the 10 seconds that the live page waits
+ * for the answer, so that the page never gives up on a request the gateway then starts a run for.
+ */
+const DEMO_POOLS_READ_TIMEOUT_MS = 8_000;
+/**
  * The paths of the live page's four files, the only files served from `config.webDir`: `/` serves
  * `index.html`. The folder also holds the page's package files, tests and `node_modules`, which are
  * never served.
  */
 const PAGE_FILES = new Set(['/', '/index.html', '/app.js', '/totals.js', '/style.css']);
+/**
+ * The header a demo `POST` must carry, with the value `1`. A page on another site cannot send it
+ * without a CORS preflight, which the gateway never answers, so a browser never sends that page's
+ * request: a form or a beacon from another site cannot start a run.
+ */
+const DEMO_HEADER = 'X-Quorum-Demo';
 
 /** A pool id as a URL writes it: decimal, no sign, no leading zero. Null otherwise. */
 function parsePoolId(param: string): number | null {
@@ -30,8 +44,28 @@ function parsePoolId(param: string): number | null {
   return Number.isSafeInteger(id) ? id : null;
 }
 
+/**
+ * `promise`'s outcome, or a rejection once `ms` milliseconds have passed without one. The read itself is
+ * not cancelled: it goes on until its own end, and its late outcome is dropped. The timer is cleared as
+ * soon as `promise` settles, so a read that answers leaves nothing running.
+ */
+function within<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`no answer within ${ms} ms`)), ms);
+  });
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
+}
+
 function send(c: Context, r: Reply): Response {
   return c.json(r.body, r.status as ContentfulStatusCode, r.headers);
+}
+
+export interface AppOptions {
+  /** Replaces the global fetch for the RPC pass-through. */
+  fetch?: typeof fetch;
+  /** Runs the demo; absent or null, the demo routes do not exist. */
+  demo?: DemoRunner | null;
 }
 
 /**
@@ -43,14 +77,16 @@ function send(c: Context, r: Reply): Response {
  * - `GET /config.json`
  * - `POST /rpc` (only when `config.rpcPassthrough`), with a body of at most 16 KiB, forwarded with a
  *   10-second timeout
+ * - `POST /demo/fills`, `POST /demo/fails` and `GET /demo` (only when `options.demo` is set; hosted
+ *   demo spec, section 4.2)
  * - the live page's four files (only when `config.webDir` is set): `index.html` at `/` and at
  *   `/index.html`, `/app.js`, `/totals.js` and `/style.css`; no other file of the folder
  *
- * Every answer is JSON except the page's files. `options.fetch` replaces the global fetch for the
- * RPC pass-through.
+ * Every answer is JSON except the page's files.
  */
-export function createApp(deps: Deps, options: { fetch?: typeof fetch } = {}): Hono {
+export function createApp(deps: Deps, options: AppOptions = {}): Hono {
   const { config } = deps;
+  const demo = options.demo ?? null;
   const app = new Hono();
 
   app.get('/pools', async (c) => {
@@ -84,7 +120,7 @@ export function createApp(deps: Deps, options: { fetch?: typeof fetch } = {}): H
 
   app.get('/.well-known/jwks.json', (c) => c.json(deps.credentials.jwks()));
 
-  // What the live page needs to read the chain.
+  // What the live page needs: how to read the chain, and whether to show the demo's buttons.
   app.get('/config.json', (c) =>
     c.json({
       network: config.network,
@@ -93,6 +129,7 @@ export function createApp(deps: Deps, options: { fetch?: typeof fetch } = {}): H
       token: config.token,
       provider: config.provider,
       explorerTxUrl: config.explorerTxUrl,
+      demo: demo !== null,
     }),
   );
 
@@ -116,12 +153,49 @@ export function createApp(deps: Deps, options: { fetch?: typeof fetch } = {}): H
           body: JSON.stringify(body),
           signal: AbortSignal.timeout(RPC_FORWARD_TIMEOUT_MS),
         });
-        return c.json(await upstream.json(), upstream.status as ContentfulStatusCode);
+        // The RPC's own text may quote its URL, which may hold a key, and the live page shows an error's
+        // message: the URL is named by its variable instead, as in the gateway's own output.
+        const text = redactUrls(JSON.stringify(await upstream.json()), { QUORUM_RPC_URL: config.rpcUrl });
+        return c.json(JSON.parse(text), upstream.status as ContentfulStatusCode);
       } catch (error) {
         console.error('could not forward a request to the RPC:', error);
         return c.json({ error: 'chain_unavailable' }, 503);
       }
     });
+  }
+
+  // The demo (hosted demo spec, section 4.2). No request body is read, and no CORS header is sent.
+  if (demo !== null) {
+    app.get('/demo', (c) => c.json(demo.status()));
+
+    for (const scenario of DEMO_SCENARIOS) {
+      app.post(`/demo/${scenario}`, async (c) => {
+        if (c.req.header(DEMO_HEADER) !== '1') return c.json({ error: 'demo_header_required' }, 403);
+        // A run in progress, then today's cap, checked in the same synchronous step that takes the slot.
+        const claim = demo.claim(scenario);
+        if (claim.kind === 'running') {
+          return c.json({ error: 'demo_running', scenario: claim.scenario, startedAt: claim.startedAt }, 409);
+        }
+        if (claim.kind === 'limit') return c.json({ error: 'demo_limit' }, 429);
+        let pools: PoolView[];
+        try {
+          pools = await within(listServedPools(deps.chain, config.provider), DEMO_POOLS_READ_TIMEOUT_MS);
+        } catch (error) {
+          claim.release();
+          console.error('could not read the pools before a demo run:', error);
+          return c.json({ error: 'chain_unavailable' }, 503);
+        }
+        // The swarm opens no pool while one of the provider's is Open, so such a run would stop at once.
+        // The newest is the one the live page follows.
+        const open = pools.findLast((pool) => pool.status === 'open');
+        if (open !== undefined) {
+          claim.release();
+          return c.json({ error: 'pool_open', poolId: open.id }, 409);
+        }
+        void claim.start();
+        return c.json({ scenario, startedAt: claim.startedAt }, 202);
+      });
+    }
   }
 
   // After the routes, so a file never shadows one. A relative root resolves against the current folder.

@@ -41,6 +41,19 @@ export interface GatewayConfig {
   webDir: string | null;
   rpcPassthrough: boolean;
   explorerTxUrl: string;
+  /** A demo run's program and first arguments, to which the scenario is appended; null: the demo is off. */
+  demoCommand: string[] | null;
+  /** Demo runs started per UTC day, counted in memory. */
+  demoMaxRunsPerDay: number;
+  /** How long a demo run may last, in seconds, before the gateway stops it. */
+  demoMaxRunSeconds: number;
+  /**
+   * Secret: the RPC URL a demo run gets as its QUORUM_RPC_URL, which may hold a key. The gateway never
+   * gives it to the live page or writes it itself, and its output, a run's forwarded lines included,
+   * names it by its variable in the forms that redact.ts describes, along with what that does not
+   * catch. Null: a run uses `rpcUrl`.
+   */
+  demoRpcUrl: string | null;
 }
 
 /** Thrown by loadConfig with one line per missing or invalid variable. */
@@ -110,6 +123,9 @@ const asHttpUrl: Rule<string> = {
   expected: 'an http or https URL',
   parse: (raw) => (URL.canParse(raw) && ['http:', 'https:'].includes(new URL(raw).protocol) ? raw : undefined),
 };
+
+/** Never repeated in a problem line: a provider may put its key in the URL, even in its path. */
+const asRpcUrl: Rule<string> = { ...asHttpUrl, secret: true };
 
 /**
  * A prefix that a transaction hash is appended to, for a link to the explorer. It ends in `/` or `=`,
@@ -232,6 +248,39 @@ const asCredentialJwk: Rule<JWK> = {
   },
 };
 
+/** Whether `value` is a non-empty array of non-empty strings. */
+function isCommand(value: unknown): value is string[] {
+  return Array.isArray(value) && value.length > 0 && value.every((part) => typeof part === 'string' && part !== '');
+}
+
+/**
+ * A demo run's program and first arguments, as a JSON array; empty turns the demo off. The gateway
+ * starts the program without a shell, so it must be the run itself (hosted demo spec, section 4.1).
+ */
+const asDemoCommand: Rule<string[] | null> = {
+  expected:
+    'empty (the demo is off), or a JSON array of one or more non-empty strings: the program to start, then its first arguments',
+  parse(raw) {
+    if (raw === '') return null;
+    try {
+      const value: unknown = JSON.parse(raw);
+      return isCommand(value) ? value : undefined;
+    } catch {
+      return undefined;
+    }
+  },
+};
+
+/**
+ * The RPC URL a demo run gets in place of the gateway's; empty: the gateway's. No page is ever given
+ * it, so it may hold a key anywhere, and it is never repeated in a problem line.
+ */
+const asDemoRpcUrl: Rule<string | null> = {
+  expected: `empty, or ${asHttpUrl.expected}`,
+  secret: true,
+  parse: (raw) => (raw === '' ? null : asHttpUrl.parse(raw)),
+};
+
 /** The positions, from 1, of the first key listed twice, compared by public key; null if none is. */
 function repeatedKey(keys: string[]): [number, number] | null {
   const publicKeys = keys.map((key) => KeyPair.fromString(key as KeyPairString).getPublicKey().toString());
@@ -284,7 +333,7 @@ export function loadConfig(env: Record<string, string | undefined>): GatewayConf
   };
 
   const network = optional('QUORUM_NETWORK', 'near:testnet', asNetwork);
-  const rpcUrl = optional('QUORUM_RPC_URL', 'https://test.rpc.fastnear.com', asHttpUrl);
+  const rpcUrl = optional('QUORUM_RPC_URL', 'https://test.rpc.fastnear.com', asRpcUrl);
   const publicUrl = optional('QUORUM_GATEWAY_URL', 'http://localhost:8402', asBaseUrl);
   const port = optional('QUORUM_GATEWAY_PORT', '8402', asInteger(1, 65_535));
   const parent = required('QUORUM_PARENT_ACCOUNT', asAccountId);
@@ -352,6 +401,16 @@ export function loadConfig(env: Record<string, string | undefined>): GatewayConf
     );
   }
 
+  const explorerTxUrl = optional('QUORUM_EXPLORER_TX_URL', 'https://testnet.nearblocks.io/txns/', asExplorerPrefix);
+  // The demo endpoint (hosted demo spec, section 4.1): an empty command turns it off, and its limits are
+  // checked either way.
+  const demoCommand = optional('QUORUM_DEMO_COMMAND', '', asDemoCommand);
+  const demoMaxRunsPerDay = optional('QUORUM_DEMO_MAX_RUNS_PER_DAY', '100', asInteger(1, 1000));
+  const demoMaxRunSeconds = optional('QUORUM_DEMO_MAX_RUN_SECONDS', '1800', asInteger(60, 7200));
+  // Checked either way too. Unlike QUORUM_RPC_URL, it may hold a key with the pass-through off: no page
+  // is ever given it.
+  const demoRpcUrl = optional('QUORUM_DEMO_RPC_URL', '', asDemoRpcUrl);
+
   const draft: Draft = {
     network,
     rpcUrl,
@@ -375,7 +434,11 @@ export function loadConfig(env: Record<string, string | undefined>): GatewayConf
     dataDir,
     webDir,
     rpcPassthrough,
-    explorerTxUrl: optional('QUORUM_EXPLORER_TX_URL', 'https://testnet.nearblocks.io/txns/', asExplorerPrefix),
+    explorerTxUrl,
+    demoCommand,
+    demoMaxRunsPerDay,
+    demoMaxRunSeconds,
+    demoRpcUrl,
   };
   if (problems.length > 0) throw new ConfigError(problems.join('\n'));
   // No problem was listed, so every value in the draft is defined.

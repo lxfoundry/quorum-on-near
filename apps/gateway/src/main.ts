@@ -8,10 +8,12 @@ import { ActivityLog } from './activity.ts';
 import { createApp } from './app.ts';
 import { checkChainId, ConfigError, loadConfig, type GatewayConfig } from './config.ts';
 import { createCredentialIssuer } from './credential.ts';
+import { DemoRunner } from './demo.ts';
 import type { Deps } from './deps.ts';
 import { InFlight, proofNonceCache } from './guards.ts';
 import { Keeper } from './keeper.ts';
 import { createRelayerProvider } from './providers.ts';
+import { redactProcessOutput } from './redact.ts';
 import { KeyPool, RpcRelayer } from './relayer.ts';
 import { RpcChain } from './rpc-chain.ts';
 import { gracefulClose } from './shutdown.ts';
@@ -43,6 +45,9 @@ function liveFolder(webDir: string | null): string | null {
   return null;
 }
 
+// First, so that all the gateway, its libraries and Node write from here on has its secret URLs
+// replaced by their variables' names (see redact.ts).
+redactProcessOutput();
 const config = readConfig();
 // Views change nothing, so they keep near-api-js's default retries.
 const viewProvider = new JsonRpcProvider({ url: config.rpcUrl });
@@ -53,7 +58,8 @@ let chainId: string;
 try {
   chainId = (await viewProvider.viewNodeStatus()).chain_id;
 } catch (error) {
-  fail(`cannot read the chain id from ${config.rpcUrl}: ${errorMessage(error)}`);
+  // The host alone: a provider may put its key in the URL's path or query.
+  fail(`cannot read the chain id from the RPC at ${new URL(config.rpcUrl).host}: ${errorMessage(error)}`);
 }
 const wrongChain = checkChainId(config.network, chainId);
 if (wrongChain !== null) fail(wrongChain);
@@ -92,7 +98,25 @@ const deps: Deps = {
   now: Date.now,
 };
 
-const server = serve({ fetch: createApp(deps).fetch, port: config.port }, (info) => {
+// The demo endpoint is on only when QUORUM_DEMO_COMMAND names the program of a run.
+const demo =
+  config.demoCommand === null
+    ? null
+    : new DemoRunner({
+        command: config.demoCommand,
+        maxRunsPerDay: config.demoMaxRunsPerDay,
+        maxRunSeconds: config.demoMaxRunSeconds,
+        rpcUrl: config.demoRpcUrl,
+      });
+if (demo !== null) {
+  console.log(`demo endpoint on: each run starts ${JSON.stringify(config.demoCommand)}, then its scenario`);
+  // An error nothing handles ends the process at once (see redactProcessOutput), with no signal for a
+  // run in progress, which would then run on with nothing left to stop it at its maximum run time.
+  // Kill is synchronous, so the signal is sent before the process is gone.
+  process.once('exit', () => demo.stop());
+}
+
+const server = serve({ fetch: createApp(deps, { demo }).fetch, port: config.port }, (info) => {
   console.log(`gateway listening on http://localhost:${info.port} (public URL ${config.publicUrl})`);
 });
 server.once('error', (error) => fail(`cannot listen on port ${config.port}: ${error.message}`));
@@ -112,7 +136,10 @@ const keeper = new Keeper({
 });
 keeper.start(config.keeperIntervalMs);
 
-/** Stops taking requests and keeper ticks; the process exits once the running ones finish. */
+/**
+ * Stops taking requests and keeper ticks, and sends a demo run in progress SIGTERM; the process exits
+ * once the running ones finish.
+ */
 function shutdown(signal: NodeJS.Signals): void {
   // A second signal ends the process at once.
   process.off('SIGINT', shutdown);
@@ -120,6 +147,7 @@ function shutdown(signal: NodeJS.Signals): void {
   console.log(`${signal}: shutting down`);
   closeServer();
   void keeper.stop();
+  demo?.stop();
 }
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);

@@ -1,16 +1,22 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
+  DEMO_ANSWER_MS,
   PageDataError,
   buyerRows,
   countdown,
   countdownText,
+  demoControls,
+  demoLine,
+  demoRequest,
   foreignPoolNotice,
   formatAmount,
   formatUnits,
   parseActivity,
   parseBalance,
   parseConfig,
+  parseDemoAnswer,
+  parseDemoStatus,
   parsePool,
   parsePoolRefs,
   parseSeats,
@@ -21,10 +27,15 @@ import {
   poolToShow,
   poolTotals,
   readAll,
+  statusAfterAnswer,
   txUrl,
   viewRequest,
   viewResult,
+  withoutPoolParam,
   type ActivityRecord,
+  type DemoClick,
+  type DemoLastRun,
+  type DemoStatus,
   type PoolView,
   type SeatView,
 } from '../totals.js';
@@ -581,13 +592,17 @@ describe('parseConfig', () => {
     explorerTxUrl: EXPLORER,
   };
 
-  it("accepts the gateway's /config.json", () => {
-    expect(parseConfig(CONFIG)).toEqual(CONFIG);
+  it("accepts the gateway's /config.json, reading a missing demo as off", () => {
+    expect(parseConfig(CONFIG)).toEqual({ ...CONFIG, demo: false });
+  });
+
+  it.each([true, false])('keeps demo: %s', (demo) => {
+    expect(parseConfig({ ...CONFIG, demo })).toEqual({ ...CONFIG, demo });
   });
 
   it('accepts an explorer prefix that ends in a query parameter, whose links keep its origin', () => {
     const config = { ...CONFIG, explorerTxUrl: 'https://explorer.example/tx?hash=' };
-    expect(parseConfig(config)).toEqual(config);
+    expect(parseConfig(config)).toEqual({ ...config, demo: false });
     expect(new URL(txUrl(config.explorerTxUrl, COMMIT_1) ?? '').origin).toBe('https://explorer.example');
   });
 
@@ -601,6 +616,8 @@ describe('parseConfig', () => {
     ['an explorer URL with no path', { ...CONFIG, explorerTxUrl: 'https://explorer.example' }],
     ['an explorer URL whose host ends in =', { ...CONFIG, explorerTxUrl: 'https://explorer.example=' }],
     ['an explorer URL that ends in neither / nor =', { ...CONFIG, explorerTxUrl: 'https://testnet.nearblocks.io/txns' }],
+    ['demo as text', { ...CONFIG, demo: 'true' }],
+    ['demo as null', { ...CONFIG, demo: null }],
   ])('throws a PageDataError for a configuration with %s', (_kind, config) => {
     expect(() => parseConfig(config)).toThrow(PageDataError);
   });
@@ -860,5 +877,221 @@ describe('countdownText', () => {
   it.each(['filled', 'settled', 'expired', 'refunded'] as const)('shows closed for a pool that is %s, whatever its deadline', (status) => {
     expect(countdownText(status, NOW + 600_000, NOW)).toBe('closed');
     expect(countdownText(status, NOW - 600_000, NOW)).toBe('closed');
+  });
+});
+
+/** The time the demo tests read: 08:00:00 UTC. */
+const DEMO_NOW = 1_800_000_000_000;
+/** Writes a time as the demo line would, in UTC, so that the tests do not depend on the time zone. */
+const utcTime = (ms: number): string => new Date(ms).toISOString().slice(11, 19);
+const IDLE: DemoStatus = { running: false, scenario: null, startedAt: null, last: null, runsToday: 0, maxRunsPerDay: 100 };
+/** A fills run started at 07:58:30. */
+const RUNNING: DemoStatus = { ...IDLE, running: true, scenario: 'fills', startedAt: DEMO_NOW - 90_000, runsToday: 1 };
+/** A fails run that exited with code 0 at 07:59:30. */
+const ENDED_RUN: DemoLastRun = { scenario: 'fails', startedAt: DEMO_NOW - 300_000, endedAt: DEMO_NOW - 30_000, exitCode: 0, signal: null };
+const ENDED: DemoStatus = { ...IDLE, runsToday: 1, last: ENDED_RUN };
+/** Today's cap reached: 100 runs of 100, the last one ended well. */
+const CAPPED: DemoStatus = { ...ENDED, runsToday: 100 };
+
+/** The demo line at DEMO_NOW for `status` (null: GET /demo could not be read), after `click` if given. */
+function demoLineAt(status: DemoStatus | null, click: DemoClick | null = null): string {
+  return demoLine({ now: DEMO_NOW, click, status, time: utcTime });
+}
+
+/** A click whose answer arrived `ago` milliseconds before DEMO_NOW. */
+function clickAgo(ago: number, answer: DemoClick['answer']): DemoClick {
+  return { at: DEMO_NOW - ago, answer };
+}
+
+describe('parseDemoStatus', () => {
+  const STOPPED_RUN = { scenario: 'fills', startedAt: DEMO_NOW - 2_000_000, endedAt: DEMO_NOW - 200_000, exitCode: null, signal: 'SIGTERM' };
+
+  it.each([
+    ['no run yet', IDLE],
+    ['a run in progress', RUNNING],
+    ['a last run that exited', ENDED],
+    ['a last run ended by a signal', { ...IDLE, runsToday: 3, last: STOPPED_RUN }],
+    ['a last run whose program could not be started', { ...IDLE, runsToday: 1, last: { ...STOPPED_RUN, signal: null } }],
+    ["the day's cap reached", CAPPED],
+  ])("accepts the gateway's GET /demo with %s", (_kind, status) => {
+    expect(parseDemoStatus(status)).toEqual(status);
+  });
+
+  it.each([
+    ['not an object', [IDLE]],
+    ['running as text', { ...IDLE, running: 'false' }],
+    ['an unknown scenario', { ...RUNNING, scenario: 'drains' }],
+    ['a run in progress with no scenario', { ...RUNNING, scenario: null }],
+    ['a run in progress with no start time', { ...RUNNING, startedAt: null }],
+    ['a scenario while no run is in progress', { ...IDLE, scenario: 'fills' }],
+    ['a start time as text', { ...RUNNING, startedAt: '1800000000000' }],
+    ['a last run with an unknown scenario', { ...ENDED, last: { ...ENDED_RUN, scenario: 'drains' } }],
+    ['a last run with no end time', { ...ENDED, last: { ...ENDED_RUN, endedAt: undefined } }],
+    ['a last run with an exit code as text', { ...ENDED, last: { ...ENDED_RUN, exitCode: '0' } }],
+    ['a last run with a signal as a number', { ...ENDED, last: { ...ENDED_RUN, exitCode: null, signal: 15 } }],
+    ['a negative count of runs', { ...IDLE, runsToday: -1 }],
+    ['a cap that is not a whole number', { ...IDLE, maxRunsPerDay: 1.5 }],
+  ])('throws a PageDataError for a status with %s', (_kind, status) => {
+    expect(() => parseDemoStatus(status)).toThrow(PageDataError);
+  });
+});
+
+describe('parseDemoAnswer', () => {
+  it('keeps the status and the error code of an answer', () => {
+    expect(parseDemoAnswer(409, { error: 'demo_running', scenario: 'fills', startedAt: DEMO_NOW })).toEqual({
+      status: 409,
+      error: 'demo_running',
+    });
+  });
+
+  it.each([
+    ['a 202, which has no error', 202, { scenario: 'fills', startedAt: DEMO_NOW }],
+    ['a body that is not JSON', 502, null],
+    ['an error that is not text', 409, { error: 409 }],
+  ])('gives a null error for %s', (_kind, status, body) => {
+    expect(parseDemoAnswer(status, body)).toEqual({ status, error: null });
+  });
+});
+
+describe('statusAfterAnswer', () => {
+  /** When the run a click's answer reports started: 07:59:58. */
+  const STARTED_AT = DEMO_NOW - 2_000;
+
+  it('takes a 202 for the run it started: in progress, with its scenario and start, and counted today, the rest as GET /demo last said', () => {
+    expect(statusAfterAnswer(ENDED, 202, { scenario: 'fills', startedAt: STARTED_AT })).toEqual({
+      ...ENDED,
+      running: true,
+      scenario: 'fills',
+      startedAt: STARTED_AT,
+      runsToday: 2,
+    });
+  });
+
+  it('takes a 409 demo_running for the run it names: in progress, with its scenario and start, and already counted', () => {
+    expect(statusAfterAnswer(ENDED, 409, { error: 'demo_running', scenario: 'fails', startedAt: STARTED_AT })).toEqual({
+      ...ENDED,
+      running: true,
+      scenario: 'fails',
+      startedAt: STARTED_AT,
+    });
+  });
+
+  it.each([
+    ['409 pool_open', 409, { error: 'pool_open', poolId: 3 }],
+    ['429', 429, { error: 'demo_limit' }],
+    ['503', 503, { error: 'chain_unavailable' }],
+    ['403', 403, { error: 'demo_header_required' }],
+    ['404, the demo being off', 404, { error: 'not_found' }],
+    ['a 409 with a run but another error', 409, { error: 'conflict', scenario: 'fills', startedAt: STARTED_AT }],
+    ['a 202 with no JSON body', 202, null],
+    ['a 202 with an unknown scenario', 202, { scenario: 'drains', startedAt: STARTED_AT }],
+    ['a 202 with a start time as text', 202, { scenario: 'fills', startedAt: String(STARTED_AT) }],
+    ['a 409 demo_running with no start time', 409, { error: 'demo_running', scenario: 'fills' }],
+  ])('is null for %s, which reports no run', (_kind, status, body) => {
+    expect(statusAfterAnswer(ENDED, status, body)).toBeNull();
+  });
+
+  it('is null when GET /demo could not be read, which leaves nothing to complete the run with', () => {
+    expect(statusAfterAnswer(null, 202, { scenario: 'fills', startedAt: STARTED_AT })).toBeNull();
+  });
+});
+
+describe('demoLine', () => {
+  it.each([
+    ['202', { status: 202, error: null }, 'A run started. Its pool appears here once it opens.'],
+    ['409 demo_running', { status: 409, error: 'demo_running' }, 'A run is already in progress. This page follows its pool once it opens.'],
+    ['409 pool_open', { status: 409, error: 'pool_open' }, 'A pool is still open. This page shows it.'],
+    ['429', { status: 429, error: 'demo_limit' }, 'The demo has reached its limit for today.'],
+    ['409 with another error', { status: 409, error: 'conflict' }, 'The demo is not available right now.'],
+    ['403', { status: 403, error: 'demo_header_required' }, 'The demo is not available right now.'],
+    ['404, the demo being off', { status: 404, error: 'not_found' }, 'The demo is not available right now.'],
+    ['503', { status: 503, error: 'chain_unavailable' }, 'The demo is not available right now.'],
+    ['500 with no error code', { status: 500, error: null }, 'The demo is not available right now.'],
+    ['no answer', null, 'The gateway could not be reached.'],
+  ])('shows the answer %s to a click for 10 seconds', (_kind, answer, text) => {
+    expect(demoLineAt(IDLE, clickAgo(0, answer))).toBe(text);
+    expect(demoLineAt(IDLE, clickAgo(9_999, answer))).toBe(text);
+  });
+
+  it('shows the answer to a click before anything GET /demo says', () => {
+    for (const status of [null, RUNNING, CAPPED, ENDED, IDLE]) {
+      expect(demoLineAt(status, clickAgo(5_000, { status: 202, error: null }))).toBe('A run started. Its pool appears here once it opens.');
+    }
+  });
+
+  it('goes back to what GET /demo says 10 seconds after the answer arrived', () => {
+    expect(DEMO_ANSWER_MS).toBe(10_000);
+    expect(demoLineAt(RUNNING, clickAgo(10_000, { status: 202, error: null }))).toBe('A fills run started at 07:58:30 is in progress.');
+  });
+
+  it("says the demo's status is unavailable when GET /demo cannot be read", () => {
+    expect(demoLineAt(null)).toBe("The demo's status is unavailable.");
+    expect(demoLineAt(null, clickAgo(60_000, { status: 202, error: null }))).toBe("The demo's status is unavailable.");
+  });
+
+  it('names the scenario of the run in progress and when it started, before the cap', () => {
+    expect(demoLineAt(RUNNING)).toBe('A fills run started at 07:58:30 is in progress.');
+    expect(demoLineAt({ ...RUNNING, runsToday: 100 })).toBe('A fills run started at 07:58:30 is in progress.');
+  });
+
+  it("says when today's cap is reached, before the last run", () => {
+    expect(demoLineAt(CAPPED)).toBe('The demo has reached its limit for today.');
+    expect(demoLineAt({ ...CAPPED, last: { ...ENDED_RUN, exitCode: 1 } })).toBe('The demo has reached its limit for today.');
+    expect(demoLineAt({ ...IDLE, runsToday: 100 })).toBe('The demo has reached its limit for today.');
+  });
+
+  it('names the scenario of the last run and when it ended, when it exited with code 0', () => {
+    expect(demoLineAt(ENDED)).toBe('The last run (fails) ended at 07:59:30.');
+  });
+
+  it.each([
+    ['an exit code of 1', { exitCode: 1, signal: null }],
+    ['a signal', { exitCode: null, signal: 'SIGKILL' }],
+    ['a program that could not be started', { exitCode: null, signal: null }],
+  ])('reports a last run that ended with %s as an error', (_kind, end) => {
+    expect(demoLineAt({ ...ENDED, last: { ...ENDED_RUN, ...end } })).toBe(
+      'The last run ended with an error. Its testnet funds may need a refill.',
+    );
+  });
+
+  it('invites a first run when there has been none', () => {
+    expect(demoLineAt(IDLE)).toBe('Start a run to watch a pool from its first seat.');
+  });
+});
+
+describe('demoControls', () => {
+  it('hides the buttons and the demo line unless /config.json says demo: true', () => {
+    expect(demoControls({ demo: false, status: IDLE, sending: false })).toEqual({ shown: false, enabled: false });
+  });
+
+  it('enables the buttons when no run is in progress and the cap is not reached', () => {
+    expect(demoControls({ demo: true, status: IDLE, sending: false })).toEqual({ shown: true, enabled: true });
+    expect(demoControls({ demo: true, status: { ...ENDED, runsToday: 99 }, sending: false })).toEqual({ shown: true, enabled: true });
+  });
+
+  it.each([
+    ['a run is in progress', RUNNING, false],
+    ["today's cap is reached", CAPPED, false],
+    ['GET /demo cannot be read', null, false],
+    ["a button's request is on its way", IDLE, true],
+  ])('disables the buttons, still shown, when %s', (_kind, status, sending) => {
+    expect(demoControls({ demo: true, status, sending })).toEqual({ shown: true, enabled: false });
+  });
+});
+
+describe('demoRequest', () => {
+  it.each(['fills', 'fails'] as const)('POSTs /demo/%s with the header X-Quorum-Demo: 1', (scenario) => {
+    expect(demoRequest(scenario)).toEqual({ url: `/demo/${scenario}`, method: 'POST', headers: { 'X-Quorum-Demo': '1' } });
+  });
+});
+
+describe('withoutPoolParam', () => {
+  it.each([
+    ['https://quorum.example/?pool=7', 'https://quorum.example/'],
+    ['https://quorum.example/?view=1&pool=7#ledger', 'https://quorum.example/?view=1#ledger'],
+    ['https://quorum.example/?pool=7&pool=8', 'https://quorum.example/'],
+    ['https://quorum.example/', 'https://quorum.example/'],
+  ])('turns %s into %s, so that the page follows the newest pool', (href, expected) => {
+    expect(withoutPoolParam(href)).toBe(expected);
   });
 });
