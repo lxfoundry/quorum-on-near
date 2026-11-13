@@ -19,6 +19,12 @@ const MAX_RPC_BODY_BYTES = 16 * 1024;
 /** How long a `POST /rpc` forward waits for the RPC's whole answer; past it, the request is answered 503. */
 const RPC_FORWARD_TIMEOUT_MS = 10_000;
 /**
+ * How long a demo `POST` waits for the provider's pools, which it reads while it holds the slot; past
+ * it, the request is answered 503 and the slot is freed. Below the 10 seconds that the live page waits
+ * for the answer, so that the page never gives up on a request the gateway then starts a run for.
+ */
+const DEMO_POOLS_READ_TIMEOUT_MS = 8_000;
+/**
  * The paths of the live page's four files, the only files served from `config.webDir`: `/` serves
  * `index.html`. The folder also holds the page's package files, tests and `node_modules`, which are
  * never served.
@@ -36,6 +42,19 @@ function parsePoolId(param: string): number | null {
   if (!POOL_ID.test(param)) return null;
   const id = Number(param);
   return Number.isSafeInteger(id) ? id : null;
+}
+
+/**
+ * `promise`'s outcome, or a rejection once `ms` milliseconds have passed without one. The read itself is
+ * not cancelled: it goes on until its own end, and its late outcome is dropped. The timer is cleared as
+ * soon as `promise` settles, so a read that answers leaves nothing running.
+ */
+function within<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`no answer within ${ms} ms`)), ms);
+  });
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
 }
 
 function send(c: Context, r: Reply): Response {
@@ -160,7 +179,7 @@ export function createApp(deps: Deps, options: AppOptions = {}): Hono {
         if (claim.kind === 'limit') return c.json({ error: 'demo_limit' }, 429);
         let pools: PoolView[];
         try {
-          pools = await listServedPools(deps.chain, config.provider);
+          pools = await within(listServedPools(deps.chain, config.provider), DEMO_POOLS_READ_TIMEOUT_MS);
         } catch (error) {
           claim.release();
           console.error('could not read the pools before a demo run:', error);

@@ -718,6 +718,37 @@ describe('createApp', () => {
       expect(await answer(postDemo(app, 'fills'))).toEqual({ status: 202, body: { scenario: 'fills', startedAt: NOW_MS } });
     });
 
+    it('answers 503 chain_unavailable when the pools have not been read after 8 seconds, and then frees the slot', async () => {
+      const { app, fake, demo } = await demoApp();
+      // A read that never answers; near-api-js would retry a failing RPC for about 85 seconds.
+      const listPools = vi.spyOn(fake, 'listPools').mockReturnValueOnce(new Promise(() => {}));
+      const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+      // Only the timers: the test moves the 8 seconds, and the run it starts afterwards needs the real ones.
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        const res = postDemo(app, 'fills');
+        await vi.advanceTimersByTimeAsync(7_999);
+        // The slot is held while the read is out.
+        expect(await answer(app.request('/demo'))).toMatchObject({ status: 200, body: { running: true, runsToday: 0 } });
+        await vi.advanceTimersByTimeAsync(1);
+        expect(await answer(res)).toEqual({ status: 503, body: { error: 'chain_unavailable' } });
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(logged).toHaveBeenCalledExactlyOnceWith(
+        expect.any(String),
+        expect.objectContaining({ message: expect.stringContaining('8000 ms') }),
+      );
+      expect(await answer(app.request('/demo'))).toMatchObject({
+        status: 200,
+        body: { running: false, last: null, runsToday: 0 },
+      });
+      // The slot was released: the next request reads the pools again and starts its run.
+      expect(await answer(postDemo(app, 'fills'))).toEqual({ status: 202, body: { scenario: 'fills', startedAt: NOW_MS } });
+      await idle(demo);
+      expect(listPools).toHaveBeenCalledTimes(2);
+    });
+
     it("answers 429 demo_limit once today's cap is reached, and starts runs again after midnight UTC", async () => {
       const { app, demo, clock } = await demoApp(['exit', '0'], 1);
       expect(await answer(postDemo(app, 'fills'))).toEqual({ status: 202, body: { scenario: 'fills', startedAt: NOW_MS } });
