@@ -32,7 +32,7 @@ const REFUND_STATUS: Record<BuyerState, 'refund_pending' | 'refunded' | 'claimab
 export async function handleRedeem(deps: Deps, poolId: number, header: string): Promise<Reply> {
   const { config, chain, proofNonces } = deps;
   try {
-    const pool = await servedPool(chain, config.provider, poolId);
+    const pool = await servedPool(deps.redeemPools ?? chain, config.provider, poolId);
     if (pool === null) return reply(404, { error: 'unknown_pool' });
 
     const nowMs = deps.now();

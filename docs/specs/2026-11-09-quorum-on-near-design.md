@@ -546,6 +546,16 @@ It then reads `get_buyer` and `get_pool`:
 | Expired or Refunded | `410` with `{status: "refunded" or "refund_pending" or "claimable", amount, bonusShare, txHash}` |
 | The account holds no seats | `404` |
 
+Redemptions share each pool's `get_pool` answer for 2 seconds after the gateway sent its read, so
+buyers polling the same pool cost at most one read per 2 seconds while its reads succeed; offers,
+payments, the keeper and `GET /pools` never read through this cache. A pool that does not exist is
+never kept, and every pool is forgotten once a transaction the gateway sent (a relayed payment, or
+the keeper's `settle` or `refund`) has returned. When its result is known (executed or rejected), a
+redemption that comes after it reads the pool as that transaction left it, or newer. A transaction
+whose result is unknown, and a change the gateway did not send, such as a deadline passing or seats
+taken by a commit it did not relay, can show up to 2 seconds late, as a `202` where a `200` or a
+`410` is due, and a buyer that asks again later gets it.
+
 The `410` status is the buyer's state on the contract: `refund_pending` while `Committed`, `refunded`
 once `Refunded`, `claimable` once `Claimable`. `amount` is the seats' refund, price and bonus share,
 and `bonusShare` its bonus part; both are final from the deadline on, since the views give a pool past
