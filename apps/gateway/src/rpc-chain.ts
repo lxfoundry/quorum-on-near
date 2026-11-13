@@ -8,17 +8,20 @@ const OPTIMISTIC = { finality: 'optimistic' } as const;
 const FINAL = { finality: 'final' } as const;
 const NANOS_PER_MS = 1_000_000n;
 
+/** The provider methods RpcChain reads with. None of them sends a transaction. */
+export type ChainProvider = Pick<Provider, 'callFunction' | 'viewAccessKey' | 'viewBlock'>;
+
 /**
  * ChainReader over near-api-js's JSON-RPC provider. Views and access keys are read at optimistic
  * finality, so they reflect at least the state of an outcome returned at EXECUTED_OPTIMISTIC;
  * `finalBlock` reads the latest final block.
  */
 export class RpcChain implements ChainReader {
-  readonly #provider: Provider;
+  readonly #provider: ChainProvider;
   readonly #poolsContract: string;
   readonly #token: string;
 
-  constructor(opts: { provider: Provider; poolsContract: string; token: string }) {
+  constructor(opts: { provider: ChainProvider; poolsContract: string; token: string }) {
     this.#provider = opts.provider;
     this.#poolsContract = opts.poolsContract;
     this.#token = opts.token;

@@ -12,11 +12,13 @@ import { DemoRunner } from './demo.ts';
 import type { Deps } from './deps.ts';
 import { InFlight, proofNonceCache } from './guards.ts';
 import { Keeper } from './keeper.ts';
+import { cachePoolReads, clearAfterSends, poolViewCache } from './pool-cache.ts';
 import { createRelayerProvider } from './providers.ts';
 import { redactProcessOutput } from './redact.ts';
 import { KeyPool, RpcRelayer } from './relayer.ts';
 import { RpcChain } from './rpc-chain.ts';
 import { gracefulClose } from './shutdown.ts';
+import { retryViewsOn429 } from './view-retry.ts';
 
 function fail(message: string): never {
   console.error(message);
@@ -49,8 +51,9 @@ function liveFolder(webDir: string | null): string | null {
 // replaced by their variables' names (see redact.ts).
 redactProcessOutput();
 const config = readConfig();
-// Views change nothing, so they keep near-api-js's default retries.
-const viewProvider = new JsonRpcProvider({ url: config.rpcUrl });
+// Views change nothing, so they keep near-api-js's default retries, and are tried again after an
+// HTTP 429 (view-retry.ts). Only the views: the relayer's provider is another one, below.
+const viewProvider = retryViewsOn429(new JsonRpcProvider({ url: config.rpcUrl }));
 const chain = new RpcChain({ provider: viewProvider, poolsContract: config.poolsContract, token: config.token });
 
 // QUORUM_NETWORK only labels offers: the RPC decides which chain the gateway pays on.
@@ -76,7 +79,7 @@ if (token !== config.token) {
 
 // Posts each request once: a transaction is never posted twice (see providers.ts).
 const relayerProvider = createRelayerProvider(config.rpcUrl);
-const writer = new RpcRelayer({
+const relayer = new RpcRelayer({
   relayer: config.relayer,
   poolsContract: config.poolsContract,
   keys: new KeyPool(config.relayerKeys.map((key) => KeyPair.fromString(key as KeyPairString))),
@@ -86,10 +89,15 @@ const writer = new RpcRelayer({
   // when blocks slow down or the final height cannot be read.
   delegateLookupMs: 2 * config.maxTimeoutSeconds * 1000,
 });
+// Redemptions read a pool through this cache. Every transaction the gateway sends, a payment's relay
+// or a keeper's call, clears it once it has returned (pool-cache.ts).
+const poolViews = poolViewCache();
+const writer = clearAfterSends(relayer, poolViews);
 const activity = await ActivityLog.open(join(config.dataDir, 'activity.jsonl'));
 const deps: Deps = {
   config: { ...config, webDir: liveFolder(config.webDir) },
   chain,
+  redeemPools: cachePoolReads(chain, poolViews),
   writer,
   credentials: await createCredentialIssuer({ jwk: config.credentialJwk, issuer: config.publicUrl }),
   activity,

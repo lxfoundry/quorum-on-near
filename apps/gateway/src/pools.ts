@@ -44,8 +44,11 @@ export async function openPoolListings(chain: ChainReader, provider: string): Pr
     }));
 }
 
+/** The one read servedPool makes. */
+export type PoolReader = Pick<ChainReader, 'getPool'>;
+
 /** The pool if it exists and `provider` sells it; otherwise null. */
-export async function servedPool(chain: ChainReader, provider: string, poolId: number): Promise<PoolView | null> {
+export async function servedPool(chain: PoolReader, provider: string, poolId: number): Promise<PoolView | null> {
   const pool = await chain.getPool(poolId);
   return pool !== null && pool.seller === provider ? pool : null;
 }
