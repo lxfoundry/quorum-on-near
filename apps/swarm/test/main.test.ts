@@ -823,6 +823,19 @@ describe('parseCommand: keys', () => {
     expect(() => parseCommand(argv)).toThrow(UsageError);
     expect(() => parseCommand(argv)).toThrow('wrong arguments: the command is swarm keys from-seed [--gateway-env <path> | --parent-key]');
   });
+
+  // A relative path, or a flag taken for one, would put the gateway's secrets in the current folder.
+  it.each([['--parent-key'], ['gateway.env']])(
+    "refuses the --gateway-env path %j, which is not absolute, naming the problem and giving the command's synopsis",
+    (path) => {
+      const argv = ['keys', 'from-seed', '--gateway-env', path];
+      expect(() => parseCommand(argv)).toThrow(UsageError);
+      expect(() => parseCommand(argv)).toThrow(
+        `wrong arguments: the path after --gateway-env must be absolute, got ${JSON.stringify(path)}; ` +
+          'the command is swarm keys from-seed [--gateway-env <path> | --parent-key]',
+      );
+    },
+  );
 });
 
 describe('runCli: keys from-seed', () => {

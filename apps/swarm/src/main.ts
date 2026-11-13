@@ -1,6 +1,7 @@
 // The swarm's command line: `node src/main.ts <command>` (see USAGE). It reads QUORUM_* variables
 // from the environment and from apps/swarm/.env, wherever it is started from.
 import { userInfo } from 'node:os';
+import { isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   ConfigError,
@@ -134,15 +135,23 @@ function argsOf<N extends 0 | 1 | 2>(name: SwarmCommand['name'], args: readonly 
   return args as Args<N>;
 }
 
-/** `keys from-seed`, then nothing, `--parent-key`, or `--gateway-env` and a path that is not empty. */
+/**
+ * `keys from-seed`, then nothing, `--parent-key`, or `--gateway-env` and an absolute path. The file
+ * holds the gateway's secrets, so a relative path, or a flag taken for one, is refused rather than
+ * written in the current folder, where no ignore file covers it.
+ */
 function keysArgs(args: readonly string[]): SwarmCommand {
   const [action, option, path, ...rest] = args;
+  const synopsis = `the command is swarm ${COMMANDS.keys.synopsis}`;
   if (action === 'from-seed' && rest.length === 0) {
     if (option === undefined) return { name: 'keys', parentKey: false, gatewayEnv: null };
     if (option === '--parent-key' && path === undefined) return { name: 'keys', parentKey: true, gatewayEnv: null };
-    if (option === '--gateway-env' && path !== undefined && path !== '') return { name: 'keys', parentKey: false, gatewayEnv: path };
+    if (option === '--gateway-env' && path !== undefined && path !== '') {
+      if (isAbsolute(path)) return { name: 'keys', parentKey: false, gatewayEnv: path };
+      throw new UsageError(`wrong arguments: the path after --gateway-env must be absolute, got ${JSON.stringify(path)}; ${synopsis}`);
+    }
   }
-  throw new UsageError(`wrong arguments: the command is swarm ${COMMANDS.keys.synopsis}`);
+  throw new UsageError(`wrong arguments: ${synopsis}`);
 }
 
 function scenarioArg(raw: string): ScenarioName {
