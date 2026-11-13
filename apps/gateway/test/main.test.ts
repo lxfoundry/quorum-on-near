@@ -90,11 +90,13 @@ async function runGateway(rpcUrl: string): Promise<Run> {
 }
 
 // near-api-js retries an HTTP 500, 503 or 408 for about 85 seconds, so the stubs answer none of them.
-describe('main', () => {
+// Each case's budget is above its child's own timeout, so that a child that is slow to start is killed
+// and reported with its output, rather than cut off by the test's timeout.
+describe('main', { timeout: 60_000 }, () => {
   it('names the RPC by its host alone when it answers the chain id with HTTP 502, which near-api-js reports with its URL', async () => {
     const { url, host } = await rpcStub(() => 502);
     const { code, stdout, stderr } = await runGateway(url);
-    expect(code).toBe(1);
+    expect(code, stderr).toBe(1);
     expect(stderr).toContain(`cannot read the chain id from the RPC at ${host}: QUORUM_RPC_URL Bad Gateway`);
     expect(stdout).not.toMatch(KEY);
     expect(stderr).not.toMatch(KEY);
@@ -103,7 +105,7 @@ describe('main', () => {
   it('names the RPC by its host alone when its error to the chain id quotes its URL', async () => {
     const { url, host } = await rpcStub((_method, self) => internalError(self));
     const { code, stdout, stderr } = await runGateway(url);
-    expect(code).toBe(1);
+    expect(code, stderr).toBe(1);
     expect(stderr).toContain(`cannot read the chain id from the RPC at ${host}: node behind QUORUM_RPC_URL failed`);
     expect(stdout).not.toMatch(KEY);
     expect(stderr).not.toMatch(KEY);
@@ -112,7 +114,7 @@ describe('main', () => {
   it("names the RPC URL by its variable when the RPC's error to the token read quotes it", async () => {
     const { url } = await rpcStub((method, self) => (method === 'status' ? { result: { chain_id: 'testnet' } } : internalError(self)));
     const { code, stdout, stderr } = await runGateway(url);
-    expect(code).toBe(1);
+    expect(code, stderr).toBe(1);
     expect(stderr).toContain('cannot read the token of pools.parent.testnet: node behind QUORUM_RPC_URL failed');
     expect(stdout).not.toMatch(KEY);
     expect(stderr).not.toMatch(KEY);

@@ -148,7 +148,9 @@ describe('redactWrites', () => {
   });
 });
 
-describe('redactProcessOutput', () => {
+// Each case's budget is above its child's own timeout, so that a slow child is killed and reported with
+// its output, rather than cut off by the test's timeout.
+describe('redactProcessOutput', { timeout: 60_000 }, () => {
   /** Runs the fixture with QUORUM_RPC_URL set to PATH_URL, ending as `ending` says. */
   function runFixture(ending: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
     return new Promise((resolve) => {
@@ -165,7 +167,7 @@ describe('redactProcessOutput', () => {
     ['an unhandled rejection', 'reject'],
   ])('keeps the URL out of all that a process writes, up to %s, which ends it with code 1', async (_label, ending) => {
     const { code, stdout, stderr } = await runFixture(ending);
-    expect(code).toBe(1);
+    expect(code, stderr).toBe(1);
     expect(stdout).toContain('console.log QUORUM_RPC_URL\n');
     expect(stdout).toContain('process.stdout.write QUORUM_RPC_URL\n');
     expect(stderr).toContain('Error: console.error QUORUM_RPC_URL\n');
