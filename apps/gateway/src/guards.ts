@@ -2,11 +2,12 @@ import { REDEEM_MAX_AGE_MS, REDEEM_MAX_SKEW_MS } from '@quorum-on-near/protocol'
 
 /**
  * Buyers with a payment in flight: at most one each (spec section 6.4). A buyer is busy from `begin`
- * to `end`, and held after `end` while a payment whose result is unknown may still execute.
+ * to `end`, and held after `end` while a payment whose result is unknown may still execute or still
+ * have receipts to run.
  */
 export class InFlight {
   readonly #busy = new Set<string>();
-  /** Held buyers, each with its payment's `maxBlockHeight`. */
+  /** Held buyers, each with the last height at which its payment may still take effect. */
   readonly #held = new Map<string, bigint>();
 
   /** Marks the buyer busy. Returns false, changing nothing, if it already was busy or is held. */
@@ -21,19 +22,23 @@ export class InFlight {
     this.#busy.delete(buyer);
   }
 
-  /** Keeps the buyer in flight until `passed` is given a final height above `maxBlockHeight`. */
-  hold(buyer: string, maxBlockHeight: bigint): void {
-    this.#held.set(buyer, maxBlockHeight);
+  /**
+   * Keeps the buyer in flight until `passed` is given a final height above `untilHeight`: the last
+   * height at which its payment may still take effect, its `max_block_height` plus the blocks its
+   * receipts take.
+   */
+  hold(buyer: string, untilHeight: bigint): void {
+    this.#held.set(buyer, untilHeight);
   }
 
   held(buyer: string): boolean {
     return this.#held.has(buyer);
   }
 
-  /** Lifts every hold whose `maxBlockHeight` is below `finalHeight`: those payments can no longer execute. */
+  /** Lifts every hold whose height is below `finalHeight`: those payments can no longer take effect. */
   passed(finalHeight: bigint): void {
-    for (const [buyer, maxBlockHeight] of this.#held) {
-      if (finalHeight > maxBlockHeight) this.#held.delete(buyer);
+    for (const [buyer, untilHeight] of this.#held) {
+      if (finalHeight > untilHeight) this.#held.delete(buyer);
     }
   }
 

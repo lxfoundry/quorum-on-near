@@ -1,4 +1,6 @@
-import type { BuyerView, DecodedSignedDelegate, PoolView } from '@quorum-on-near/protocol';
+import type { BuyerView, DecodedSignedDelegate, PoolView, TxOutcome } from '@quorum-on-near/protocol';
+
+export type { ReceiptOutcome, TxOutcome } from '@quorum-on-near/protocol';
 
 /** An access key as the gateway needs it. */
 export interface AccessKeyInfo {
@@ -10,20 +12,6 @@ export interface AccessKeyInfo {
 export interface BlockInfo {
   height: bigint;
   timestampMs: number;
-}
-
-/** One executed receipt (or the transaction itself) of a transaction's outcome. */
-export interface ReceiptOutcome {
-  executorId: string;
-  logs: string[];
-  failed: boolean;
-  gasBurnt: bigint;
-}
-
-/** A transaction's outcome: the transaction first, then every receipt, as the RPC lists them. */
-export interface TxOutcome {
-  txHash: string;
-  receipts: ReceiptOutcome[];
 }
 
 /** Everything the gateway reads from the chain. */
@@ -43,21 +31,36 @@ export interface ChainReader {
  * - `executed`: the RPC returned the outcome once every non-refund receipt had run (some may have
  *   failed).
  * - `unknown`: the transaction was sent but its result was not known in time. `expired` is true when
- *   a final block above the delegate's `maxBlockHeight` was seen, so the delegate can no longer
- *   execute; false when it may still land, and for a call that relays no delegate.
+ *   the lookup stopped on a final block above the delegate's `maxBlockHeight`, whose height is
+ *   `finalHeight`: the delegate can no longer be included, but one included by its `maxBlockHeight`
+ *   may still have receipts to run. False when the lookup's time ran out first, and for a call that
+ *   relays no delegate.
  * - `rejected`: the RPC refused the transaction, so nothing ran.
  */
 export type RelayResult =
   | { kind: 'executed'; outcome: TxOutcome }
-  | { kind: 'unknown'; txHash: string; expired: boolean }
+  | { kind: 'unknown'; txHash: string; expired: false }
+  | { kind: 'unknown'; txHash: string; expired: true; finalHeight: bigint }
   | { kind: 'rejected'; txHash: string; error: string };
 
 /**
- * A payment is `expired` unless its `maxBlockHeight` is more than this many blocks past the final
- * height, so that the relayed transaction can land before the delegate expires. The upper bound,
- * the offer's timeout in blocks, allows the same margin.
+ * The send-side margin, and only that: a payment is `expired` unless its `maxBlockHeight` is more
+ * than this many blocks past the final height, so that the relayed transaction can land before the
+ * delegate expires. The upper bound, the offer's timeout in blocks, allows the same margin, and the
+ * relayer refuses to send a delegate the final height has come this close to. How long a buyer is
+ * held after an unknown result is RECEIPT_MARGIN_BLOCKS.
  */
 export const EXPIRY_MARGIN_BLOCKS = 5n;
+
+/**
+ * The blocks past a delegate's `maxBlockHeight` that its receipts may still take: a delegate
+ * included at its `maxBlockHeight` still runs the token's `ft_transfer_call` and the pools
+ * contract's `ft_on_transfer` in the blocks after it. A buyer whose payment's result is unknown is
+ * held until a final block above `maxBlockHeight` plus this many blocks has been read, so that a new
+ * payment is never checked before the seats the earlier one may take are visible. The scripted
+ * buyers and the MCP server wait at least as long before they pay again.
+ */
+export const RECEIPT_MARGIN_BLOCKS = 20n;
 
 /**
  * Thrown by `relayDelegate` when the chain's final height is already too close to the delegate's

@@ -7,7 +7,14 @@ import type {
   PoolView,
 } from '@quorum-on-near/protocol';
 import type { ActivityRecord } from './activity.ts';
-import { DelegateExpiredError, EXPIRY_MARGIN_BLOCKS, type BlockInfo, type RelayResult, type TxOutcome } from './chain.ts';
+import {
+  DelegateExpiredError,
+  EXPIRY_MARGIN_BLOCKS,
+  RECEIPT_MARGIN_BLOCKS,
+  type BlockInfo,
+  type RelayResult,
+  type TxOutcome,
+} from './chain.ts';
 import type { Deps } from './deps.ts';
 import { currentAccepts, parseSeats } from './handle-offer.ts';
 import { readCommit } from './outcome.ts';
@@ -39,8 +46,11 @@ type FreshCheck = { ok: true; block: BlockInfo } | { ok: false; code: GatewayErr
  *   full-access key of the buyer's account, its nonce is above that key's, and its max_block_height
  *   is within the accepted window), so neither a payment signed with another key nor a replay of a
  *   used or expired payment can hold the slot.
- *   A payment whose result is unknown keeps its buyer in flight, while its delegate may still land,
- *   until a final block above its `max_block_height` is read.
+ *   A payment whose result is unknown keeps its buyer in flight, while it may still take seats,
+ *   until a final block above its `max_block_height` plus RECEIPT_MARGIN_BLOCKS is read: a delegate
+ *   included by its `max_block_height` still has its token and pools receipts to run after it. This
+ *   holds also when the relayer's lookup saw the delegate expire; the buyer is then free at once only
+ *   if the final height the lookup read is already above that.
  * - 202 `{status: "pending", receipt, pool}` or, when the commit filled the pool, 200 `{status:
  *   "filled", credential, poolId, seats, terms}`; both carry `X-PAYMENT-RESPONSE`.
  * - When no seats were taken: 410 `{error: "pool_expired", poolId, txHash}` if the pool is past its
@@ -130,7 +140,8 @@ async function checkFresh(deps: Deps, payment: CheckedPayment): Promise<FreshChe
   if (key === null || !key.fullAccess) return refused('not_full_access');
   if (payment.nonce <= key.nonce) return refused('stale_nonce');
   const block = await chain.finalBlock();
-  // Frees each held buyer whose payment can no longer execute (this one too), so holds do not pile up.
+  // Frees each held buyer whose payment can no longer take seats, its receipts included (this buyer
+  // too), so holds do not pile up.
   inFlight.passed(block.height);
   if (payment.nonce >= block.height * NONCE_RANGE_MULTIPLIER) return refused('nonce_too_large');
   const maxAhead = BigInt(Math.ceil((config.maxTimeoutSeconds * 1000) / config.blockTimeMs));
@@ -180,8 +191,14 @@ async function answerRelay(
 ): Promise<Reply> {
   if (result.kind === 'rejected') return reply(502, { error: 'relay_failed', txHash: result.txHash });
   if (result.kind === 'unknown') {
-    // The delegate may still land: the buyer stays in flight until it no longer can.
-    if (!result.expired) deps.inFlight.hold(payment.senderId, payment.maxBlockHeight);
+    // The delegate may still take seats: the buyer stays in flight until it no longer can. A delegate
+    // included at its max_block_height still runs ft_transfer_call and ft_on_transfer in the blocks
+    // after, and a new payment checked before they have run would not see the seats they take. That is
+    // so also after a lookup that saw the delegate expire, which stops on the first final block above
+    // its max_block_height: the height that lookup read lifts the hold at once only if it is already
+    // above max_block_height plus RECEIPT_MARGIN_BLOCKS.
+    deps.inFlight.hold(payment.senderId, payment.maxBlockHeight + RECEIPT_MARGIN_BLOCKS);
+    if (result.expired) deps.inFlight.passed(result.finalHeight);
     return reply(502, { error: 'result_unknown', txHash: result.txHash });
   }
   try {

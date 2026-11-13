@@ -46,7 +46,7 @@ describe('InFlight', () => {
     expect(inFlight.begin('alice.testnet')).toBe(false);
   });
 
-  it('lifts a hold once a final height above its maxBlockHeight is passed, not at it', () => {
+  it('lifts a hold once a final height above its untilHeight is passed, not at it', () => {
     const inFlight = new InFlight();
     inFlight.hold('alice.testnet', 1_100n);
     inFlight.passed(1_100n);

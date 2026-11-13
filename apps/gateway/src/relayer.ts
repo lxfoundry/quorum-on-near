@@ -93,7 +93,8 @@ export interface RpcRelayerOptions {
 
 /**
  * When a lookup by hash gives up: after `lookupMs`, or, for a delegate, once the final height passes
- * its `maxBlockHeight` (the result is then `unknown` and `expired`), whichever comes first.
+ * its `maxBlockHeight` (the result is then `unknown` and `expired`, with that height), whichever comes
+ * first.
  */
 interface Deadline {
   lookupMs: number;
@@ -241,21 +242,26 @@ export class RpcRelayer implements ChainWriter {
     for (;;) {
       // Read the deadline before looking, so the last lookup is made after the deadline has passed.
       const timeUp = this.#now() >= end;
-      const expired = !timeUp && maxBlockHeight !== undefined && (await this.#finalHeightAbove(maxBlockHeight));
+      const passed = !timeUp && maxBlockHeight !== undefined ? await this.#finalHeightAbove(maxBlockHeight) : null;
       const outcome = readOutcome(await this.#find(txHash));
       if (outcome !== null) return { kind: 'executed', outcome };
-      if (timeUp || expired) return { kind: 'unknown', txHash, expired };
+      if (passed !== null) return { kind: 'unknown', txHash, expired: true, finalHeight: passed };
+      if (timeUp) return { kind: 'unknown', txHash, expired: false };
       await this.#sleep(this.#lookupIntervalMs);
     }
   }
 
-  /** False while the final height cannot be read: the lookup goes on. */
-  async #finalHeightAbove(height: bigint): Promise<boolean> {
+  /**
+   * The final height when it is above `height`; null when it is not, or while it cannot be read (the
+   * lookup goes on).
+   */
+  async #finalHeightAbove(height: bigint): Promise<bigint | null> {
     try {
       const block = await this.#read.viewBlock({ finality: 'final' });
-      return BigInt(block.header.height) > height;
+      const finalHeight = BigInt(block.header.height);
+      return finalHeight > height ? finalHeight : null;
     } catch {
-      return false;
+      return null;
     }
   }
 
