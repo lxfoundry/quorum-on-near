@@ -62,6 +62,10 @@ describe('loadConfig', () => {
       webDir: '../web',
       rpcPassthrough: false,
       explorerTxUrl: 'https://testnet.nearblocks.io/txns/',
+      demoCommand: null,
+      demoMaxRunsPerDay: 100,
+      demoMaxRunSeconds: 1800,
+      demoRpcUrl: null,
     });
   });
 
@@ -99,6 +103,10 @@ describe('loadConfig', () => {
         QUORUM_WEB_DIR: 'public',
         QUORUM_RPC_PASSTHROUGH: 'true',
         QUORUM_EXPLORER_TX_URL: 'https://explorer.example/txns/',
+        QUORUM_DEMO_COMMAND: '["node","../swarm/src/main.ts","demo"]',
+        QUORUM_DEMO_MAX_RUNS_PER_DAY: '5',
+        QUORUM_DEMO_MAX_RUN_SECONDS: '600',
+        QUORUM_DEMO_RPC_URL: 'https://rpc.demo.example/v1/',
       }),
     );
     expect(config).toEqual<GatewayConfig>({
@@ -125,6 +133,10 @@ describe('loadConfig', () => {
       webDir: 'public',
       rpcPassthrough: true,
       explorerTxUrl: 'https://explorer.example/txns/',
+      demoCommand: ['node', '../swarm/src/main.ts', 'demo'],
+      demoMaxRunsPerDay: 5,
+      demoMaxRunSeconds: 600,
+      demoRpcUrl: 'https://rpc.demo.example/v1/',
     });
   });
 
@@ -541,5 +553,84 @@ describe('loadConfig web folder', () => {
     ['a sibling whose name starts with the gateway folder name', `${GATEWAY_DIR}-web`],
   ])('accepts %s', (_label, dir) => {
     expect(loadConfig(env({ QUORUM_WEB_DIR: dir })).webDir).toBe(dir);
+  });
+});
+
+describe('loadConfig demo', () => {
+  const COMMAND =
+    'QUORUM_DEMO_COMMAND must be empty (the demo is off), or a JSON array of one or more non-empty strings: ' +
+    'the program to start, then its first arguments';
+
+  it('turns the demo off when QUORUM_DEMO_COMMAND is unset or empty', () => {
+    expect(loadConfig(env()).demoCommand).toBeNull();
+    expect(loadConfig(env({ QUORUM_DEMO_COMMAND: '' })).demoCommand).toBeNull();
+  });
+
+  it.each([
+    ['["node","/app/apps/swarm/src/main.ts","demo"]', ['node', '/app/apps/swarm/src/main.ts', 'demo']],
+    ['["/usr/local/bin/quorum-demo"]', ['/usr/local/bin/quorum-demo']],
+  ] as const)('reads QUORUM_DEMO_COMMAND = %s', (raw, command) => {
+    expect(loadConfig(env({ QUORUM_DEMO_COMMAND: raw })).demoCommand).toEqual(command);
+  });
+
+  it.each([
+    ['text that is not JSON', 'node demo'],
+    ['an empty array', '[]'],
+    ['a JSON string', '"node"'],
+    ['an object', '{"program":"node"}'],
+    ['null', 'null'],
+    ['an empty string in the array', '["node",""]'],
+    ['a number in the array', '["node",1]'],
+    ['a nested array', '[["node"]]'],
+  ])('refuses QUORUM_DEMO_COMMAND holding %s, naming the variable', (_label, raw) => {
+    expect(problems(env({ QUORUM_DEMO_COMMAND: raw }))).toEqual([`${COMMAND}, got ${JSON.stringify(raw)}`]);
+  });
+
+  it('accepts from 1 to 1000 runs a day, and from 60 to 7200 seconds a run', () => {
+    const least = loadConfig(env({ QUORUM_DEMO_MAX_RUNS_PER_DAY: '1', QUORUM_DEMO_MAX_RUN_SECONDS: '60' }));
+    const most = loadConfig(env({ QUORUM_DEMO_MAX_RUNS_PER_DAY: '1000', QUORUM_DEMO_MAX_RUN_SECONDS: '7200' }));
+    expect([least.demoMaxRunsPerDay, least.demoMaxRunSeconds, most.demoMaxRunsPerDay, most.demoMaxRunSeconds]).toEqual([
+      1, 60, 1000, 7200,
+    ]);
+  });
+
+  it.each([
+    ['QUORUM_DEMO_MAX_RUNS_PER_DAY', '0', 'an integer from 1 to 1000'],
+    ['QUORUM_DEMO_MAX_RUNS_PER_DAY', '1001', 'an integer from 1 to 1000'],
+    ['QUORUM_DEMO_MAX_RUNS_PER_DAY', '', 'an integer from 1 to 1000'],
+    ['QUORUM_DEMO_MAX_RUNS_PER_DAY', '10.5', 'an integer from 1 to 1000'],
+    ['QUORUM_DEMO_MAX_RUN_SECONDS', '59', 'an integer from 60 to 7200'],
+    ['QUORUM_DEMO_MAX_RUN_SECONDS', '7201', 'an integer from 60 to 7200'],
+    ['QUORUM_DEMO_MAX_RUN_SECONDS', '30m', 'an integer from 60 to 7200'],
+  ])('refuses %s = %j, also while the demo is off', (name, value, expected) => {
+    expect(problems(env({ [name]: value }))).toEqual([`${name} must be ${expected}, got ${JSON.stringify(value)}`]);
+  });
+});
+
+describe('loadConfig demo RPC URL', () => {
+  // A demo run gets this URL as its QUORUM_RPC_URL. No page is ever given it, so it may hold a key.
+  const KEY = 'fake-key-0123456789abcdef';
+  const PROBLEM = 'QUORUM_DEMO_RPC_URL must be empty, or an http or https URL';
+
+  it("leaves a run on the gateway's RPC URL when QUORUM_DEMO_RPC_URL is unset or empty", () => {
+    expect(loadConfig(env()).demoRpcUrl).toBeNull();
+    expect(loadConfig(env({ QUORUM_DEMO_RPC_URL: '' })).demoRpcUrl).toBeNull();
+  });
+
+  it('accepts a URL with a key in its query or as its user name while the pass-through is off', () => {
+    for (const url of [`https://rpc.demo.example/?apiKey=${KEY}`, `https://${KEY}@rpc.demo.example/`]) {
+      expect(loadConfig(env({ QUORUM_DEMO_RPC_URL: url })).demoRpcUrl).toBe(url);
+    }
+  });
+
+  // Labelled rather than printed: each value holds the key.
+  it.each([
+    ['text that is not a URL', `not a url ${KEY}`],
+    ['a ws URL', `ws://rpc.demo.example/?apiKey=${KEY}`],
+    ['a URL without its scheme', `rpc.demo.example/?apiKey=${KEY}`],
+  ])('refuses QUORUM_DEMO_RPC_URL holding %s, without repeating it', (_label, url) => {
+    const message = problems(env({ QUORUM_DEMO_RPC_URL: url }));
+    expect(message).toEqual([PROBLEM]);
+    expect(message.join('\n')).not.toContain(KEY);
   });
 });

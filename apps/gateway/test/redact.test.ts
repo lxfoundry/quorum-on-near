@@ -61,9 +61,24 @@ describe('redactUrls', () => {
 });
 
 describe('secretUrls', () => {
+  /** The RPC URL of a demo run, with a fake key in its query. */
+  const DEMO_URL = 'https://rpc.demo.example/?apiKey=fake-key-0123456789abcdef';
+
   it('takes each secret URL from the environment it is given, and nothing else', () => {
-    const env = { QUORUM_RPC_URL: PATH_URL, QUORUM_GATEWAY_URL: 'http://localhost:8402', QUORUM_PARENT_ACCOUNT: 'parent.testnet' };
-    expect(secretUrls(env)).toStrictEqual({ QUORUM_RPC_URL: PATH_URL });
+    const env = {
+      QUORUM_RPC_URL: PATH_URL,
+      QUORUM_DEMO_RPC_URL: DEMO_URL,
+      QUORUM_GATEWAY_URL: 'http://localhost:8402',
+      QUORUM_PARENT_ACCOUNT: 'parent.testnet',
+    };
+    expect(secretUrls(env)).toStrictEqual({ QUORUM_RPC_URL: PATH_URL, QUORUM_DEMO_RPC_URL: DEMO_URL });
+  });
+
+  it("replaces a demo run's RPC URL with its own variable's name", () => {
+    const text = `${DEMO_URL} Bad Gateway, then ${PATH_URL} Bad Gateway`;
+    expect(redactUrls(text, secretUrls({ QUORUM_RPC_URL: PATH_URL, QUORUM_DEMO_RPC_URL: DEMO_URL }))).toBe(
+      'QUORUM_DEMO_RPC_URL Bad Gateway, then QUORUM_RPC_URL Bad Gateway',
+    );
   });
 });
 

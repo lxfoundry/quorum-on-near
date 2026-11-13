@@ -1,10 +1,10 @@
 import type { Writable } from 'node:stream';
 
 /**
- * The variables whose value is a URL that may hold a key. Some RPC providers put theirs in the URL's
- * path, which no check can tell from a path.
+ * The variables whose value is a URL that may hold a key: the gateway's RPC URL and a demo run's. Some
+ * RPC providers put their key in the URL's path, which no check can tell from a path.
  */
-export const SECRET_URL_VARIABLES: readonly string[] = ['QUORUM_RPC_URL'];
+export const SECRET_URL_VARIABLES: readonly string[] = ['QUORUM_RPC_URL', 'QUORUM_DEMO_RPC_URL'];
 
 /** Secret URLs by the name of the variable that holds each; a value may be unset. */
 export type SecretUrls = Readonly<Record<string, string | undefined>>;
