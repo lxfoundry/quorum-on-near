@@ -547,14 +547,17 @@ It then reads `get_buyer` and `get_pool`:
 | The account holds no seats | `404` |
 
 Redemptions share each pool's `get_pool` answer for 2 seconds after the gateway sent its read, so
-buyers polling the same pool cost at most one read per 2 seconds while its reads succeed; offers,
-payments, the keeper and `GET /pools` never read through this cache. A pool that does not exist is
-never kept, and every pool is forgotten once a transaction the gateway sent (a relayed payment, or
-the keeper's `settle` or `refund`) has returned. When its result is known (executed or rejected), a
+buyers polling the same pool cost at most one read per 2 seconds between the gateway's own
+transactions, while its reads succeed and at most 64 pools are being read (the cache keeps 64 answers,
+the oldest dropped first); offers, payments, the keeper, `GET /pools` and the demo's check of the
+provider's pools never read through this cache. A pool that does not exist is never kept, and
+every pool is forgotten once a transaction the gateway sent (a relayed payment, or the keeper's
+`settle` or `refund`) has returned. When its result is known (executed or rejected), a
 redemption that comes after it reads the pool as that transaction left it, or newer. A transaction
 whose result is unknown, and a change the gateway did not send, such as a deadline passing or seats
 taken by a commit it did not relay, can show up to 2 seconds late, as a `202` where a `200` or a
-`410` is due, and a buyer that asks again later gets it.
+`410` is due, or as a `202` whose `taken` is smaller than the pool's, and a buyer that asks again later
+gets it.
 
 The `410` status is the buyer's state on the contract: `refund_pending` while `Committed`, `refunded`
 once `Refunded`, `claimable` once `Claimable`. `amount` is the seats' refund, price and bonus share,
@@ -1107,7 +1110,7 @@ answer `404`. Every value it reads is written as text or as an attribute, never 
 | A payment check fails | `402` with the code from section 6.4. Nothing is relayed |
 | Two buyers race for the last seats | `409`. The token's resolver has already returned the unused amount |
 | The RPC times out during a relay | The result is looked up by transaction hash; the payment is never re-signed or re-sent. If the result is still unknown, `502` with the hash, and the buyer checks through redemption. The buyer stays in flight until a final block above the delegate's `max_block_height` plus 20 blocks has been seen (section 6.4) |
-| The RPC answers one of the gateway's reads with HTTP 429 (too many requests) | The read is tried again up to three times, after 200, 400 and 800 ms, each wait stretched by up to half again: under 2.1 seconds of waiting more per read, besides the time of the extra requests. This covers the reads behind offers, payment checks, redemptions, `GET /pools`, the demo's check of the provider's pools, the keeper and the checks at start-up. If the last try is refused too, the read fails as before: `503` (`chain_unavailable`), the keeper's next tick, or a failed start. The relayer's own reads and its send do not go through this retry: the relayer posts each request once, so a transaction is never posted twice, and a read of the relayer's that is refused before it sends fails as before. The relayer checks the expiry again once it holds a key (section 6.4). `POST /rpc` is not retried either: the live page reads again at its next refresh |
+| The RPC answers one of the gateway's reads with HTTP 429 (too many requests) | The read is tried again up to three times, after 200, 400 and 800 ms, each wait stretched by up to half again: under 2.1 seconds of waiting more per read, besides the time of the extra requests and the backoff near-api-js applies inside each one after HTTP 503, 500 or 408. This covers the reads behind offers, payment checks, redemptions, `GET /pools`, the demo's check of the provider's pools, the keeper and the checks at start-up. If the last try is refused too, the read fails as before: `503` (`chain_unavailable`), the keeper's next tick, or a failed start. The relayer's own reads and its send do not go through this retry: the relayer posts each request once, so a transaction is never posted twice, and a read of the relayer's that is refused before it sends fails as before. The relayer checks the expiry again once it holds a key (section 6.4). `POST /rpc` is not retried either: the live page reads again at its next refresh |
 | A buyer gets no documented answer to a payment, or a `502 result_unknown` | The scripted buyer or the MCP server signs no new payment to the pool until a final block above the payment's `max_block_height` plus 20 has been seen, then learns through redemption whether it landed (sections 6.3, 7.4 and 7.5) |
 | A keeper call fails | A call that throws before it has a result is retried on the next tick. A call whose result is rejected or unknown, or shows no progress, is retried with the backoff of section 6.7. The contract's guards make every call safe to repeat |
 | A pushed refund fails (for example, the buyer is no longer registered on the token) | The buyer becomes `Claimable`; it registers again and calls `claim_refund` |
@@ -1262,9 +1265,11 @@ keys) and the NEP-141, NEP-145, NEP-297, NEP-366 and NEP-413 standards:
   (a smaller page only costs more requests), since a page that the contract cuts short is taken for
   the last one, and a test checks it. Through the pass-through, each of the page's four repeated
   views (section 6.1) reaches the RPC at most once per 2 seconds for the same arguments, whatever the
-  number of viewers, while its reads succeed; every other request a viewer sends, and a read that
-  failed, still reaches the RPC from the gateway's address, so a public RPC's rate limit applies to
-  all viewers together and shows on the page as "Could not refresh" lines.
+  number of viewers, while its reads succeed and its answer is among the 64 the gateway keeps (the
+  oldest is dropped first, so other callers of `POST /rpc`, or viewers of more pools than fit, can push
+  the page's views out, and they then reach the RPC again); every other request a viewer sends, and a
+  read that failed, still reaches the RPC from the gateway's address, so a public RPC's rate limit
+  applies to all viewers together and shows on the page as "Could not refresh" lines.
 - **Credentials are issued at optimistic execution, not finality.** The relayer waits for the
   commit to execute optimistically, and redemption reads the pool at optimistic finality, so a
   credential can be issued before the block holding the commit is final. If that block were not
