@@ -1,6 +1,7 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { createServer, type AddressInfo, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,7 +12,7 @@ import type { AgentRuntime, BuyerOutcome } from '../src/buyer-agent.ts';
 import type { Baseline, CheckReport } from '../src/check.ts';
 import { aclNotice, EnvFileExistsError } from '../src/env-files.ts';
 import { keysFromSeed } from '../src/keys-from-seed.ts';
-import { parseCommand, runCli, USAGE, UsageError, type Cli, type Connections, type SwarmModules } from '../src/main.ts';
+import { parseCommand, runCli, USAGE, UsageError, type Cli, type Connections, type StopSignal, type SwarmModules } from '../src/main.ts';
 import { PROFILES, profileAccount } from '../src/profiles.ts';
 import { openPool, PoolAlreadyOpenError } from '../src/provider.ts';
 import { runSwarm, SeatPriceMismatchError } from '../src/run.ts';
@@ -114,6 +115,14 @@ function harness(env: Env = ENV) {
   const connect = vi.fn<Cli['connect']>(() => ({ chain, gateway, buyerChain, pools }));
   const keysChain = new StubSeedChain();
   const seedChain = vi.fn<Cli['seedChain']>(() => keysChain);
+  /** The listeners runCli gave onStop, in order, for a test to send a stop signal to. */
+  const stops: Array<(signal: StopSignal) => void> = [];
+  const stopListening = vi.fn<() => void>();
+  const onStop = vi.fn<Cli['onStop']>((stop) => {
+    stops.push(stop);
+    return stopListening;
+  });
+  const exit = vi.fn<Cli['exit']>();
   const cli: Cli = {
     env: { QUORUM_SWARM_LOCK_DIR: lockDir, ...env },
     out: (line) => out.push(line),
@@ -124,8 +133,10 @@ function harness(env: Env = ENV) {
     modules,
     platform: 'linux',
     userName: () => 'ada',
+    onStop,
+    exit,
   };
-  return { cli, out, err, order, chain, gateway, buyerChain, pools, runtime, modules, connect, keysChain, seedChain };
+  return { cli, out, err, order, chain, gateway, buyerChain, pools, runtime, modules, connect, keysChain, seedChain, stops, onStop, stopListening, exit };
 }
 
 describe('parseCommand', () => {
@@ -631,6 +642,93 @@ describe('runCli: one swarm at a time', () => {
     expect(existsSync(lockPath())).toBe(false);
   });
 
+  it.each([
+    ['SIGTERM', 143],
+    ['SIGINT', 130],
+  ] as const)('on %s while it holds its lock, removes the lock, then exits with %i', async (signal, code) => {
+    const h = harness();
+    const seen: string[] = [];
+    let finish = (): void => {};
+    h.modules.runSetup.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          seen.push('setup running');
+          finish = () => resolve({ actions: [] });
+        }),
+    );
+    h.exit.mockImplementation((exitCode) => {
+      seen.push(`exit ${exitCode}, ${existsSync(lockPath()) ? 'lock held' : 'lock removed'}`);
+    });
+
+    const done = runCli(['setup'], h.cli);
+    try {
+      await vi.waitFor(() => expect(seen).toEqual(['setup running']));
+      expect(h.stops).toHaveLength(1);
+      h.stops[0]?.(signal);
+      await vi.waitFor(() => expect(h.exit).toHaveBeenCalled());
+
+      expect(seen).toEqual(['setup running', `exit ${code}, lock removed`]);
+      expect(h.err).toEqual([]);
+    } finally {
+      // The process has ended by now; here the command goes on, and its own end removes its lock.
+      finish();
+      await done;
+    }
+    expect(h.exit).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([[['setup']], [['open', 'fills']], [['run', '3', 'fills']], [['demo', 'fills']], [['reset']]])(
+    '%j listens for SIGINT and SIGTERM from when it holds its lock until it has removed it',
+    async (argv) => {
+      const h = harness();
+      const seen: string[] = [];
+      const lockState = (): string => (existsSync(lockPath()) ? 'lock held' : 'no lock');
+      h.onStop.mockImplementation(() => {
+        seen.push(`listening, ${lockState()}`);
+        return () => seen.push(`not listening, ${lockState()}`);
+      });
+
+      expect(await runCli(argv, h.cli)).toBe(0);
+
+      expect(seen).toEqual(['listening, lock held', 'not listening, no lock']);
+      expect(h.exit).not.toHaveBeenCalled();
+    },
+  );
+
+  it('stops listening for stop signals once it has removed its lock, when the command fails', async () => {
+    const h = harness();
+    h.modules.runSetup.mockRejectedValue(new Error('stopped'));
+
+    expect(await runCli(['setup'], h.cli)).toBe(1);
+
+    expect(h.onStop).toHaveBeenCalledTimes(1);
+    expect(h.stopListening).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([[['check', '3', 'fills']], [['env', 'mcp']], [['help']], [['keys', 'from-seed']]])(
+    '%j takes no lock, and listens for no stop signal',
+    async (argv) => {
+      const h = harness({ ...ENV, QUORUM_SEED_PHRASE: PHRASE });
+
+      expect(await runCli(argv, h.cli)).toBe(0);
+
+      expect(h.onStop).not.toHaveBeenCalled();
+    },
+  );
+
+  it('listens for no stop signal when another swarm holds the lock', async () => {
+    const h = harness();
+    await mkdir(lockDir, { recursive: true });
+    await writeFile(lockPath(), '4242\n');
+    try {
+      expect(await runCli(['setup'], h.cli)).toBe(1);
+
+      expect(h.onStop).not.toHaveBeenCalled();
+    } finally {
+      await rm(lockPath(), { force: true });
+    }
+  });
+
   it.each([[['check', '3', 'fills']], [['env', 'mcp']], [['help']]])('%j takes no lock, and runs while another swarm holds one', async (argv) => {
     const h = harness();
     const seen = watchLock(h.modules);
@@ -997,4 +1095,51 @@ describe('main, as a process', () => {
     expect(code).toBe(0);
     expect(stdout).toBe(`${PARENT_KEY}\n`);
   });
+
+  // Windows has no SIGTERM a process can catch: killing it there ends it at once.
+  it.skipIf(process.platform === 'win32')(
+    'removes its lock when SIGTERM stops it, then exits with 143',
+    async () => {
+      // An RPC that takes the connection and never answers, so that setup waits on its chain check.
+      const sockets = new Set<Socket>();
+      const rpc = createServer((socket) => void sockets.add(socket));
+      await new Promise<void>((resolve) => rpc.listen(0, '127.0.0.1', resolve));
+      const { port } = rpc.address() as AddressInfo;
+      const dir = await mkdtemp(join(tmpdir(), 'quorum-swarm-signal-'));
+      const lock = join(dir, `swarm-testnet-${PARENT}.lock`);
+      const child = spawn(process.execPath, [MAIN, 'setup'], {
+        env: {
+          ...process.env,
+          QUORUM_NETWORK: 'near:testnet',
+          QUORUM_PARENT_ACCOUNT: PARENT,
+          QUORUM_RPC_URL: `http://127.0.0.1:${port}`,
+          QUORUM_SWARM_LOCK_DIR: dir,
+        },
+        stdio: ['ignore', 'ignore', 'pipe'],
+      });
+      let stderr = '';
+      child.stderr?.on('data', (chunk: Buffer) => (stderr += chunk.toString()));
+      const exited = new Promise<[number | null, NodeJS.Signals | null]>((resolve) => child.on('exit', (code, signal) => resolve([code, signal])));
+      try {
+        // The chain check's request comes once the lock is held and the stop signals are listened for.
+        await vi.waitFor(() => expect({ connected: sockets.size > 0, stderr }).toEqual({ connected: true, stderr: '' }), {
+          timeout: 20_000,
+          interval: 50,
+        });
+        expect(existsSync(lock)).toBe(true);
+
+        child.kill('SIGTERM');
+
+        expect(await exited).toEqual([143, null]);
+        expect(existsSync(lock)).toBe(false);
+        expect(stderr).toBe('');
+      } finally {
+        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+        for (const socket of sockets) socket.destroy();
+        await new Promise((resolve) => rpc.close(resolve));
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+    30_000,
+  );
 });

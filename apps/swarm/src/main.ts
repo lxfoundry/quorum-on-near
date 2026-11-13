@@ -1,6 +1,6 @@
 // The swarm's command line: `node src/main.ts <command>` (see USAGE). It reads QUORUM_* variables
 // from the environment and from apps/swarm/.env, wherever it is started from.
-import { userInfo } from 'node:os';
+import { constants, userInfo } from 'node:os';
 import { isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -195,6 +195,11 @@ export interface SwarmModules {
   keysFromSeed: typeof keysFromSeed;
 }
 
+/** The signals that ask a swarm to stop: Ctrl-C, and the stop a supervisor such as the gateway sends. */
+export type StopSignal = 'SIGINT' | 'SIGTERM';
+
+const STOP_SIGNALS: readonly StopSignal[] = ['SIGINT', 'SIGTERM'];
+
 /** What runCli works with: the process's environment and output, and what the commands run on. */
 export interface Cli {
   /** The variables the configuration is read from. */
@@ -214,6 +219,13 @@ export interface Cli {
   platform: NodeJS.Platform;
   /** The name of the user the process runs as, read only for aclNotice on Windows. */
   userName: () => string;
+  /**
+   * Until the function it returns is called, calls `stop` when the process receives SIGINT or
+   * SIGTERM, in place of their default, which ends the process at once.
+   */
+  onStop: (stop: (signal: StopSignal) => void) => () => void;
+  /** Ends the process with `code`. */
+  exit: (code: number) => void;
 }
 
 /**
@@ -231,7 +243,10 @@ const LOCKED: ReadonlySet<SwarmCommand['name']> = new Set(['setup', 'open', 'run
  * (lockFilePath in QUORUM_SWARM_LOCK_DIR), and remove it when they end, whatever the outcome; while
  * another process holds it, they run nothing and exit with 1, saying that another swarm is running.
  * A lock that cannot be removed is reported on stderr, and does not change the command's result or
- * error. `demo` holds its one lock across its steps. `check`, `env`, `keys` and `help` take none.
+ * error. SIGINT or SIGTERM while a command holds its lock removes the lock, then ends the process
+ * with 128 plus the signal's number (130, 143), as a shell reports a process a signal ended; a second
+ * signal of the same kind ends it at once. `demo` holds its one lock across its steps. `check`,
+ * `env`, `keys` and `help` take none.
  * Every command but `env`, `keys` and `help` checks the RPC's chain before it runs; `keys from-seed`
  * checks it itself, after the configuration's accounts, and `--parent-key` reads no chain and no
  * swarm configuration, only the phrase. An error is printed as
@@ -287,10 +302,18 @@ async function execute(command: SwarmCommand, cli: Cli): Promise<boolean> {
 
   if (!LOCKED.has(command.name)) return executeOnChain(command, cli, config);
   const lock = await takeLock(lockFilePath(config.lockDir, config.network, config.parent));
+  // One removal, which a stop signal and the command's own end both wait for: a signal that comes
+  // while the command's end is removing the lock ends the process only once the file is gone.
+  let released: Promise<void> | undefined;
+  const release = (): Promise<void> => (released ??= releaseLock(lock, cli));
+  const stopListening = cli.onStop((signal) => {
+    void release().then(() => cli.exit(128 + constants.signals[signal]));
+  });
   try {
     return await executeOnChain(command, cli, config);
   } finally {
-    await releaseLock(lock, cli);
+    await release();
+    stopListening();
   }
 }
 
@@ -400,6 +423,18 @@ function connectRpc(config: SwarmConfig): Connections {
 }
 
 /**
+ * Cli's onStop for this process: each stop signal calls `stop` once, and a second one of the same
+ * kind gets Node's default, which ends the process at once.
+ */
+function onStopSignal(stop: (signal: StopSignal) => void): () => void {
+  const listeners = STOP_SIGNALS.map((signal) => [signal, () => stop(signal)] as const);
+  for (const [signal, listener] of listeners) process.once(signal, listener);
+  return () => {
+    for (const [signal, listener] of listeners) process.off(signal, listener);
+  };
+}
+
+/**
  * Loads apps/swarm/.env into the environment when the file exists. process.loadEnvFile keeps every
  * variable that is already set, so the environment wins over the file. False, with the problem on
  * stderr, when the file exists but cannot be read.
@@ -428,6 +463,8 @@ if (import.meta.main) {
         modules: { runSetup, snapshot, openPool, runSwarm, checkPool, runReset, writeGatewayEnv, writeMcpEnv, keysFromSeed },
         platform: process.platform,
         userName: () => userInfo().username,
+        onStop: onStopSignal,
+        exit: (code) => process.exit(code),
       })
     : 1;
 }

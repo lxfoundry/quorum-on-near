@@ -47,6 +47,9 @@ kill_timeout = 300
   QUORUM_DEMO_COMMAND = '["node","/app/apps/swarm/src/main.ts","demo"]'
   QUORUM_DEMO_MAX_RUNS_PER_DAY = "100"
   QUORUM_DEMO_MAX_RUN_SECONDS = "1800"
+  # A run's lock file, under /run/quorum, which start.sh empties at each boot: a run stopped by
+  # SIGTERM removes its lock itself, and the lock of one stopped by SIGKILL goes at the next boot.
+  QUORUM_SWARM_LOCK_DIR = "/run/quorum/locks"
 
 [[mounts]]
   source = "quorum_data"
