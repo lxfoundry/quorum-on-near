@@ -450,10 +450,10 @@ function announce(text) {
 }
 
 /**
- * Runs one poll, and reads the demo's state when the demo is on, unless the previous one is still
- * running; reports how the poll went, and renders the demo controls. A poll whose pool the viewer
- * left while it read reports nothing, whether it succeeded or failed: it says nothing of the pool now
- * chosen, and `failing` stays as it was.
+ * Runs one poll, and reads the demo's state when the demo is on, unless the previous refresh is still
+ * running. Once both have finished, even if the poll failed, reports how the poll went and renders the
+ * demo controls. A poll whose pool the viewer left while it read reports nothing, whether it succeeded
+ * or failed: it says nothing of the pool now chosen, and `failing` stays as it was.
  */
 async function tick() {
   if (polling) return;
@@ -461,7 +461,10 @@ async function tick() {
   const search = location.search;
   try {
     const { config } = (setup ??= await loadSetup());
-    const [rendered] = await Promise.all([poll(), refreshDemo(config)]);
+    // refreshDemo never rejects. A poll that fails still waits for it, so that the demo controls are
+    // rendered from this read, and the next refresh sends no GET /demo while this one is on its way.
+    const demoRead = refreshDemo(config);
+    const rendered = await poll().finally(() => demoRead);
     if (rendered) {
       showStatus(`Updated at ${new Date().toLocaleTimeString()}`, false);
       if (failing) announce('The page is up to date again.');

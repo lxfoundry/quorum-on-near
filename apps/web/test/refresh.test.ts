@@ -958,6 +958,65 @@ describe('the demo controls', () => {
     },
   );
 
+  describe('at a refresh whose RPC reads fail at once while its GET /demo is slow', () => {
+    /**
+     * Opens the page on a demo world, then has the RPC fail every read and holds every GET /demo
+     * until `open` is called: answered as the gateway stood when it was sent, a run having started
+     * since the page opened.
+     */
+    async function slowDemoRead() {
+      const world = demoWorld();
+      const base = worldFetch(world);
+      const slow = { on: false };
+      let open = (): void => {};
+      const gate = new Promise<void>((resolve) => {
+        open = resolve;
+      });
+      const page = await openPage(async (url, init) => {
+        if (!slow.on) return base(url, init);
+        if (url === '/rpc') throw new Error('overloaded');
+        const answer = base(url, init);
+        if (url === '/demo') await gate;
+        return answer;
+      });
+      world.demoStatus = { status: 200, body: { ...DEMO_IDLE, running: true, scenario: 'fails', startedAt: NOW - 30_000, runsToday: 1 } };
+      slow.on = true;
+      return { world, page, open: () => open() };
+    }
+    const demoReads = (world: World) => world.sent.filter((sent) => sent.url === '/demo');
+    const FAILED = 'Could not refresh (overloaded). Retrying every 2 seconds.';
+
+    it('show what that GET /demo says once it answers, and the failure', async () => {
+      const { page, open } = await slowDemoRead();
+      expect(el('demo-line').textContent).toBe('Start a run to watch a pool from its first seat.');
+      const refreshed = page.refresh();
+      await settled();
+      open();
+      await refreshed;
+      await settled();
+      expect(el('demo-line').textContent).toBe(`A fails run started at ${new Date(NOW - 30_000).toLocaleTimeString()} is in progress.`);
+      expect(button('demo-fills').disabled).toBe(true);
+      expect(button('demo-fails').disabled).toBe(true);
+      expect(el('status').textContent).toBe(FAILED);
+      expect(el('announcement').textContent).toBe(FAILED);
+    });
+
+    it('send no other GET /demo until it answers', async () => {
+      const { world, page, open } = await slowDemoRead();
+      const refreshed = page.refresh();
+      await settled();
+      expect(demoReads(world)).toHaveLength(2);
+      // The 2-second timer fires again while that GET /demo is out.
+      await page.refresh();
+      await settled();
+      expect(demoReads(world)).toHaveLength(2);
+      open();
+      await refreshed;
+      await page.refresh();
+      expect(demoReads(world)).toHaveLength(3);
+    });
+  });
+
   it("show the click's answer on the demo line for 10 seconds from when it arrived, then what GET /demo says", async () => {
     const world = demoWorld();
     const base = worldFetch(world);
