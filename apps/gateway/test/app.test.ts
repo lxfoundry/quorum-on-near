@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   PAYMENT_HEADER,
   PAYMENT_RESPONSE_HEADER,
@@ -16,8 +17,9 @@ import {
 import { KeyPair } from 'near-api-js';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { ActivityRecord } from '../src/activity.ts';
-import { createApp } from '../src/app.ts';
+import { createApp, type AppOptions } from '../src/app.ts';
 import type { GatewayConfig } from '../src/config.ts';
+import { DemoRunner } from '../src/demo.ts';
 import type { Deps } from '../src/deps.ts';
 import { offerContext } from '../src/handle-offer.ts';
 import { NOW_MS, POOLS, PROVIDER, TERMS, TOKEN, commitOutcome, poolView, testConfig, type FakeChain } from './fake-chain.ts';
@@ -41,7 +43,7 @@ const BUYER_CONFIG: ExpectedOffer = {
 };
 
 /** Deps over a FakeChain holding pool 7, and the app over them. */
-async function setup(config: Partial<GatewayConfig> = {}, options: { fetch?: typeof fetch } = {}) {
+async function setup(config: Partial<GatewayConfig> = {}, options: AppOptions = {}) {
   const deps = await testDeps({ config: testConfig(config) });
   deps.fake.setPool(poolView({ id: POOL_ID }));
   return { deps, fake: deps.fake, app: createApp(deps, options) };
@@ -169,6 +171,53 @@ const INDEX_HTML = '<!doctype html><title>Quorum</title>\n';
 const APP_JS = 'export const ready = true;\n';
 const TOTALS_JS = 'export const total = 0;\n';
 const STYLE_CSS = 'body { margin: 0; }\n';
+
+/** The stand-in for the swarm's demo command (its modes are listed in the file). */
+const DEMO_PROGRAM = fileURLToPath(new URL('./fixtures/demo-program.mjs', import.meta.url));
+/** The header a demo POST must carry. */
+const DEMO_HEADERS = { 'X-Quorum-Demo': '1' };
+/** How long a test waits for the program: starting Node takes a few hundred milliseconds. */
+const DEMO_WAIT = { timeout: 5_000, interval: 10 };
+
+/**
+ * The app with the demo on, over `config`. Its runner starts the stand-in program in `mode`, at most
+ * `maxRunsPerDay` times a day and 1800 seconds a run, over a clock the test moves, gives a run
+ * `config.demoRpcUrl` as main.ts does, and collects its lines in `output`. Pool 7 is settled, so none
+ * of the provider's pools is Open. Once the test has finished, no run is left in progress.
+ */
+async function demoApp(mode: string[] = ['exit', '0'], maxRunsPerDay = 100, config: Partial<GatewayConfig> = {}) {
+  const clock = { now: NOW_MS };
+  const output: string[] = [];
+  const demo = new DemoRunner({
+    command: [process.execPath, DEMO_PROGRAM, ...mode],
+    maxRunsPerDay,
+    maxRunSeconds: 1800,
+    rpcUrl: config.demoRpcUrl,
+    now: () => clock.now,
+    output: { stdout: (line) => output.push(line), stderr: (line) => output.push(line) },
+  });
+  onTestFinished(async () => {
+    demo.stop();
+    await idle(demo);
+  });
+  const { deps, fake, app } = await setup(config, { demo });
+  fake.setPool(poolView({ id: POOL_ID, status: 'settled', taken: 192 }));
+  return { deps, fake, app, demo, clock, output };
+}
+
+/** Waits until `demo` has no run in progress. */
+async function idle(demo: DemoRunner): Promise<void> {
+  await vi.waitFor(() => expect(demo.status().running).toBe(false), DEMO_WAIT);
+}
+
+/** A demo POST for `scenario`, with the demo header unless `headers` says otherwise. */
+function postDemo(
+  app: Awaited<ReturnType<typeof setup>>['app'],
+  scenario: string,
+  headers: Record<string, string> = DEMO_HEADERS,
+): Response | Promise<Response> {
+  return app.request(`/demo/${scenario}`, { method: 'POST', headers });
+}
 
 describe('createApp', () => {
   afterEach(() => {
@@ -309,6 +358,7 @@ describe('createApp', () => {
       token: TOKEN,
       provider: PROVIDER,
       explorerTxUrl: 'https://testnet.nearblocks.io/txns/',
+      demo: false,
     };
 
     it('points the page at the configured RPC when the pass-through is off', async () => {
@@ -322,6 +372,30 @@ describe('createApp', () => {
     it('points the page at /rpc when the pass-through is on', async () => {
       const { app } = await setup({ rpcPassthrough: true });
       expect(await answer(app.request('/config.json'))).toEqual({ status: 200, body: { ...expected, rpcUrl: '/rpc' } });
+    });
+
+    it('says the demo is on when the app has a demo runner', async () => {
+      const { app } = await demoApp();
+      expect(await answer(app.request('/config.json'))).toMatchObject({ status: 200, body: { demo: true } });
+    });
+
+    it("does not give out the demo run's own RPC URL, and neither does GET /demo", async () => {
+      const { app } = await demoApp(['exit', '0'], 100, {
+        demoRpcUrl: 'https://rpc.demo.example/v1/fake-key-0123456789abcdef/',
+      });
+      const config = await (await app.request('/config.json')).text();
+      const status = await (await app.request('/demo')).text();
+      expect(JSON.parse(config)).toEqual({ ...expected, rpcUrl: 'http://rpc.invalid', demo: true });
+      expect(JSON.parse(status)).toEqual({
+        running: false,
+        scenario: null,
+        startedAt: null,
+        last: null,
+        runsToday: 0,
+        maxRunsPerDay: 100,
+      });
+      expect(config).not.toContain('fake-key');
+      expect(status).not.toContain('fake-key');
     });
   });
 
@@ -548,6 +622,189 @@ describe('createApp', () => {
       const call = viewCall({}, { args_base64: 'A'.repeat(1028) });
       expect(await answer(postRpc(app, call))).toEqual({ status: 403, body: { error: 'not_allowed' } });
       expect(fetch).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('the demo', { timeout: 20_000 }, () => {
+    it.each([
+      ['POST /demo/fills', 'POST', '/demo/fills', DEMO_HEADERS],
+      ['POST /demo/fails', 'POST', '/demo/fails', DEMO_HEADERS],
+      ['GET /demo', 'GET', '/demo', {}],
+      ['POST /demo/fills without the header', 'POST', '/demo/fills', {}],
+    ] as const)('answers %s with 404 not_found when the demo is off', async (_label, method, path, headers) => {
+      const { app } = await setup();
+      expect(await answer(app.request(path, { method, headers }))).toEqual({ status: 404, body: { error: 'not_found' } });
+    });
+
+    it.each([
+      ['no header', {}],
+      ['another value', { 'X-Quorum-Demo': 'true' }],
+    ] as const)('answers 403 demo_header_required to a POST with %s, and reads and starts nothing', async (_label, headers) => {
+      const { app, fake } = await demoApp();
+      expect(await answer(postDemo(app, 'fills', headers))).toEqual({
+        status: 403,
+        body: { error: 'demo_header_required' },
+      });
+      expect(fake.reads.has('list_pools')).toBe(false);
+      expect(await answer(app.request('/demo'))).toMatchObject({ status: 200, body: { running: false, runsToday: 0 } });
+    });
+
+    it('starts a run of the scenario asked for, and answers 202 with its scenario and start', async () => {
+      const { app, demo, output } = await demoApp(['describe']);
+      expect(await answer(postDemo(app, 'fails'))).toEqual({ status: 202, body: { scenario: 'fails', startedAt: NOW_MS } });
+      await idle(demo);
+      const description = output.find((line) => line.startsWith('[demo] {')) ?? '[demo] null';
+      expect(JSON.parse(description.slice('[demo] '.length))).toMatchObject({ argv: ['describe', 'fails'] });
+      expect(await answer(app.request('/demo'))).toMatchObject({
+        status: 200,
+        body: { running: false, runsToday: 1, last: { scenario: 'fails', exitCode: 0, signal: null } },
+      });
+    });
+
+    it('answers 409 demo_running with the running scenario and start while a run is in progress', async () => {
+      const { app, clock } = await demoApp(['hang']);
+      expect(await answer(postDemo(app, 'fills'))).toEqual({ status: 202, body: { scenario: 'fills', startedAt: NOW_MS } });
+      clock.now = NOW_MS + 30_000;
+      expect(await answer(postDemo(app, 'fails'))).toEqual({
+        status: 409,
+        body: { error: 'demo_running', scenario: 'fills', startedAt: NOW_MS },
+      });
+    });
+
+    it('answers 409 demo_running to a second request sent in the same tick as the first', async () => {
+      const { app, fake } = await demoApp(['hang']);
+      // The first request takes the slot before it reads the pools, so the second, sent before that
+      // read has answered, finds the slot taken.
+      const first = postDemo(app, 'fills');
+      const second = postDemo(app, 'fails');
+      expect(await answer(second)).toEqual({
+        status: 409,
+        body: { error: 'demo_running', scenario: 'fills', startedAt: NOW_MS },
+      });
+      expect(await answer(first)).toEqual({ status: 202, body: { scenario: 'fills', startedAt: NOW_MS } });
+      expect(fake.reads.get('list_pools')).toBe(1);
+    });
+
+    it("answers 409 pool_open with the provider's newest Open pool, and neither starts nor counts a run", async () => {
+      const { app, fake } = await demoApp();
+      fake.setPool(poolView({ id: POOL_ID }));
+      fake.setPool(poolView({ id: 8, seller: 'other-seller.testnet' }));
+      fake.setPool(poolView({ id: 9 }));
+      expect(await answer(postDemo(app, 'fills'))).toEqual({ status: 409, body: { error: 'pool_open', poolId: 9 } });
+      expect(await answer(app.request('/demo'))).toEqual({
+        status: 200,
+        body: { running: false, scenario: null, startedAt: null, last: null, runsToday: 0, maxRunsPerDay: 100 },
+      });
+      // The slot was released. Once the provider's pools have ended, a run starts, although another
+      // seller's pool is still Open.
+      fake.setPool(poolView({ id: POOL_ID, status: 'settled', taken: 192 }));
+      fake.setPool(poolView({ id: 9, status: 'refunded' }));
+      expect(await answer(postDemo(app, 'fills'))).toEqual({ status: 202, body: { scenario: 'fills', startedAt: NOW_MS } });
+    });
+
+    it('answers 503 chain_unavailable when the pools cannot be read, and neither starts nor counts a run', async () => {
+      const { app, fake } = await demoApp();
+      const failure = new Error('RPC down');
+      const listPools = vi.spyOn(fake, 'listPools').mockRejectedValue(failure);
+      const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+      expect(await answer(postDemo(app, 'fills'))).toEqual({ status: 503, body: { error: 'chain_unavailable' } });
+      expect(logged).toHaveBeenCalledExactlyOnceWith(expect.any(String), failure);
+      expect(await answer(app.request('/demo'))).toMatchObject({
+        status: 200,
+        body: { running: false, last: null, runsToday: 0 },
+      });
+      // The slot was released.
+      listPools.mockRestore();
+      expect(await answer(postDemo(app, 'fills'))).toEqual({ status: 202, body: { scenario: 'fills', startedAt: NOW_MS } });
+    });
+
+    it("answers 429 demo_limit once today's cap is reached, and starts runs again after midnight UTC", async () => {
+      const { app, demo, clock } = await demoApp(['exit', '0'], 1);
+      expect(await answer(postDemo(app, 'fills'))).toEqual({ status: 202, body: { scenario: 'fills', startedAt: NOW_MS } });
+      await idle(demo);
+      expect(await answer(postDemo(app, 'fails'))).toEqual({ status: 429, body: { error: 'demo_limit' } });
+      expect(await answer(app.request('/demo'))).toMatchObject({ body: { runsToday: 1, maxRunsPerDay: 1 } });
+      // NOW_MS is 2027-01-15T07:43:20Z; this is the next midnight UTC.
+      const midnight = Date.UTC(2027, 0, 16);
+      clock.now = midnight;
+      expect(await answer(app.request('/demo'))).toMatchObject({ body: { runsToday: 0, maxRunsPerDay: 1 } });
+      expect(await answer(postDemo(app, 'fails'))).toEqual({ status: 202, body: { scenario: 'fails', startedAt: midnight } });
+    });
+
+    it('answers in the order: header, run in progress, cap, then the pools, which only the last of these reads', async () => {
+      const { app, fake, demo } = await demoApp(['hang'], 1);
+      expect(await answer(postDemo(app, 'fills'))).toEqual({ status: 202, body: { scenario: 'fills', startedAt: NOW_MS } });
+      // From here on, a run is in progress, today's cap is reached, and one of the provider's pools is Open.
+      fake.setPool(poolView({ id: POOL_ID }));
+      expect(await answer(postDemo(app, 'fails', {}))).toEqual({ status: 403, body: { error: 'demo_header_required' } });
+      expect(await answer(postDemo(app, 'fails'))).toEqual({
+        status: 409,
+        body: { error: 'demo_running', scenario: 'fills', startedAt: NOW_MS },
+      });
+      demo.stop();
+      await idle(demo);
+      // Today's cap is reached, and a pool is Open.
+      expect(await answer(postDemo(app, 'fails'))).toEqual({ status: 429, body: { error: 'demo_limit' } });
+      // Only the request that started the run read the pools.
+      expect(fake.reads.get('list_pools')).toBe(1);
+    });
+
+    it('answers GET /demo before, during and after a run', async () => {
+      const { app, demo, clock } = await demoApp(['hang']);
+      expect(await answer(app.request('/demo'))).toEqual({
+        status: 200,
+        body: { running: false, scenario: null, startedAt: null, last: null, runsToday: 0, maxRunsPerDay: 100 },
+      });
+      expect((await postDemo(app, 'fills')).status).toBe(202);
+      expect(await answer(app.request('/demo'))).toEqual({
+        status: 200,
+        body: { running: true, scenario: 'fills', startedAt: NOW_MS, last: null, runsToday: 1, maxRunsPerDay: 100 },
+      });
+      clock.now = NOW_MS + 90_000;
+      demo.stop();
+      await idle(demo);
+      expect(await answer(app.request('/demo'))).toEqual({
+        status: 200,
+        body: {
+          running: false,
+          scenario: null,
+          startedAt: null,
+          last: { scenario: 'fills', startedAt: NOW_MS, endedAt: NOW_MS + 90_000, exitCode: null, signal: 'SIGTERM' },
+          runsToday: 1,
+          maxRunsPerDay: 100,
+        },
+      });
+    });
+
+    it('answers GET /demo with the exit code of a run that exited', async () => {
+      const { app, demo } = await demoApp(['exit', '3']);
+      expect((await postDemo(app, 'fails')).status).toBe(202);
+      await idle(demo);
+      expect(await answer(app.request('/demo'))).toMatchObject({
+        status: 200,
+        body: {
+          running: false,
+          last: { scenario: 'fails', startedAt: NOW_MS, endedAt: NOW_MS, exitCode: 3, signal: null },
+        },
+      });
+    });
+
+    it('sends no CORS header and answers no preflight', async () => {
+      const { app } = await demoApp(['hang']);
+      const preflight = await app.request('/demo/fills', {
+        method: 'OPTIONS',
+        headers: {
+          Origin: 'https://elsewhere.example',
+          'Access-Control-Request-Method': 'POST',
+          'Access-Control-Request-Headers': 'x-quorum-demo',
+        },
+      });
+      const started = await postDemo(app, 'fills');
+      const status = await app.request('/demo');
+      expect([preflight.status, started.status, status.status]).toEqual([404, 202, 200]);
+      for (const res of [preflight, started, status]) {
+        expect([...res.headers.keys()].filter((name) => name.startsWith('access-control-'))).toEqual([]);
+      }
     });
   });
 
