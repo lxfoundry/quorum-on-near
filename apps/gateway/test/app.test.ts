@@ -533,26 +533,95 @@ describe('createApp', () => {
     });
   });
 
-  describe('static files whose names start with a dot', () => {
-    const FILES = {
+  describe("only the live page's own files", () => {
+    /**
+     * The page's four files, and a file behind every other path that the tests using this folder ask
+     * for, so that each 404 comes from the page's list of paths and never from a missing file.
+     */
+    const PAGE = {
       'index.html': INDEX_HTML,
+      'app.js': APP_JS,
+      'totals.js': TOTALS_JS,
+      'style.css': STYLE_CSS,
+      'index.htm': INDEX_HTML,
+      // Files of their own on a case-sensitive file system; on one that ignores case, app.js itself.
+      'App.js': APP_JS,
+      'APP.JS': APP_JS,
+      'node_modules/.bin/vitest': '#!/bin/sh\n',
+      'sub/page.js': APP_JS,
       '.env': 'QUORUM_PARENT_ACCOUNT=parent.testnet\n',
       '.git/config': '[core]\n',
       'sub/.hidden': 'hidden\n',
-      'sub/page.js': APP_JS,
       '.well-known/other.json': '{}',
     };
 
-    it.each(['/.env', '/%2Eenv', '/.git/config', '/sub/.hidden', '/.well-known/other.json'])(
-      'answers 404 not_found for %s, which the folder holds',
+    it.each([
+      // Matched after percent-decoding: %61 is "a" and %69 is "i".
+      ['/%61pp.js', 'app.js', 'text/javascript; charset=utf-8'],
+      ['/%69ndex.html', 'index.html', 'text/html; charset=utf-8'],
+      ['/app.js?x=1', 'app.js', 'text/javascript; charset=utf-8'],
+    ] as const)('serves %s from %s', async (path, file, type) => {
+      const { app } = await setup({ webDir: await webFolder(PAGE) });
+      const res = await app.request(path);
+      expect({ status: res.status, type: res.headers.get('Content-Type'), text: await res.text() }).toEqual({
+        status: 200,
+        type,
+        text: PAGE[file],
+      });
+    });
+
+    it.each([
+      '/node_modules/.bin/vitest',
+      '/sub/page.js',
+      '/.env',
+      // Percent-decoded, these two are /.env.
+      '/%2Eenv',
+      '/%2eenv',
+      '/.git/config',
+      '/sub/.hidden',
+      '/.well-known/other.json',
+    ])('answers 404 not_found for %s, which the folder holds but the page is not', async (path) => {
+      const { app } = await setup({ webDir: await webFolder(PAGE) });
+      expect(await answer(app.request(path))).toEqual({ status: 404, body: { error: 'not_found' } });
+    });
+
+    // Each names a file of the folder under a looser match: another case, a trailing or doubled slash,
+    // a NUL byte (%00, decoded) or a shorter name.
+    it.each(['/App.js', '/APP.JS', '/index.html/', '/app.js/', '//app.js', '/app.js%00', '/index.htm'])(
+      'answers 404 not_found for %s, which is not one of the paths of the page',
       async (path) => {
-        const { app } = await setup({ webDir: await webFolder(FILES) });
+        const { app } = await setup({ webDir: await webFolder(PAGE) });
         expect(await answer(app.request(path))).toEqual({ status: 404, body: { error: 'not_found' } });
       },
     );
 
+    it.each([
+      // The URL parser removes dot segments, encoded ones too, before the gateway sees the path:
+      // these two arrive as /package.json.
+      '/../package.json',
+      '/%2E%2E/package.json',
+      // An encoded slash stays encoded, so these two keep their dots.
+      '/..%2Fpackage.json',
+      '/%2e%2e%2fpackage.json',
+    ])('answers 404 not_found for %s, which climbs out of the folder', async (path) => {
+      // The page folder is web/, with a package.json in it and another beside it, where a path that
+      // climbs out of web/ would land.
+      const root = await webFolder({
+        'web/index.html': INDEX_HTML,
+        'web/package.json': '{"name":"@quorum-on-near/web"}\n',
+        'package.json': '{"name":"workspace"}\n',
+      });
+      const { app } = await setup({ webDir: join(root, 'web') });
+      expect(await answer(app.request(path))).toEqual({ status: 404, body: { error: 'not_found' } });
+    });
+
+    it('answers 404 not_found for a path of the page whose file the folder lacks', async () => {
+      const { app } = await setup({ webDir: await webFolder({ 'index.html': INDEX_HTML }) });
+      expect(await answer(app.request('/totals.js'))).toEqual({ status: 404, body: { error: 'not_found' } });
+    });
+
     it('still answers /.well-known/jwks.json', async () => {
-      const { deps, app } = await setup({ webDir: await webFolder(FILES) });
+      const { deps, app } = await setup({ webDir: await webFolder(PAGE) });
       expect(await answer(app.request('/.well-known/jwks.json'))).toEqual({ status: 200, body: deps.credentials.jwks() });
     });
   });
