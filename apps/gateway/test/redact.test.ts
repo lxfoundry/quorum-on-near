@@ -148,8 +148,8 @@ describe('redactWrites', () => {
   });
 });
 
-// Each case's budget is above its child's own timeout, so that a slow child is killed and reported with
-// its output, rather than cut off by the test's timeout.
+// The 60-second test timeout is above the child's own 30-second one, so that a slow child is killed and
+// reported with its output, not lost when the test times out.
 describe('redactProcessOutput', { timeout: 60_000 }, () => {
   /** Runs the fixture with QUORUM_RPC_URL set to PATH_URL, ending as `ending` says. */
   function runFixture(ending: string): Promise<{ code: number | null; stdout: string; stderr: string }> {

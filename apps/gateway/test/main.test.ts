@@ -156,9 +156,9 @@ function startGateway(env: Record<string, string | undefined>, dir: string): Sta
  * output, if it does not, or if the gateway ends first.
  */
 async function until(gateway: StartedGateway, what: string, ready: () => Promise<boolean>): Promise<void> {
-  const deadline = Date.now() + 30_000;
+  const giveUpAt = Date.now() + 30_000;
   while (!(await ready())) {
-    if (gateway.ended() || Date.now() > deadline) {
+    if (gateway.ended() || Date.now() > giveUpAt) {
       const { stdout, stderr } = gateway.output;
       throw new Error(`the gateway did not ${what}\nstdout:\n${stdout}\nstderr:\n${stderr}`);
     }
@@ -167,8 +167,8 @@ async function until(gateway: StartedGateway, what: string, ready: () => Promise
 }
 
 // near-api-js retries an HTTP 500, 503 or 408 for about 85 seconds, so the stubs answer none of them.
-// Each case's budget is above its child's own timeout, so that a child that is slow to start is killed
-// and reported with its output, rather than cut off by the test's timeout.
+// The 60-second test timeout is above the child's own 30-second one, so that a child too slow to start
+// is killed and reported with its output, not lost when the test times out.
 describe('main', { timeout: 60_000 }, () => {
   it('names the RPC by its host alone when it answers the chain id with HTTP 502, which near-api-js reports with its URL', async () => {
     const { url, host } = await rpcStub(() => 502);
