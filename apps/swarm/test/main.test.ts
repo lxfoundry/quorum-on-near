@@ -122,7 +122,7 @@ function harness(env: Env = ENV) {
     stops.push(stop);
     return stopListening;
   });
-  const exit = vi.fn<Cli['exit']>();
+  const raise = vi.fn<Cli['raise']>();
   const cli: Cli = {
     env: { QUORUM_SWARM_LOCK_DIR: lockDir, ...env },
     out: (line) => out.push(line),
@@ -134,9 +134,9 @@ function harness(env: Env = ENV) {
     platform: 'linux',
     userName: () => 'ada',
     onStop,
-    exit,
+    raise,
   };
-  return { cli, out, err, order, chain, gateway, buyerChain, pools, runtime, modules, connect, keysChain, seedChain, stops, onStop, stopListening, exit };
+  return { cli, out, err, order, chain, gateway, buyerChain, pools, runtime, modules, connect, keysChain, seedChain, stops, onStop, stopListening, raise };
 }
 
 describe('parseCommand', () => {
@@ -642,40 +642,40 @@ describe('runCli: one swarm at a time', () => {
     expect(existsSync(lockPath())).toBe(false);
   });
 
-  it.each([
-    ['SIGTERM', 143],
-    ['SIGINT', 130],
-  ] as const)('on %s while it holds its lock, removes the lock, then exits with %i', async (signal, code) => {
-    const h = harness();
-    const seen: string[] = [];
-    let finish = (): void => {};
-    h.modules.runSetup.mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          seen.push('setup running');
-          finish = () => resolve({ actions: [] });
-        }),
-    );
-    h.exit.mockImplementation((exitCode) => {
-      seen.push(`exit ${exitCode}, ${existsSync(lockPath()) ? 'lock held' : 'lock removed'}`);
-    });
+  it.each(['SIGTERM', 'SIGINT'] as const)(
+    'on %s while it holds its lock, removes the lock, stops listening, then raises the same signal, which ends the process',
+    async (signal) => {
+      const h = harness();
+      const seen: string[] = [];
+      const lockState = (): string => (existsSync(lockPath()) ? 'lock held' : 'lock removed');
+      let finish = (): void => {};
+      h.modules.runSetup.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            seen.push('setup running');
+            finish = () => resolve({ actions: [] });
+          }),
+      );
+      h.stopListening.mockImplementation(() => void seen.push(`not listening, ${lockState()}`));
+      h.raise.mockImplementation((raised) => void seen.push(`raise ${raised}, ${lockState()}`));
 
-    const done = runCli(['setup'], h.cli);
-    try {
-      await vi.waitFor(() => expect(seen).toEqual(['setup running']));
-      expect(h.stops).toHaveLength(1);
-      h.stops[0]?.(signal);
-      await vi.waitFor(() => expect(h.exit).toHaveBeenCalled());
+      const done = runCli(['setup'], h.cli);
+      try {
+        await vi.waitFor(() => expect(seen).toEqual(['setup running']));
+        expect(h.stops).toHaveLength(1);
+        h.stops[0]?.(signal);
+        await vi.waitFor(() => expect(h.raise).toHaveBeenCalled());
 
-      expect(seen).toEqual(['setup running', `exit ${code}, lock removed`]);
-      expect(h.err).toEqual([]);
-    } finally {
-      // The process has ended by now; here the command goes on, and its own end removes its lock.
-      finish();
-      await done;
-    }
-    expect(h.exit).toHaveBeenCalledTimes(1);
-  });
+        expect(seen).toEqual(['setup running', 'not listening, lock removed', `raise ${signal}, lock removed`]);
+        expect(h.err).toEqual([]);
+      } finally {
+        // The process has ended by now; here the command goes on, and its own end removes its lock.
+        finish();
+        await done;
+      }
+      expect(h.raise).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it.each([[['setup']], [['open', 'fills']], [['run', '3', 'fills']], [['demo', 'fills']], [['reset']]])(
     '%j listens for SIGINT and SIGTERM from when it holds its lock until it has removed it',
@@ -691,7 +691,7 @@ describe('runCli: one swarm at a time', () => {
       expect(await runCli(argv, h.cli)).toBe(0);
 
       expect(seen).toEqual(['listening, lock held', 'not listening, no lock']);
-      expect(h.exit).not.toHaveBeenCalled();
+      expect(h.raise).not.toHaveBeenCalled();
     },
   );
 
@@ -1098,7 +1098,7 @@ describe('main, as a process', () => {
 
   // Windows has no SIGTERM a process can catch: killing it there ends it at once.
   it.skipIf(process.platform === 'win32')(
-    'removes its lock when SIGTERM stops it, then exits with 143',
+    'removes its lock when SIGTERM stops it, then ends by SIGTERM, as its parent sees',
     async () => {
       // An RPC that takes the connection and never answers, so that setup waits on its chain check.
       const sockets = new Set<Socket>();
@@ -1119,7 +1119,10 @@ describe('main, as a process', () => {
       });
       let stderr = '';
       child.stderr?.on('data', (chunk: Buffer) => (stderr += chunk.toString()));
-      const exited = new Promise<[number | null, NodeJS.Signals | null]>((resolve) => child.on('exit', (code, signal) => resolve([code, signal])));
+      // 'close', as a supervisor that reads the child's output and its end waits for.
+      const ended = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) =>
+        child.on('close', (code, signal) => resolve({ code, signal })),
+      );
       try {
         // The chain check's request comes once the lock is held and the stop signals are listened for.
         await vi.waitFor(() => expect({ connected: sockets.size > 0, stderr }).toEqual({ connected: true, stderr: '' }), {
@@ -1130,7 +1133,7 @@ describe('main, as a process', () => {
 
         child.kill('SIGTERM');
 
-        expect(await exited).toEqual([143, null]);
+        expect(await ended).toEqual({ code: null, signal: 'SIGTERM' });
         expect(existsSync(lock)).toBe(false);
         expect(stderr).toBe('');
       } finally {

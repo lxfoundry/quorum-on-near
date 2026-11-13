@@ -1,6 +1,6 @@
 // The swarm's command line: `node src/main.ts <command>` (see USAGE). It reads QUORUM_* variables
 // from the environment and from apps/swarm/.env, wherever it is started from.
-import { constants, userInfo } from 'node:os';
+import { userInfo } from 'node:os';
 import { isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -224,8 +224,11 @@ export interface Cli {
    * SIGTERM, in place of their default, which ends the process at once.
    */
   onStop: (stop: (signal: StopSignal) => void) => () => void;
-  /** Ends the process with `code`. */
-  exit: (code: number) => void;
+  /**
+   * Sends `signal` to this process. Once onStop's listeners are removed, the signal's default ends
+   * the process, so that its parent sees which signal ended it.
+   */
+  raise: (signal: StopSignal) => void;
 }
 
 /**
@@ -243,9 +246,10 @@ const LOCKED: ReadonlySet<SwarmCommand['name']> = new Set(['setup', 'open', 'run
  * (lockFilePath in QUORUM_SWARM_LOCK_DIR), and remove it when they end, whatever the outcome; while
  * another process holds it, they run nothing and exit with 1, saying that another swarm is running.
  * A lock that cannot be removed is reported on stderr, and does not change the command's result or
- * error. SIGINT or SIGTERM while a command holds its lock removes the lock, then ends the process
- * with 128 plus the signal's number (130, 143), as a shell reports a process a signal ended; a second
- * signal of the same kind ends it at once. `demo` holds its one lock across its steps. `check`,
+ * error. SIGINT or SIGTERM while a command holds its lock removes the lock, stops listening for both,
+ * then raises the same signal again, so that the process ends by that signal and its parent sees it
+ * (a shell reports 130 or 143; on Windows, a process that signals itself ends with exit code 1); a
+ * second signal of the same kind ends it at once. `demo` holds its one lock across its steps. `check`,
  * `env`, `keys` and `help` take none.
  * Every command but `env`, `keys` and `help` checks the RPC's chain before it runs; `keys from-seed`
  * checks it itself, after the configuration's accounts, and `--parent-key` reads no chain and no
@@ -306,8 +310,13 @@ async function execute(command: SwarmCommand, cli: Cli): Promise<boolean> {
   // while the command's end is removing the lock ends the process only once the file is gone.
   let released: Promise<void> | undefined;
   const release = (): Promise<void> => (released ??= releaseLock(lock, cli));
+  // Once the lock is gone, the signal is raised again with no listener of the swarm's left, so that
+  // its default ends the process and a supervisor reads the signal, not an exit code.
   const stopListening = cli.onStop((signal) => {
-    void release().then(() => cli.exit(128 + constants.signals[signal]));
+    void release().then(() => {
+      stopListening();
+      cli.raise(signal);
+    });
   });
   try {
     return await executeOnChain(command, cli, config);
@@ -464,7 +473,7 @@ if (import.meta.main) {
         platform: process.platform,
         userName: () => userInfo().username,
         onStop: onStopSignal,
-        exit: (code) => process.exit(code),
+        raise: (signal) => process.kill(process.pid, signal),
       })
     : 1;
 }
