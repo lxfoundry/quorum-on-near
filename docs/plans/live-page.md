@@ -30,13 +30,9 @@ the endpoints of section 6.1 and the activity feed of section 6.7.
 ## Status of the code in this plan
 
 The code and tests of Tasks 1 and 2 were typechecked with `tsc` and run with vitest before this plan
-was written: 136 tests in `apps/web` (127 in `test/totals.test.ts`, 9 in `test/page.test.ts`), with
-the pinned versions above. They ran on Windows with Node 22.18, for which pnpm prints an
-`Unsupported engine` warning against the required 22.22.2. Each task was also checked on its own,
-with only its files and earlier tasks' present: it typechecks and passes with the counts its steps
-state, and `pnpm typecheck` and `pnpm test` pass over the whole workspace (1,068 tests after Task 1
-and 1,077 after Task 2, the protocol package's 340 and the gateway's 601 included). Copy the code as
-written.
+was written, with the pinned versions above. Each task was also checked on its own, with only its
+files and earlier tasks' present: it typechecks and passes with the counts its steps state, and
+`pnpm typecheck` and `pnpm test` pass over the whole workspace. Copy the code as written.
 
 The page was also checked as Task 3 describes before this plan was written, in headless Chrome,
 against the real gateway serving `apps/web` with its RPC pass-through on, over a local NEAR

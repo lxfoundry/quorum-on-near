@@ -27,14 +27,12 @@ Executors read the spec and this plan together. Section numbers below refer to t
 
 ## Status of the code in this plan
 
-The code and tests of Tasks 1 to 14 were typechecked with `tsc` and run with vitest (867 tests:
-331 in the protocol package, 536 in the gateway), with the pinned package versions above, before
-this plan was written; they ran on Node 22.18, for which near-api-js 7.4.0 only prints an engine
-warning. Each task was also checked on its own, with only its files and earlier tasks' present: it
-typechecks and passes with the counts its steps state. Copy them as written. Task 15's sandbox test
-and its captured-outcome test were typechecked but have never run: they need the contracts' wasm
-files and Linux, macOS on Apple silicon or WSL2. Treat them as unverified until their commands have
-passed, and fix names in place if a library call differs (do not change what they assert).
+The code and tests of Tasks 1 to 14 were typechecked with `tsc` and run with vitest, with the
+pinned package versions above, before this plan was written. Each task was also checked on its own,
+with only its files and earlier tasks' present: it typechecks and passes with the counts its steps
+state. Copy them as written. Task 15's sandbox test and its captured-outcome test need the
+contracts' wasm files and Linux, macOS on Apple silicon or WSL2. Fix names in place if a library
+call differs (do not change what they assert).
 
 ## Departures from this plan
 

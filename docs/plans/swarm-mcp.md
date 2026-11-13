@@ -31,26 +31,20 @@ the final check) and 12 (known limits).
 ## Status of the code in this plan
 
 The code and tests of Tasks 1 to 16 were typechecked with `tsc` and run with vitest before this plan
-was written, with the pinned versions above. After Task 16, `pnpm test` passes 2,039 tests on
-Windows: the protocol package's 367, the buyer package's 314, the gateway's 604, the MCP server's 189
-and the swarm's 565. Two more, which check POSIX file modes (one in
-`packages/buyer/test/key-files.test.ts`, one in `apps/swarm/test/env-files.test.ts`), are skipped on
-Windows and run on Linux and macOS. Each task was also checked on its own: its tests fail first, as
-its steps show, and pass after it; `pnpm test` and `pnpm typecheck` pass over the whole workspace
-after it; and its commit, checked out alone in a fresh clone and installed with
-`pnpm install --frozen-lockfile`, passes with the counts its steps state. These runs were on
-Windows 11 with pnpm 10.23.0 and Node 22.18.0, for which pnpm prints an `Unsupported engine` warning
-against the required 22.22.2. The final code's whole unit suite also passed on Linux (WSL2, Ubuntu
-24.04, Node 24.22), with no test skipped. No run used Node 22.22.2: CI's `typescript` job (Ubuntu,
-Node 22.22.2) is the first on that version. Copy the code as written.
+was written, with the pinned versions above. Each task was also checked on its own: its tests fail
+first, as its steps show, and pass after it; `pnpm test` and `pnpm typecheck` pass over the whole
+workspace after it; and its commit, checked out alone in a fresh clone and installed with
+`pnpm install --frozen-lockfile`, passes with the counts its steps state. Two tests, which check
+POSIX file modes (one in `packages/buyer/test/key-files.test.ts`, one in
+`apps/swarm/test/env-files.test.ts`), are skipped on Windows and run on Linux and macOS. Copy the
+code as written.
 
-The sandbox suites of Tasks 15 and 16 ran in WSL2 on Ubuntu 24.04, with Node 24.22 and near-sandbox
-0.3.5 (nearcore 2.14.0). After Task 16 they pass 8 tests in the gateway, 9 in the swarm
-(`sandbox.test.ts` 3, `demo.test.ts` 6) and 9 in the MCP server. The final code also passed a longer
-command-line run against a local sandbox: `swarm demo fails` with a 60-second arrival spread and a
-90-second pool deadline, every check passing, then `swarm run` on the same pool, which resumed every
-buyer and changed no token balance. Task 17's testnet runs are made by hand, with a funded testnet
-account and USDC from Circle's faucet; Task 18 records what they measure.
+The sandbox suites of Tasks 15 and 16 need Linux, macOS on Apple silicon or WSL2 on Ubuntu 24.04 or
+later. The final code also passed a longer command-line run against a local sandbox: `swarm demo
+fails` with a 60-second arrival spread and a 90-second pool deadline, every check passing, then
+`swarm run` on the same pool, which resumed every buyer and changed no token balance. Task 17 runs
+the swarm against NEAR testnet, with a funded account and USDC from Circle's faucet; Task 18 records
+what it measures.
 
 ## Global Constraints
 
