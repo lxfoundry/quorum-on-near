@@ -153,11 +153,12 @@ function startGateway(env: Record<string, string | undefined>, dir: string): Sta
 
 /**
  * Waits until `ready` holds, checking every 50 ms for at most 30 seconds; throws, with the gateway's
- * output, if it does not, or if the gateway ends first.
+ * output, if it does not, or if the gateway ends first. A check that fails, as a request to a gateway
+ * that has ended does, counts as not ready.
  */
 async function until(gateway: StartedGateway, what: string, ready: () => Promise<boolean>): Promise<void> {
   const giveUpAt = Date.now() + 30_000;
-  while (!(await ready())) {
+  while (!(await ready().catch(() => false))) {
     if (gateway.ended() || Date.now() > giveUpAt) {
       const { stdout, stderr } = gateway.output;
       throw new Error(`the gateway did not ${what}\nstdout:\n${stdout}\nstderr:\n${stderr}`);
