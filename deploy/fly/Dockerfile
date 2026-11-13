@@ -11,7 +11,8 @@ RUN corepack enable pnpm
 WORKDIR /app
 
 # The workspace's sources. .dockerignore keeps out .git, target, every node_modules, every .env
-# file, data, local agent state and any file named like a key.
+# file, data, local agent and editor state, logs, build and test output, and any file named like a
+# key or a phrase.
 COPY . .
 
 # Production dependencies only. Workspace packages stay links into the source tree, so Node strips

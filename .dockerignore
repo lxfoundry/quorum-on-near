@@ -30,3 +30,32 @@
 **/*.wallet
 **/wallets
 **/keystore
+
+# The build context is the working tree, untracked files included: an env file or a phrase file
+# under any other name stays out too, such as one that keys from-seed --gateway-env wrote.
+**/*.env
+**/*phrase*
+
+# These mirror the root .gitignore's local agent and editor state. Local settings can quote a
+# command line, and NEAR's Agent Skills carry no licence, so neither is redistributed.
+**/CLAUDE.local.md
+.claude/settings.local.json
+.claude/*.local.*
+.claude/skills/near-*
+**/.vscode
+**/.idea
+**/*.swp
+**/.DS_Store
+**/Thumbs.db
+
+# These mirror the root .gitignore's build, dependency and test output. A log can quote an endpoint.
+**/dist
+**/build
+**/*.tsbuildinfo
+**/__pycache__
+**/*.py[cod]
+**/.venv
+**/*.log
+**/coverage
+**/test-results
+**/.cache
