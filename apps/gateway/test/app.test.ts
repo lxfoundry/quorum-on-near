@@ -167,6 +167,8 @@ async function webFolder(files: Record<string, string>): Promise<string> {
 
 const INDEX_HTML = '<!doctype html><title>Quorum</title>\n';
 const APP_JS = 'export const ready = true;\n';
+const TOTALS_JS = 'export const total = 0;\n';
+const STYLE_CSS = 'body { margin: 0; }\n';
 
 describe('createApp', () => {
   afterEach(() => {
@@ -422,27 +424,38 @@ describe('createApp', () => {
   });
 
   describe('static files', () => {
-    it('serves index.html at /', async () => {
-      const webDir = await webFolder({ 'index.html': INDEX_HTML });
-      const { app } = await setup({ webDir });
-      const res = await app.request('/');
-      expect({ status: res.status, type: res.headers.get('Content-Type'), text: await res.text() }).toEqual({
-        status: 200,
-        type: 'text/html; charset=utf-8',
-        text: INDEX_HTML,
-      });
+    /** The live page's folder as the workspace holds it: the page's four files, and its package's files beside them. */
+    const PAGE_FOLDER = {
+      'index.html': INDEX_HTML,
+      'app.js': APP_JS,
+      'totals.js': TOTALS_JS,
+      'style.css': STYLE_CSS,
+      'package.json': '{"name":"@quorum-on-near/web","private":true}\n',
+      'tsconfig.json': '{"extends":"../../tsconfig.base.json"}\n',
+      'test/totals.test.ts': "import { it } from 'vitest';\n",
+      'node_modules/vitest/package.json': '{"name":"vitest"}\n',
+    };
+
+    it.each([
+      ['/', INDEX_HTML, 'text/html; charset=utf-8'],
+      ['/?pool=3', INDEX_HTML, 'text/html; charset=utf-8'],
+      ['/index.html', INDEX_HTML, 'text/html; charset=utf-8'],
+      ['/app.js', APP_JS, 'text/javascript; charset=utf-8'],
+      ['/totals.js', TOTALS_JS, 'text/javascript; charset=utf-8'],
+      ['/style.css', STYLE_CSS, 'text/css; charset=utf-8'],
+    ])('serves %s', async (path, text, type) => {
+      const { app } = await setup({ webDir: await webFolder(PAGE_FOLDER) });
+      const res = await app.request(path);
+      expect({ status: res.status, type: res.headers.get('Content-Type'), text: await res.text() }).toEqual({ status: 200, type, text });
     });
 
-    it('serves a JavaScript module as JavaScript', async () => {
-      const webDir = await webFolder({ 'index.html': INDEX_HTML, 'app.js': APP_JS });
-      const { app } = await setup({ webDir });
-      const res = await app.request('/app.js');
-      expect({ status: res.status, type: res.headers.get('Content-Type'), text: await res.text() }).toEqual({
-        status: 200,
-        type: 'text/javascript; charset=utf-8',
-        text: APP_JS,
-      });
-    });
+    it.each(['/package.json', '/tsconfig.json', '/test/totals.test.ts', '/node_modules/vitest/package.json'])(
+      'answers 404 not_found for %s, which the folder holds but the page is not',
+      async (path) => {
+        const { app } = await setup({ webDir: await webFolder(PAGE_FOLDER) });
+        expect(await answer(app.request(path))).toEqual({ status: 404, body: { error: 'not_found' } });
+      },
+    );
 
     it('answers 404 not_found for a file the folder does not have', async () => {
       const webDir = await webFolder({ 'index.html': INDEX_HTML });
@@ -450,7 +463,7 @@ describe('createApp', () => {
       expect(await answer(app.request('/missing.js'))).toEqual({ status: 404, body: { error: 'not_found' } });
     });
 
-    it('answers the API before a file with the same path', async () => {
+    it('answers /config.json from the API, never from a config.json in the folder, which is not a page file', async () => {
       const webDir = await webFolder({ 'config.json': '{"rpcUrl":"elsewhere"}' });
       const { app } = await setup({ webDir });
       const { body } = await answer(app.request('/config.json'));
@@ -537,12 +550,6 @@ describe('createApp', () => {
         expect(await answer(app.request(path))).toEqual({ status: 404, body: { error: 'not_found' } });
       },
     );
-
-    it('still serves the other files, in subfolders too', async () => {
-      const { app } = await setup({ webDir: await webFolder(FILES) });
-      const res = await app.request('/sub/page.js');
-      expect({ status: res.status, text: await res.text() }).toEqual({ status: 200, text: APP_JS });
-    });
 
     it('still answers /.well-known/jwks.json', async () => {
       const { deps, app } = await setup({ webDir: await webFolder(FILES) });

@@ -329,13 +329,13 @@ network is written in CAIP-2 form: `near:testnet`.
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /` | The live page (static files from `apps/web`). No file whose path has a segment that starts with a dot, such as `/.env`, is served (`404`) |
+| `GET /` | The live page: only its four files from `apps/web`, `index.html` (at `/` and at `/index.html`), `/app.js`, `/totals.js` and `/style.css`. Any other path under that folder, such as its `package.json`, `tsconfig.json`, tests or `node_modules`, or a file such as `/.env`, is answered `404` (`not_found`) |
 | `GET /pools` | The open pools: `id, terms, seat_price, target, taken, deadline_ms, bonus, min_bonus_per_seat` |
 | `GET /pools/:id/access?seats=N` | With no header: `402` with the offer (`seats` defaults to 1; `N` from 1 to 1000, otherwise `400` with `error` set to `invalid_seats`), `404` (`unknown_pool`) for a pool the gateway does not serve, `409` if the pool is filled or has no seat left, `410` if it has expired, `503` (`chain_unavailable`) if the chain cannot be read. With `X-PAYMENT`: process a payment. With `X-QUORUM-PROOF`: redeem (section 6.5) |
 | `GET /activity?pool=:id` | The activity feed (section 6.7) |
 | `GET /.well-known/jwks.json` | The public key that verifies credentials |
 | `POST /rpc` | Only if the public RPC refuses browser requests: a read-only pass-through that forwards `call_function` view calls on the pools contract and the token, and nothing else. Any other call, or `args_base64` over 1,024 characters, is answered `403` (`not_allowed`); a body over 16 KiB `413` (`body_too_large`); a body that is not JSON `400` (`invalid_json`); and an RPC that cannot be reached `503` (`chain_unavailable`) |
-| `GET /config.json` | What the live page needs: the network, the RPC URL (`/rpc` when the pass-through is on), the pools contract, the token, the provider and the explorer's transaction link prefix |
+| `GET /config.json` | What the live page needs: the network, the RPC URL (`/rpc` when the pass-through is on), the pools contract, the token, the provider and the explorer's transaction link prefix (section 7.6) |
 
 **Which pools the gateway serves.** Anyone can open a pool on the contract, but the gateway serves,
 lists, relays payments for and redeems only the pools whose `seller` is its configured provider
@@ -997,7 +997,8 @@ at once; their problem with a URL never quotes the URL, which may carry an API k
 | Average block time | gateway, swarm, MCP server | Converts `maxTimeoutSeconds` into blocks (section 6.4, check 5) |
 | Keeper settings | gateway | The keeper's interval, the refund batch `limit` (1 to 10), and the gas attached to `settle` and `refund` (section 6.7): at least what the contract requires at entry (section 5.4) plus 17 Tgas for what a call uses before that check, so 50 Tgas for `settle` and 27 + 23 × (`limit` + 1) Tgas for `refund` (280 Tgas at `limit` 10, the figure with which section 5.4 shows a full batch completing), and at most 300 Tgas. The gateway refuses less: a call that attaches only the entry figure always fails at entry |
 | RPC pass-through | gateway | Turns `POST /rpc` on (section 6.1) |
-| Live page folder | gateway | The folder served at `/` (section 8). The gateway refuses to start if it is, or contains, the gateway's own folder |
+| Explorer link prefix | gateway, live page | What a transaction hash is appended to, for a link to a testnet explorer; default `https://testnet.nearblocks.io/txns/`. It is an http or https URL that ends in `/` or `=` and whose links keep its origin, since a hash appended to `https://explorer.example` would become part of its host. The gateway refuses to start with any other prefix, and the live page refuses it in `/config.json` (section 8) |
+| Live page folder | gateway | The folder whose four page files are served at `/` (sections 6.1 and 8). The gateway refuses to start if it is, or contains, the gateway's own folder |
 
 **One value for every app.** `swarm env gateway` and `swarm env mcp` write the gateway's and the MCP
 server's configuration files from the swarm's configuration, so that a shared value is the same in
@@ -1016,25 +1017,78 @@ access to the file, which holds the relayer's keys and the credential key.
 ## 8. Live page
 
 `apps/web` is `index.html`, `app.js` (an ES module), `totals.js` and `style.css`. There is no build
-step, and the gateway serves the folder at `/`. The page never signs anything and needs no wallet.
+step. The gateway serves only those four files, `index.html` at `/` (section 6.1), and nothing else
+of the folder, which also holds the page's package files, tests and `node_modules`. The page never
+signs anything and needs no wallet.
+It declares its icon inline, so a browser makes no `/favicon.ico` request, which the gateway would
+answer `404`. Every value it reads is written as text or as an attribute, never as HTML.
 
 - **The banner:** "The provider is simulated, and prices are scaled down 10,000 times. The money
-  flow is real: USDC on NEAR testnet."
+  flow is real: USDC on NEAR testnet." It is static, whatever the network; the footer names the
+  network, the pools contract and the token from `/config.json`.
+- **Which pool:** the one that `?pool=<id>` names, written as the gateway writes pool ids (decimal,
+  no sign, no leading zero, a safe integer; anything else is ignored), else the provider's newest
+  pool. The selector lists only the provider's pools, newest first, and choosing one sets `?pool=`.
+  It is drawn from `list_pools` alone, so it stays when the chosen pool cannot be read or shown.
+  A pool whose seller is not exactly the provider is never shown: its card, ledger and buyer table
+  give way to the notice "Pool `<id>` was opened by `<seller>`, not by this gateway's provider
+  `<provider>`: this page shows only the provider's pools.", with none of that pool's own text, since
+  anyone can open a pool whose terms the provider never wrote. The check is made on the `get_pool`
+  result of the same refresh, so a pool opened after `list_pools` was read is caught too. It reads
+  only that result's id and seller, so such a pool gets its notice whatever else it holds (the
+  contract bounds `deadline_ms` only from below, so it may be beyond what a JavaScript number holds
+  exactly), and nothing more of it is read: not its seats, the balance or the feed. Of `list_pools`
+  too, only each row's id and seller are read, so another seller's pool in the list cannot stop the
+  provider's pools from showing. A pool that does not exist shows "There is no pool `<id>`.", and a
+  provider with no pool "The provider has not opened a pool yet."
 - **The pool card:** the terms, a bar filling seat by seat, the seat price, the bonus escrowed, a
-  countdown and the status.
+  countdown, the seller and the status. The countdown shows `m:ss` (`h:mm:ss` from an hour), rounded
+  up to the second, while the pool is Open and "closed" otherwise; it is updated every second from
+  the last read, and its tooltip gives the deadline in local time.
 - **The buyer table:** buyer, seats, amount paid, and state (committed; refunded with its bonus
   share; claimable; settled, which is derived from the pool's status and is not a buyer state in the
-  contract), with a testnet explorer link for each transaction.
+  contract), with a testnet explorer link for each transaction. A bonus share is shown only for a
+  refunded buyer: a claimable one has been paid nothing yet, and its refund counts in *held now*. The
+  links are those of the buyer's `commit` and `refund` records in the activity feed; a record that is
+  not `ok` is still linked, labelled as failed, and a hash that is not a base58 transaction hash is
+  never linked.
 - **The ledger totals:** paid in, paid to the seller, refunded, bonus paid out, and held now.
   *Held now* is shown beside `ft_balance_of(pools contract)`, so the solvency invariant can be seen.
+  Held now is what the contract still owes for this pool (invariant 1), and the balance covers every
+  pool together, so the balance is never below held now. The pool, its seats and the balance are
+  read at one block (see *Data*), so this holds on every refresh. The dust counts as paid to the
+  seller as soon as the pool's `dust_sent` is set, while its transfer may still be in flight, and
+  leaves held now at the same moment, so paid in plus the bonus always equals the four other totals
+  together.
+  The links of the pool's `settle` and dust records are shown beside *paid to the seller*.
 - **Amounts** are shown with all 6 of the token's decimals (read from its `ft_metadata`), since the
-  scaled prices are fractions of a cent.
+  scaled prices are fractions of a cent, followed by its symbol, as in `0.000180 USDC`.
 - **Data:** every 2 seconds, it reads pool state from the contract's views (`get_pool`,
   `get_seats`) with RPC `call_function`, and transaction links from `/activity`. The RPC URL is set
   in the page's configuration. If the RPC refuses browser requests, the page uses the gateway's
-  `/rpc` pass-through instead (section 6.1).
-- `totals.js` is a pure module that computes the totals from the contract's data. It is the one
-  piece of logic on the page, and it is unit-tested.
+  `/rpc` pass-through instead (section 6.1). It reads `/config.json` and the token's `ft_metadata`
+  once, then on each refresh `list_pools` (for the selector and the newest pool) and `get_pool` at
+  final finality, then, for one of the provider's pools only, `get_seats` and the token's
+  `ft_balance_of` for the pools contract at the block of that `get_pool` answer (its `block_hash`,
+  sent as `block_id`), and the feed. So the pool, its seats and the balance are read at one block. Every view is a `call_function` query at
+  `finality: "final"` or at a `block_id`, the two forms the pass-through forwards. Every value read
+  is checked for its shape, and a malformed one fails that refresh with a status line naming what
+  was wrong; the configuration's explorer link prefix must be an http or https URL that ends in `/`
+  or `=` and whose links keep its origin (a hash appended to `https://explorer.example` would become
+  part of its host), which the gateway also checks when it starts (section 7.6). Each request times
+  out after 10 seconds, and the status line names the request or view that timed out, so that a
+  hung request cannot stop the refreshes, which never overlap. A failed refresh shows "Could not
+  refresh" with its reason, keeps the last data on screen, and is tried again at the next 2-second
+  tick. A refresh that ends after the viewer chose another pool, whether it succeeded or failed,
+  renders, shows and announces nothing: its result is about the pool the viewer left, and the next
+  refresh reads the pool now chosen. The status line is not a live region, since it is rewritten at every refresh: a screen
+  reader is told, through a visually hidden live region, only of a failed refresh and of the
+  recovery from one.
+- `totals.js` holds all the page's logic, as pure functions: the body of a view call and the
+  decoding of its answer, the shape checks of everything read from the RPC, the gateway and the page
+  URL, the ledger totals, the buyer rows and the explorer links, the choice of pool and what a
+  refresh shows in its place (the notices), and the countdown. It is unit-tested. `app.js` only
+  fetches and renders.
 
 ## 9. Error handling
 
@@ -1063,7 +1117,7 @@ step, and the gateway serves the folder at `/`. The page never signs anything an
 | Swarm unit tests | Setup, reset, the provider, the scripted buyers, the final check and the command line, against a fake chain and a stubbed gateway |
 | Swarm sandbox test (a local sandbox, the mock token, and the gateway as a child process) | A first setup that stops on the token shortfall once it has created and registered the funding account, then completes once the funding account holds tokens. `fills` run in process and `fails` through the command line (`swarm demo fails` exits 0, every check passes), a second setup in a row that sends nothing, then reset, setup and a second reset that sends nothing. The sandbox keeps about 15 minutes of history, so that the check still finds every transaction of a run lasting several minutes |
 | MCP sandbox test (over stdio, against a local sandbox and the gateway) | The four tools, a commit answered `202` and counted in the spend file, a payment past the cap refused before signing, the refund once the keeper has refunded the pool, standard output holding only protocol messages, and the server exiting once its input closes |
-| Live page | `totals.js` unit tests |
+| Live page | `totals.test.ts` (the page's logic), `refresh.test.ts` (`app.js` against a fake DOM, a fake gateway and a fake RPC) and `page.test.ts` (static checks of the page) |
 | End to end on testnet, against Circle's testnet USDC | `swarm demo fills` and `swarm demo fails`, each ending with a check of the final on-chain state: pool status, every buyer's state, the seller's and the buyers' balances, and the contract's balance. Gas measured against USDC: each relayed commit burns at most the offer's `minGas`, and each `ft_transfer` the pools contract makes, and each callback, read from the `settle` and `refund` receipts, burns under 5 Tgas, half its allowance. `swarm setup` run twice in a row transfers nothing the second time, and so does `swarm reset`. Once every pool is Settled or Refunded, `swarm reset` followed by `swarm setup` leaves each buyer and the provider at its configured amount |
 
 **The final check** is `swarm check`, and the last step of `swarm demo`. It first waits, polling
@@ -1189,6 +1243,15 @@ keys) and the NEP-141, NEP-145, NEP-297, NEP-366 and NEP-413 standards:
 - **`/rpc` has no rate limit.** With the pass-through on, anyone can send view calls on the pools
   contract and the token through the gateway, up to 16 KiB each, and the RPC's own limits then
   apply to the gateway as a whole. A production version would rate-limit it per client.
+- **The live page reads every seller's pools on every refresh.** It lists them all through
+  `list_pools` to build its selector, one request per 100 pools at each 2-second refresh of each
+  viewer, and anyone can add pools cheaply (storage is open to abuse, above), so the number of
+  requests per refresh is not bounded by the provider. The page asks for 100 rows at a time, which is
+  the contract's page size: `PAGE_SIZE` in the page must not exceed `MAX_PAGE` in the contract
+  (a smaller page only costs more requests), since a page that the contract cuts short is taken for
+  the last one, and a test checks it. Through the pass-through, every
+  viewer's reads reach the RPC from the gateway's address, so a public RPC's rate limit applies to
+  all viewers together and shows on the page as "Could not refresh" lines.
 - **Credentials are issued at optimistic execution, not finality.** The relayer waits for the
   commit to execute optimistically, and redemption reads the pool at optimistic finality, so a
   credential can be issued before the block holding the commit is final. If that block were not

@@ -12,8 +12,8 @@ prices scaled down 10,000 times.
 
 ## Architecture (implementation-relevant facts)
 
-The contracts, the protocol package, the gateway, the swarm and the MCP server are built and
-tested; the live page is not yet. The design is
+The contracts, the protocol package, the gateway, the swarm, the MCP server and the live page
+are built and tested. The design is
 [`docs/specs/2026-11-09-quorum-on-near-design.md`](docs/specs/2026-11-09-quorum-on-near-design.md);
 the spec wins where this summary is shorter. In brief:
 
@@ -69,6 +69,7 @@ NEAR rules the design relies on (from NEAR's documentation):
 | `apps/gateway/` | The provider's HTTP side: offers, payment checks, relay, credentials, redemption, the keeper and the activity feed |
 | `apps/swarm/` | The swarm's command line: account setup and funding, the provider's pools, the 20 scripted buyers, the final check of a pool, and the gateway's and the MCP server's `.env` files |
 | `apps/mcp/` | The MCP server: four tools through which an agent buys seats as one buyer, within a spend cap |
+| `apps/web/` | The live page: a static page with no build step, served by the gateway at `/`, that shows one of the provider's pools, its ledger and its buyers as the chain holds them |
 
 ## Toolchain
 
@@ -104,6 +105,10 @@ current folder.
 repository's own `.mcp.json`. The swarm's and the MCP server's sandbox tests
 (`pnpm --filter @quorum-on-near/swarm test:sandbox` and `pnpm --filter @quorum-on-near/mcp test:sandbox`)
 need the same two wasm variables as the gateway's and run on the same systems; CI does not run them.
+
+The live page (`apps/web`) is plain JavaScript with JSDoc types, checked by `tsc` (`checkJs`), and
+has no build step: the gateway serves its four files at `/` (`QUORUM_WEB_DIR`, by default `../web` from
+`apps/gateway`). Its tests run with `pnpm --filter @quorum-on-near/web test`, and in `pnpm test`.
 
 **CI** (`.github/workflows/ci.yml`) runs on every pull request into `main` and on every push to
 `main`, except for changes that touch only `docs/`, Markdown or `.claude/`. Four jobs run in

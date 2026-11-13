@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Quorum on NEAR: live pool</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <header class="header">
+    <h1>Quorum on NEAR</h1>
+    <p class="lede">A threshold group purchase. Buyers commit seats before the deadline; if the target is reached, the seller is paid, otherwise every seat is refunded with a share of the seller's bonus.</p>
+    <p class="banner">The provider is simulated, and prices are scaled down 10,000 times. The money flow is real: USDC on NEAR testnet.</p>
+  </header>
+
+  <main class="main">
+    <div class="toolbar">
+      <div id="picker" class="picker" hidden>
+        <label for="pool-select">Pool</label>
+        <select id="pool-select"></select>
+      </div>
+      <p id="status" class="status">Loading…</p>
+      <p id="announcement" class="visually-hidden" role="status" aria-live="polite"></p>
+    </div>
+
+    <p id="no-pool" class="empty" hidden></p>
+
+    <section id="pool" class="card" aria-labelledby="pool-title" hidden>
+      <div class="card-head">
+        <h2 id="pool-title">Pool</h2>
+        <span id="pool-status" class="badge"></span>
+      </div>
+      <p class="terms-label">Terms set by the seller</p>
+      <p id="pool-terms" class="terms"></p>
+      <progress id="pool-bar" class="bar" max="1" value="0" aria-labelledby="pool-seats"></progress>
+      <p id="pool-seats" class="seats"></p>
+      <dl class="facts">
+        <div><dt>Seat price</dt><dd id="pool-price" class="amount"></dd></div>
+        <div><dt>Bonus escrowed</dt><dd id="pool-bonus" class="amount"></dd></div>
+        <div><dt>Time left</dt><dd id="pool-countdown" class="amount"></dd></div>
+        <div><dt>Seller</dt><dd id="pool-seller" class="account"></dd></div>
+      </dl>
+    </section>
+
+    <section id="ledger" class="card" aria-labelledby="ledger-title" hidden>
+      <h2 id="ledger-title">Ledger</h2>
+      <dl class="totals">
+        <div><dt>Paid in</dt><dd id="paid-in" class="amount"></dd></div>
+        <div><dt>Paid to the seller</dt><dd id="paid-to-seller" class="amount"></dd><dd id="payout-links" class="links"></dd></div>
+        <div><dt>Refunded</dt><dd id="refunded" class="amount"></dd></div>
+        <div><dt>Bonus paid out</dt><dd id="bonus-paid-out" class="amount"></dd></div>
+      </dl>
+      <dl class="totals held">
+        <div><dt>Held now for this pool</dt><dd id="held-now" class="amount"></dd></div>
+        <div><dt>Contract balance, all pools</dt><dd id="contract-balance" class="amount"></dd></div>
+      </dl>
+      <p class="note">The contract's token balance covers what it still holds for every pool together, so it is never below the amount held for this one.</p>
+    </section>
+
+    <section id="buyers" class="card" aria-labelledby="buyers-title" hidden>
+      <h2 id="buyers-title">Buyers</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Buyer</th>
+              <th scope="col" class="num">Seats</th>
+              <th scope="col" class="num">Paid</th>
+              <th scope="col">State</th>
+              <th scope="col">Transactions</th>
+            </tr>
+          </thead>
+          <tbody id="buyer-rows"></tbody>
+        </table>
+      </div>
+      <p id="no-buyers" class="empty" hidden>No buyer has committed yet.</p>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <p id="source"></p>
+  </footer>
+</body>
+</html>

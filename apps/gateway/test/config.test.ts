@@ -128,6 +128,19 @@ describe('loadConfig', () => {
     });
   });
 
+  it.each(['https://testnet.nearblocks.io/txns/', 'https://explorer.example/txns/', 'https://explorer.example/tx?hash=', 'http://localhost:3000/'])(
+    'accepts %s as the explorer prefix, whose links keep its origin',
+    (url) => {
+      expect(loadConfig(env({ QUORUM_EXPLORER_TX_URL: url })).explorerTxUrl).toBe(url);
+    },
+  );
+
+  it('names the explorer prefix rule in the problem line', () => {
+    expect(problems(env({ QUORUM_EXPLORER_TX_URL: 'https://explorer.example' }))).toEqual([
+      'QUORUM_EXPLORER_TX_URL must be an http or https URL that ends in / or =, and whose links keep its origin, got "https://explorer.example"',
+    ]);
+  });
+
   it('ignores spaces and empty entries in the relayer key list', () => {
     const secondKey = KeyPair.fromRandom('ed25519').toString();
     const config = loadConfig(env({ QUORUM_RELAYER_KEYS: ` ${RELAYER_KEY} , ${secondKey},` }));
@@ -196,6 +209,12 @@ describe('loadConfig', () => {
     ['QUORUM_RPC_PASSTHROUGH', 'yes'],
     ['QUORUM_RPC_PASSTHROUGH', 'TRUE'],
     ['QUORUM_EXPLORER_TX_URL', 'nearblocks.io/txns/'],
+    // The live page refuses these too: a hash appended to them is not a path of the explorer.
+    ['QUORUM_EXPLORER_TX_URL', 'https://explorer.example'],
+    ['QUORUM_EXPLORER_TX_URL', 'https://explorer.example/txns'],
+    ['QUORUM_EXPLORER_TX_URL', 'https://explorer.example/tx?hash'],
+    // It ends in =, but a hash appended to it becomes part of the host.
+    ['QUORUM_EXPLORER_TX_URL', 'https://explorer.example='],
   ])('reports %s = %j as invalid', (name, value) => {
     expect(problems(env({ [name]: value }))).toEqual([expect.stringMatching(new RegExp(`^${name} must be `))]);
   });
