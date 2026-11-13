@@ -158,6 +158,17 @@ export class TransactionFailedError extends Error {
   }
 }
 
+/** The pools contract's views know no pool of this id. */
+export class UnknownPoolError extends Error {
+  override name = 'UnknownPoolError';
+  readonly poolId: number;
+
+  constructor(poolId: number) {
+    super(`the pools contract has no pool ${poolId}`);
+    this.poolId = poolId;
+  }
+}
+
 /**
  * Everything the swarm's commands read from the chain and send to it. Reads are at the latest final
  * block, and each write resolves once its transaction and every receipt it caused are final, so a

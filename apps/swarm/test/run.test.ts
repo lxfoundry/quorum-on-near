@@ -25,7 +25,7 @@ import {
 import { KeyPair } from 'near-api-js';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AgentRuntime, BuyerOutcome, BuyerOutcomeKind } from '../src/buyer-agent.ts';
-import { UnknownPoolError } from '../src/check.ts';
+import { UnknownPoolError } from '../src/chain.ts';
 import { PROFILES, profileAccount } from '../src/profiles.ts';
 import { runSwarm, SeatPriceMismatchError, unexpectedOutcomes, type RunDeps } from '../src/run.ts';
 import { scenario, type Scenario } from '../src/scenarios.ts';
