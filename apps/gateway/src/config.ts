@@ -111,6 +111,9 @@ const asHttpUrl: Rule<string> = {
   parse: (raw) => (URL.canParse(raw) && ['http:', 'https:'].includes(new URL(raw).protocol) ? raw : undefined),
 };
 
+/** Never repeated in a problem line: a provider may put its key in the URL, even in its path. */
+const asRpcUrl: Rule<string> = { ...asHttpUrl, secret: true };
+
 /**
  * A prefix that a transaction hash is appended to, for a link to the explorer. It ends in `/` or `=`,
  * and a link built from it keeps its origin: appended to `https://explorer.example`, a hash would
@@ -284,7 +287,7 @@ export function loadConfig(env: Record<string, string | undefined>): GatewayConf
   };
 
   const network = optional('QUORUM_NETWORK', 'near:testnet', asNetwork);
-  const rpcUrl = optional('QUORUM_RPC_URL', 'https://test.rpc.fastnear.com', asHttpUrl);
+  const rpcUrl = optional('QUORUM_RPC_URL', 'https://test.rpc.fastnear.com', asRpcUrl);
   const publicUrl = optional('QUORUM_GATEWAY_URL', 'http://localhost:8402', asBaseUrl);
   const port = optional('QUORUM_GATEWAY_PORT', '8402', asInteger(1, 65_535));
   const parent = required('QUORUM_PARENT_ACCOUNT', asAccountId);

@@ -371,6 +371,24 @@ describe('createApp', () => {
       expect(await answer(postRpc(app, viewCall()))).toEqual({ status: 408, body: error });
     });
 
+    it("names the RPC URL by its variable in the RPC's answer, whose text may quote it, keeping its status", async () => {
+      // A key in the path: with the pass-through on, the URL stays on the server.
+      const rpcUrl = 'https://rpc.example/v2/fake-key-0123456789abcdef/';
+      const failure = (where: string) => ({
+        jsonrpc: '2.0',
+        id: 'page',
+        error: {
+          name: 'INTERNAL_ERROR',
+          cause: { name: 'INTERNAL_ERROR', info: { error_message: `node behind ${where} failed` } },
+          code: -32000,
+          message: 'Server error',
+          data: `node behind ${where} failed`,
+        },
+      });
+      const { app } = await setup({ rpcPassthrough: true, rpcUrl }, { fetch: upstream(failure(rpcUrl), 500) });
+      expect(await answer(postRpc(app, viewCall()))).toEqual({ status: 500, body: failure('QUORUM_RPC_URL') });
+    });
+
     it.each([
       ['another account', viewCall({}, { account_id: 'other.testnet' })],
       ['another request type', viewCall({}, { request_type: 'view_account' })],

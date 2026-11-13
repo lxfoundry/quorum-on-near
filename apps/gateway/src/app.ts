@@ -8,6 +8,7 @@ import { handleOffer } from './handle-offer.ts';
 import { handlePayment } from './handle-payment.ts';
 import { handleRedeem } from './handle-redeem.ts';
 import { openPoolListings } from './pools.ts';
+import { redactUrls } from './redact.ts';
 import type { Reply } from './reply.ts';
 import { isAllowedViewCall } from './view-call.ts';
 
@@ -116,7 +117,10 @@ export function createApp(deps: Deps, options: { fetch?: typeof fetch } = {}): H
           body: JSON.stringify(body),
           signal: AbortSignal.timeout(RPC_FORWARD_TIMEOUT_MS),
         });
-        return c.json(await upstream.json(), upstream.status as ContentfulStatusCode);
+        // The RPC's own text may quote its URL, which may hold a key, and the live page shows an error's
+        // message: the URL is named by its variable instead, as in the gateway's own output.
+        const text = redactUrls(JSON.stringify(await upstream.json()), { QUORUM_RPC_URL: config.rpcUrl });
+        return c.json(JSON.parse(text), upstream.status as ContentfulStatusCode);
       } catch (error) {
         console.error('could not forward a request to the RPC:', error);
         return c.json({ error: 'chain_unavailable' }, 503);

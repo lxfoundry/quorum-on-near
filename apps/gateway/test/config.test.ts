@@ -507,6 +507,12 @@ describe('loadConfig RPC URL', () => {
     },
   );
 
+  it('refuses a URL that is not http or https without repeating it, since a key may be in its path', () => {
+    expect(problems(env({ QUORUM_RPC_URL: 'ftp://rpc.example/v2/fake-key-0123456789abcdef/' }))).toEqual([
+      'QUORUM_RPC_URL must be an http or https URL',
+    ]);
+  });
+
   it('checks the URL only once QUORUM_RPC_PASSTHROUGH is valid', () => {
     expect(problems(env({ QUORUM_RPC_URL: QUERY_URL, QUORUM_RPC_PASSTHROUGH: 'yes' }))).toEqual([
       'QUORUM_RPC_PASSTHROUGH must be true or false, got "yes"',
