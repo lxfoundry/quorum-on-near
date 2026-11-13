@@ -1,7 +1,7 @@
 import { transportReason, type ActivityRecord, type GatewayClient } from '@quorum-on-near/buyer';
 import { MAX_PAGE, poolsEvents, priceOf, type PoolStatus, type PoolView, type SeatView } from '@quorum-on-near/protocol';
 import { buyerIds } from './accounts.ts';
-import { allPools, TGAS, type MissingOutcome, type SwarmChain, type TxOutcome } from './chain.ts';
+import { allPools, TGAS, UnknownPoolError, type MissingOutcome, type SwarmChain, type TxOutcome } from './chain.ts';
 import type { SwarmConfig } from './config.ts';
 import type { Scenario } from './scenarios.ts';
 import { count } from './words.ts';
@@ -52,17 +52,6 @@ export interface CheckReport {
   status: PoolStatus;
   lines: CheckLine[];
   failed: boolean;
-}
-
-/** The pools contract's views know no pool of this id. */
-export class UnknownPoolError extends Error {
-  override name = 'UnknownPoolError';
-  readonly poolId: number;
-
-  constructor(poolId: number) {
-    super(`the pools contract has no pool ${poolId}`);
-    this.poolId = poolId;
-  }
 }
 
 /**

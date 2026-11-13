@@ -1,6 +1,6 @@
 import { Buyer, keyFilePath, readKeyFile, type BuyerChainReads, type GatewayClient, type PoolReads } from '@quorum-on-near/buyer';
 import { runBuyer, systemRuntime, type AgentRuntime, type BuyerOutcome, type BuyerOutcomeKind, type PoolFacts } from './buyer-agent.ts';
-import { UnknownPoolError } from './check.ts';
+import { UnknownPoolError } from './chain.ts';
 import type { SwarmConfig } from './config.ts';
 import { PROFILES, profileAccount, type BuyerProfile } from './profiles.ts';
 import type { Scenario, ScenarioName } from './scenarios.ts';

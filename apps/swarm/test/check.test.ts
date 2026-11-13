@@ -3,13 +3,12 @@ import type { ActivityRecord } from '@quorum-on-near/buyer';
 import { toTxOutcome, type PoolView, type SeatView } from '@quorum-on-near/protocol';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { buyerIds } from '../src/accounts.ts';
-import { TGAS } from '../src/chain.ts';
+import { TGAS, UnknownPoolError } from '../src/chain.ts';
 import {
   checkPool,
   commitGas,
   payoutGas,
   snapshot,
-  UnknownPoolError,
   type Baseline,
   type CheckDeps,
   type CheckReport,
