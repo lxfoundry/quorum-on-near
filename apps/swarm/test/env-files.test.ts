@@ -16,6 +16,7 @@ import {
   EnvFileExistsError,
   envFilePath,
   gatewayEnvText,
+  gatewaySecretsEnvText,
   mcpEnvText,
   newCredentialJwk,
   writeEnvFile,
@@ -128,6 +129,34 @@ describe('gatewayEnvText', () => {
 
   it('needs at least one relayer key', () => {
     expect(() => gatewayEnvText(sandboxConfig(), [], newCredentialJwk())).toThrow(RangeError);
+  });
+});
+
+describe('gatewaySecretsEnvText', () => {
+  it('holds QUORUM_RELAYER_KEYS, in the order given, and QUORUM_CREDENTIAL_JWK alone, on the lines gatewayEnvText writes for them', () => {
+    const keys = [KeyPair.fromRandom('ed25519'), KeyPair.fromRandom('ed25519')];
+    const jwk = newCredentialJwk();
+    const text = gatewaySecretsEnvText(keys, jwk);
+    expect(parseEnv(text)).toEqual({
+      QUORUM_RELAYER_KEYS: keys.map((key) => key.toString()).join(','),
+      QUORUM_CREDENTIAL_JWK: JSON.stringify(jwk),
+    });
+    const secretLines = (source: string): string[] =>
+      source.split('\n').filter((line) => /^QUORUM_(RELAYER_KEYS|CREDENTIAL_JWK)=/.test(line));
+    expect(secretLines(text)).toHaveLength(2);
+    expect(secretLines(text)).toEqual(secretLines(gatewayEnvText(sandboxConfig(), keys, jwk)));
+  });
+
+  it('starts with comment lines saying what wrote it and that it is secret', () => {
+    const text = gatewaySecretsEnvText([KeyPair.fromRandom('ed25519')], newCredentialJwk());
+    expect(text.split('\n').slice(0, 2)).toEqual([
+      '# Written by `swarm keys from-seed --gateway-env` from the seed phrase.',
+      "# Secret: it holds the relayer's keys and the credential key. Keep it private, and never commit it.",
+    ]);
+  });
+
+  it('needs at least one relayer key', () => {
+    expect(() => gatewaySecretsEnvText([], newCredentialJwk())).toThrow(RangeError);
   });
 });
 

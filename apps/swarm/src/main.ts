@@ -19,6 +19,7 @@ import { checkChain, type SwarmChain } from './chain.ts';
 import { checkPool, snapshot, type CheckReport } from './check.ts';
 import { loadSwarmConfig, type SwarmConfig } from './config.ts';
 import { aclNotice, envFilePath, writeGatewayEnv, writeMcpEnv, type EnvApp } from './env-files.ts';
+import { createRpcSeedChain, keysFromSeed, parentPublicKey, readSeedPhrase, type SeedChain } from './keys-from-seed.ts';
 import { lockFilePath, takeLock, type SwarmLock } from './lock.ts';
 import { assertNoPoolOpen, openPool } from './provider.ts';
 import { runReset } from './reset.ts';
@@ -36,6 +37,7 @@ export type SwarmCommand =
   | { name: 'check'; poolId: number; scenario: ScenarioName }
   | { name: 'demo'; scenario: ScenarioName }
   | { name: 'env'; app: EnvApp }
+  | { name: 'keys'; parentKey: boolean; gatewayEnv: string | null }
   | { name: 'reset' }
   | { name: 'help' };
 
@@ -47,6 +49,10 @@ const COMMANDS: Record<SwarmCommand['name'], { synopsis: string; does: string }>
   check: { synopsis: 'check <pool-id> <fills|fails>', does: 'wait until the pool has ended, then check what the chain holds' },
   demo: { synopsis: 'demo <fills|fails>', does: 'setup, open, run, then check against the balances read before the pool opened' },
   env: { synopsis: 'env <gateway|mcp>', does: 'write apps/<gateway|mcp>/.env from this configuration, never over a file' },
+  keys: {
+    synopsis: 'keys from-seed [--gateway-env <path> | --parent-key]',
+    does: "write every missing key file from one seed phrase; --gateway-env also writes the gateway's keys, --parent-key prints the parent's key only",
+  },
   reset: { synopsis: 'reset', does: "send each buyer's and the provider's surplus back to the funding account" },
   help: { synopsis: 'help', does: 'print this text' },
 };
@@ -59,6 +65,12 @@ export const USAGE = [
   '',
   'swarm run on a pool that buyers have paid in resumes them: each asks the gateway what it holds',
   'before it pays, and a buyer that holds seats in the pool follows them and never buys again.',
+  '',
+  'swarm keys from-seed derives every key from one BIP-39 phrase, read from QUORUM_SEED_PHRASE or from',
+  'the file QUORUM_SEED_PHRASE_FILE names (set one of them), checks the keys against the chain, then',
+  'writes each missing key file under QUORUM_CREDENTIALS_DIR. It never writes over a file that holds',
+  'something else, and never prints the phrase or a private key: one line per key, the account and its',
+  'public key.',
   '',
   'The configuration is read from QUORUM_* variables, set in the environment or in apps/swarm/.env',
   '(see apps/swarm/.env.example). Exits with 0 when done, 1 when a command or a check failed, and 2',
@@ -110,6 +122,8 @@ export function parseCommand(argv: readonly string[]): SwarmCommand {
       const [app] = argsOf(name, args, 1);
       return { name, app: appArg(app) };
     }
+    case 'keys':
+      return keysArgs(args);
     default:
       throw new UsageError(`unknown command ${JSON.stringify(name)}`);
   }
@@ -118,6 +132,17 @@ export function parseCommand(argv: readonly string[]): SwarmCommand {
 function argsOf<N extends 0 | 1 | 2>(name: SwarmCommand['name'], args: readonly string[], count: N): Args<N> {
   if (args.length !== count) throw new UsageError(`wrong arguments: the command is swarm ${COMMANDS[name].synopsis}`);
   return args as Args<N>;
+}
+
+/** `keys from-seed`, then nothing, `--parent-key`, or `--gateway-env` and a path that is not empty. */
+function keysArgs(args: readonly string[]): SwarmCommand {
+  const [action, option, path, ...rest] = args;
+  if (action === 'from-seed' && rest.length === 0) {
+    if (option === undefined) return { name: 'keys', parentKey: false, gatewayEnv: null };
+    if (option === '--parent-key' && path === undefined) return { name: 'keys', parentKey: true, gatewayEnv: null };
+    if (option === '--gateway-env' && path !== undefined && path !== '') return { name: 'keys', parentKey: false, gatewayEnv: path };
+  }
+  throw new UsageError(`wrong arguments: the command is swarm ${COMMANDS.keys.synopsis}`);
 }
 
 function scenarioArg(raw: string): ScenarioName {
@@ -158,6 +183,7 @@ export interface SwarmModules {
   runReset: typeof runReset;
   writeGatewayEnv: typeof writeGatewayEnv;
   writeMcpEnv: typeof writeMcpEnv;
+  keysFromSeed: typeof keysFromSeed;
 }
 
 /** What runCli works with: the process's environment and output, and what the commands run on. */
@@ -170,6 +196,8 @@ export interface Cli {
   err: (line: string) => void;
   /** Builds the connections for a configuration, sending nothing; called by the commands that use the chain. */
   connect: (config: SwarmConfig) => Connections;
+  /** Builds the chain reads of `swarm keys from-seed` for a configuration, sending nothing. */
+  seedChain: (config: SwarmConfig) => SeedChain;
   /** The clock, timers and randomness of the scripted buyers, and of the check's wait. */
   runtime: AgentRuntime;
   modules: SwarmModules;
@@ -194,8 +222,10 @@ const LOCKED: ReadonlySet<SwarmCommand['name']> = new Set(['setup', 'open', 'run
  * (lockFilePath in QUORUM_SWARM_LOCK_DIR), and remove it when they end, whatever the outcome; while
  * another process holds it, they run nothing and exit with 1, saying that another swarm is running.
  * A lock that cannot be removed is reported on stderr, and does not change the command's result or
- * error. `demo` holds its one lock across its steps. `check`, `env` and `help` take none.
- * Every command but `env` and `help` checks the RPC's chain before it runs. An error is printed as
+ * error. `demo` holds its one lock across its steps. `check`, `env`, `keys` and `help` take none.
+ * Every command but `env`, `keys` and `help` checks the RPC's chain before it runs; `keys from-seed`
+ * checks it itself, after the configuration's accounts, and `--parent-key` reads no chain and no
+ * swarm configuration, only the phrase. An error is printed as
  * its message and its causes', never with a stack, with QUORUM_RPC_URL written in place of the RPC
  * URL.
  */
@@ -222,6 +252,19 @@ async function execute(command: SwarmCommand, cli: Cli): Promise<boolean> {
     return true;
   }
   const { modules, out: log } = cli;
+  if (command.name === 'keys') {
+    // The phrase before the configuration: --parent-key needs nothing else, so that it runs before
+    // the parent account exists.
+    const phrase = await readSeedPhrase(cli.env);
+    if (command.parentKey) {
+      log(parentPublicKey(phrase));
+      return true;
+    }
+    const keysConfig = loadSwarmConfig(cli.env);
+    const deps = { chain: cli.seedChain(keysConfig), log };
+    await modules.keysFromSeed(keysConfig, phrase, deps, { gatewayEnv: command.gatewayEnv });
+    return true;
+  }
   const config = loadSwarmConfig(cli.env);
   if (command.name === 'env') {
     const path = envFilePath(command.app);
@@ -255,7 +298,7 @@ async function releaseLock(lock: SwarmLock, cli: Cli): Promise<void> {
 }
 
 /** Runs a command that reads the chain, once its lock, if it takes one, is held. */
-async function executeOnChain(command: Exclude<SwarmCommand, { name: 'help' | 'env' }>, cli: Cli, config: SwarmConfig): Promise<boolean> {
+async function executeOnChain(command: Exclude<SwarmCommand, { name: 'help' | 'env' | 'keys' }>, cli: Cli, config: SwarmConfig): Promise<boolean> {
   const { modules, runtime, out: log } = cli;
   const { chain, gateway, buyerChain, pools } = cli.connect(config);
   await checkChain(config.network, chain);
@@ -371,8 +414,9 @@ if (import.meta.main) {
         out: (line) => console.log(line),
         err: (line) => console.error(line),
         connect: connectRpc,
+        seedChain: createRpcSeedChain,
         runtime: systemRuntime,
-        modules: { runSetup, snapshot, openPool, runSwarm, checkPool, runReset, writeGatewayEnv, writeMcpEnv },
+        modules: { runSetup, snapshot, openPool, runSwarm, checkPool, runReset, writeGatewayEnv, writeMcpEnv, keysFromSeed },
         platform: process.platform,
         userName: () => userInfo().username,
       })
