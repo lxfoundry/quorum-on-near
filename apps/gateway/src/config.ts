@@ -48,8 +48,10 @@ export interface GatewayConfig {
   /** How long a demo run may last, in seconds, before the gateway stops it. */
   demoMaxRunSeconds: number;
   /**
-   * Secret: the RPC URL a demo run gets as its QUORUM_RPC_URL, which may hold a key. Never published or
-   * written out. Null: a run uses `rpcUrl`.
+   * Secret: the RPC URL a demo run gets as its QUORUM_RPC_URL, which may hold a key. The gateway never
+   * gives it to the live page or writes it itself, and its output, a run's forwarded lines included,
+   * names it by its variable in the forms that redact.ts describes, along with what that does not
+   * catch. Null: a run uses `rpcUrl`.
    */
   demoRpcUrl: string | null;
 }

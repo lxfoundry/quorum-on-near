@@ -67,8 +67,11 @@ export function redactWrites(stream: Pick<Writable, 'write'>, redact: (text: str
  *
  * What it misses: a key quoted alone rather than inside its URL, or a piece of the URL, such as the
  * few characters of a body that a JSON parse error quotes; a URL split across two writes; a URL
- * written in a fifth form, such as percent-encoded or escaped; and a key in the host itself, which the
- * gateway prints alone when it cannot read the chain id.
+ * written in a fifth form, such as percent-encoded or escaped; a key in the host itself, which the
+ * gateway prints alone when it cannot read the chain id; anything written straight to file
+ * descriptors 1 and 2 rather than through the two streams, for example with `fs.writeSync` or
+ * `process._rawDebug`; and Node's own report of an error thrown inside the uncaught-error listener
+ * itself.
  */
 export function redactProcessOutput(env: Readonly<Record<string, string | undefined>> = process.env): void {
   const secrets = secretUrls(env);
