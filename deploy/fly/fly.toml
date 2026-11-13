@@ -1,0 +1,80 @@
+# The hosted gateway and live page on Fly.io: one machine, on NEAR testnet. From the repository's
+# root:
+#   fly deploy --config deploy/fly/fly.toml --dockerfile deploy/fly/Dockerfile --ha=false
+# Three settings are Fly secrets, set with `fly secrets` (for example NAME=VALUE lines piped to
+# `fly secrets import`) and never written in this file or anywhere in the repository:
+#   QUORUM_SEED_PHRASE   the seed phrase that every key file and the gateway's two keys come from
+#   QUORUM_RPC_URL       the gateway's RPC endpoint (reads, relayer, keeper, keys from-seed at boot)
+#   QUORUM_DEMO_RPC_URL  optional: the endpoint a demo run uses; unset, a run uses the gateway's
+# An RPC endpoint is a secret because a provider may put its key in the URL's path.
+
+app = "quorum-on-near-demo"
+primary_region = "lhr"
+# The gateway stops on SIGINT or SIGTERM: it answers the requests it is running, then exits, and
+# passes SIGTERM to a demo run.
+kill_signal = "SIGTERM"
+# The most Fly.io allows: a relay whose result is unknown is looked up for up to twice
+# QUORUM_MAX_TIMEOUT_SECONDS (240 seconds at the default) before its request is answered.
+kill_timeout = 300
+
+[build]
+  # Relative to this file's folder.
+  dockerfile = "Dockerfile"
+
+[deploy]
+  # Updates the one machine in place, so that two gateways never sign with the same relayer keys.
+  strategy = "rolling"
+
+[env]
+  QUORUM_NETWORK = "near:testnet"
+  # The live page reads the chain through the gateway's POST /rpc (/config.json gives it /rpc), so
+  # the RPC endpoint never reaches a browser.
+  QUORUM_RPC_PASSTHROUGH = "true"
+  # The deployment's public URL: the credential issuer, the recipient that redemption proofs name, and
+  # where a demo run's buyers reach the gateway. Its host follows the app name.
+  QUORUM_GATEWAY_URL = "https://quorum-on-near-demo.fly.dev"
+  # The gateway's port; [http_service] internal_port is the same.
+  QUORUM_GATEWAY_PORT = "8402"
+  # The deployment's own parent account, used for nothing else.
+  QUORUM_PARENT_ACCOUNT = "quorum-hosted-7316.testnet"
+  # Written by start.sh at each boot, on the machine's ephemeral disk.
+  QUORUM_CREDENTIALS_DIR = "/run/quorum/credentials"
+  # The activity feed, on the volume.
+  QUORUM_DATA_DIR = "/data/gateway"
+  QUORUM_WEB_DIR = "/app/apps/web"
+  # The demo endpoint: one run of the swarm's demo command at a time.
+  # A run reads the chain through QUORUM_DEMO_RPC_URL when set (a secret, see the top of the file).
+  QUORUM_DEMO_COMMAND = '["node","/app/apps/swarm/src/main.ts","demo"]'
+  QUORUM_DEMO_MAX_RUNS_PER_DAY = "100"
+  QUORUM_DEMO_MAX_RUN_SECONDS = "1800"
+
+[[mounts]]
+  source = "quorum_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8402
+  force_https = true
+  # The keeper and the demo runs must keep going: the machine is never stopped for being idle. One
+  # machine only, since the volume attaches to one.
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    grace_period = "30s"
+    interval = "15s"
+    method = "GET"
+    timeout = "5s"
+    path = "/config.json"
+
+# A boot that fails (for example while the RPC is down) is retried.
+[[restart]]
+  policy = "on-failure"
+  retries = 10
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+  # The root disk, and so /run/quorum, is reset at each boot.
+  persist_rootfs = "never"

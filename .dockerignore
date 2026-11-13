@@ -1,0 +1,32 @@
+# Kept out of the image that deploy/fly/Dockerfile builds; the build context is the repository's
+# root. No key file belongs in the repository folder; .near-credentials is listed in case one is
+# made there by mistake.
+.git
+**/target
+**/node_modules
+**/.env
+**/.env.*
+**/data
+**/.near-credentials
+# Local agent state, never tracked.
+**/.superpowers
+
+# Further guards: these mirror the secret and wallet patterns of the root .gitignore.
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*.asc
+**/*.gpg
+**/id_rsa*
+**/id_ed25519*
+**/*.keystore
+**/secrets
+**/credentials
+**/*credentials*.json
+**/*secret*
+**/*.mnemonic
+**/*mnemonic*
+**/*.wallet
+**/wallets
+**/keystore
