@@ -33,5 +33,7 @@ node /app/apps/swarm/src/main.ts keys from-seed --gateway-env "$RUN_DIR/gateway.
 
 # The gateway becomes the process the host supervises. Node reads its relayer keys and credential key
 # from the env file; the phrase is removed from its environment, and so from every demo run's.
-exec env -u QUORUM_SEED_PHRASE -u QUORUM_SEED_PHRASE_FILE \
+# QUORUM_RELAYER_KEYS and QUORUM_CREDENTIAL_JWK are removed too: --env-file never overrides a variable
+# that is already set, so a Fly secret of either name would otherwise replace the derived keys.
+exec env -u QUORUM_SEED_PHRASE -u QUORUM_SEED_PHRASE_FILE -u QUORUM_RELAYER_KEYS -u QUORUM_CREDENTIAL_JWK \
   node --env-file="$RUN_DIR/gateway.env" /app/apps/gateway/src/main.ts
