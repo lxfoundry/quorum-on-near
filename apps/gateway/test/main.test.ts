@@ -325,3 +325,30 @@ describe('main with the demo on', { timeout: 60_000 }, () => {
     expect(stderr).not.toMatch(KEY);
   });
 });
+
+describe('main against an RPC that refuses a read with HTTP 429', { timeout: 60_000 }, () => {
+  it('starts when the RPC refuses its first read once, posting that read again', async () => {
+    // What the RPC was asked, in order: the method, or for a view the name of the contract's method.
+    const reads: string[] = [];
+    const { url } = await rpcStub((method, self, params) => {
+      const view = method === 'query' ? (params as { method_name?: string }).method_name : undefined;
+      reads.push(view ?? method);
+      // near-api-js does not retry an HTTP 429: it throws at once, with the status as the error's cause.
+      if (reads.length === 1) return 429;
+      if (method === 'status') return { result: { chain_id: 'testnet' } };
+      if (view === 'get_token') return viewAnswer(TESTNET_USDC);
+      if (view === 'list_pools') return viewAnswer([]);
+      return internalError(self);
+    });
+    const dir = await gatewayFolder();
+    const port = await freePort();
+    const gateway = startGateway(gatewayEnv(url, dir, { QUORUM_GATEWAY_PORT: String(port) }), dir);
+    try {
+      await until(gateway, 'start listening', async () => gateway.output.stdout.includes('gateway listening on'));
+    } finally {
+      await gateway.stop();
+    }
+    // The chain id is read twice, since the first answer was a 429, then the token once.
+    expect(reads.slice(0, 3)).toEqual(['status', 'status', 'get_token']);
+  });
+});

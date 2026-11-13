@@ -18,6 +18,7 @@ import { redactProcessOutput } from './redact.ts';
 import { KeyPool, RpcRelayer } from './relayer.ts';
 import { RpcChain } from './rpc-chain.ts';
 import { gracefulClose } from './shutdown.ts';
+import { retryViewsOn429 } from './view-retry.ts';
 
 function fail(message: string): never {
   console.error(message);
@@ -50,8 +51,9 @@ function liveFolder(webDir: string | null): string | null {
 // replaced by their variables' names (see redact.ts).
 redactProcessOutput();
 const config = readConfig();
-// Views change nothing, so they keep near-api-js's default retries.
-const viewProvider = new JsonRpcProvider({ url: config.rpcUrl });
+// Views change nothing, so they keep near-api-js's default retries, and are tried again after an
+// HTTP 429 (view-retry.ts). Only the views: the relayer's provider is another one, below.
+const viewProvider = retryViewsOn429(new JsonRpcProvider({ url: config.rpcUrl }));
 const chain = new RpcChain({ provider: viewProvider, poolsContract: config.poolsContract, token: config.token });
 
 // QUORUM_NETWORK only labels offers: the RPC decides which chain the gateway pays on.
