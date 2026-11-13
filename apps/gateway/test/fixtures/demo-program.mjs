@@ -3,13 +3,21 @@
 //   lines           writes two lines and a last one without a newline to stdout, and one line to
 //                   stderr, then exits with 0
 //   exit <code>     writes one line, then exits with <code>
-//   hang            writes "ready", then runs until a signal ends it
+//   hang            writes "ready", then runs until a signal ends it, or for at most 120 seconds
 //   ignore-sigterm  like hang, but on SIGTERM writes "SIGTERM ignored" and runs on (on POSIX only:
 //                   Windows ends the process instead)
 //   describe        writes its arguments, its working folder and its QUORUM_* variables (any case) as
 //                   JSON on one line, then exits with 0
 // Plain JavaScript, so that Node runs it without type stripping.
 const [mode, ...rest] = process.argv.slice(2);
+
+/**
+ * Keeps the program running, then exits with 70 after 120 seconds, far longer than any test lets a
+ * run last: a test that fails before it ends the run does not leave the program running forever.
+ */
+function runAtMost120Seconds() {
+  setTimeout(() => process.exit(70), 120_000);
+}
 
 switch (mode) {
   case 'lines':
@@ -24,11 +32,11 @@ switch (mode) {
   case 'ignore-sigterm':
     process.on('SIGTERM', () => console.log('SIGTERM ignored'));
     console.log('ready');
-    setInterval(() => {}, 60_000);
+    runAtMost120Seconds();
     break;
   case 'hang':
     console.log('ready');
-    setInterval(() => {}, 60_000);
+    runAtMost120Seconds();
     break;
   case 'describe': {
     const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => /^quorum_/i.test(name)));
