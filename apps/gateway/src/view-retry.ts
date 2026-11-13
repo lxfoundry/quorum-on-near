@@ -21,8 +21,9 @@ export interface ViewRetryOptions {
 
 /**
  * True for HTTP 429 (too many requests). near-api-js throws its own error class, which it does not
- * export, for an HTTP error status, with the status as the error's cause; it never retries a 429
- * itself, so each attempt here is one post.
+ * export, for an HTTP error status, with the status as the error's cause. It does not retry a 429
+ * itself, so an attempt that ends in a 429 ended on that post; the attempt may have posted several
+ * times first, since it retries a 503, 500 or 408 with its own backoff.
  */
 function isTooManyRequests(error: unknown): boolean {
   return error instanceof Error && error.cause === 429;
