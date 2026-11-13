@@ -98,6 +98,7 @@ describe('the demo controls', () => {
   });
 
   it('read GET /demo only when the gateway says its demo is on', () => {
-    expect(app).toMatch(/if \(!config\.demo\) \{[^}]*\}\s*try \{\s*demoStatus = parseDemoStatus\(await getJson\('\/demo'\)\);/);
+    expect(app.split("getJson('/demo')")).toHaveLength(2);
+    expect(app).toMatch(/async function refreshDemo\(config\) \{\s*if \(!config\.demo\) \{[^}]*return;\s*\}[^]*?parseDemoStatus\(await getJson\('\/demo'\)\)/);
   });
 });

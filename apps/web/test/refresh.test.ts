@@ -862,8 +862,8 @@ describe('the demo controls', () => {
   it.each([
     ['demo-fills', 'fills'],
     ['demo-fails', 'fails'],
-  ])('send, on a click on #%s, POST /demo/%s with the header X-Quorum-Demo: 1, after removing ?pool= from the URL, and keep both buttons disabled until it is answered', async (id, scenario) => {
-    const world = demoWorld();
+  ])('send, on a click on #%s, POST /demo/%s with the header X-Quorum-Demo: 1, after removing ?pool= from the URL, and keep both buttons disabled from then until a GET /demo reports no run in progress', async (id, scenario) => {
+    const world: World = { ...demoWorld(), demoAnswer: { status: 202, body: { scenario, startedAt: NOW } } };
     const base = worldFetch(world);
     /** The demo requests, each with the page's URL when it was sent. */
     const posts: { url: string; method?: string; headers?: Record<string, string>; href: string }[] = [];
@@ -871,7 +871,7 @@ describe('the demo controls', () => {
     const answered = new Promise<void>((resolve) => {
       answer = resolve;
     });
-    await openPage(async (url, init) => {
+    const page = await openPage(async (url, init) => {
       if (url.startsWith('/demo/')) {
         posts.push({ url, method: init?.method, headers: init?.headers, href: location.href });
         await answered;
@@ -879,6 +879,8 @@ describe('the demo controls', () => {
       return base(url, init);
     }, '?pool=3');
     el(id).listeners.get('click')?.();
+    // From the click on, GET /demo answers the run it started, as the gateway does.
+    world.demoStatus = { status: 200, body: { ...DEMO_IDLE, running: true, scenario, startedAt: NOW, runsToday: 1 } };
     expect(replaced).toEqual(['http://localhost:8402/']);
     expect(posts).toEqual([{ url: `/demo/${scenario}`, method: 'POST', headers: { 'X-Quorum-Demo': '1' }, href: 'http://localhost:8402/' }]);
     expect(button('demo-fills').disabled).toBe(true);
@@ -886,9 +888,75 @@ describe('the demo controls', () => {
     answer();
     await settled();
     expect(el('demo-line').textContent).toBe(STARTED);
+    expect(button('demo-fills').disabled).toBe(true);
+    expect(button('demo-fails').disabled).toBe(true);
+    // The run ends, and the next refresh's GET /demo says so.
+    world.demoStatus = {
+      status: 200,
+      body: { ...DEMO_IDLE, last: { scenario, startedAt: NOW, endedAt: NOW, exitCode: 0, signal: null }, runsToday: 1 },
+    };
+    await page.refresh();
     expect(button('demo-fills').disabled).toBe(false);
+    expect(button('demo-fails').disabled).toBe(false);
     expect(posts).toHaveLength(1);
   });
+
+  it.each([
+    ['202', { status: 202, body: { scenario: 'fills', startedAt: NOW } }, STARTED, 'fills', NOW],
+    [
+      '409 demo_running',
+      { status: 409, body: { error: 'demo_running', scenario: 'fails', startedAt: NOW - 60_000 } },
+      'A run is already in progress. This page follows its pool once it opens.',
+      'fails',
+      NOW - 60_000,
+    ],
+  ])(
+    'keep both buttons disabled after a click answered %s during a refresh, whose GET /demo, sent before the answer, cannot enable them again',
+    async (_kind, demoAnswer, answerLine, scenario, startedAt) => {
+      const world: World = { ...demoWorld(), demoAnswer };
+      const base = worldFetch(world);
+      const hold = { on: false, release: (): void => {} };
+      const page = await openPage(async (url, init) => {
+        if (url !== '/demo' || !hold.on) return base(url, init);
+        // Answered as the gateway stood when it was sent, before the click, but delivered only on release.
+        const answer = base(url, init);
+        await new Promise<void>((resolve) => {
+          hold.release = resolve;
+        });
+        return answer;
+      });
+      hold.on = true;
+      const inFlight = page.refresh();
+      await settled();
+      hold.on = false;
+      el('demo-fills').listeners.get('click')?.();
+      await settled();
+      const arrived = Date.now();
+      expect(el('demo-line').textContent).toBe(answerLine);
+      expect(button('demo-fills').disabled).toBe(true);
+      expect(button('demo-fails').disabled).toBe(true);
+      // The refresh's GET /demo arrives after the answer, saying that no run is in progress.
+      hold.release();
+      await inFlight;
+      await settled();
+      expect(button('demo-fills').disabled).toBe(true);
+      expect(button('demo-fails').disabled).toBe(true);
+      // Once the answer's 10 seconds are over, the demo line names the run the answer reported.
+      const timer = timeouts.find((timeout) => timeout.ms === 10_000);
+      if (timer === undefined) throw new Error('app.js sets no 10-second timer after the answer');
+      vi.setSystemTime(arrived + 10_000);
+      timer.run();
+      expect(el('demo-line').textContent).toBe(`A ${scenario} run started at ${new Date(startedAt).toLocaleTimeString()} is in progress.`);
+      // A GET /demo sent after the answer reports that the run has ended.
+      world.demoStatus = {
+        status: 200,
+        body: { ...DEMO_IDLE, last: { scenario, startedAt, endedAt: arrived + 10_000, exitCode: 0, signal: null }, runsToday: 1 },
+      };
+      await page.refresh();
+      expect(button('demo-fills').disabled).toBe(false);
+      expect(button('demo-fails').disabled).toBe(false);
+    },
+  );
 
   it("show the click's answer on the demo line for 10 seconds from when it arrived, then what GET /demo says", async () => {
     const world = demoWorld();

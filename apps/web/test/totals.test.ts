@@ -27,6 +27,7 @@ import {
   poolToShow,
   poolTotals,
   readAll,
+  statusAfterAnswer,
   txUrl,
   viewRequest,
   viewResult,
@@ -949,6 +950,49 @@ describe('parseDemoAnswer', () => {
     ['an error that is not text', 409, { error: 409 }],
   ])('gives a null error for %s', (_kind, status, body) => {
     expect(parseDemoAnswer(status, body)).toEqual({ status, error: null });
+  });
+});
+
+describe('statusAfterAnswer', () => {
+  /** When the run a click's answer reports started: 07:59:58. */
+  const STARTED_AT = DEMO_NOW - 2_000;
+
+  it('takes a 202 for the run it started: in progress, with its scenario and start, and counted today, the rest as GET /demo last said', () => {
+    expect(statusAfterAnswer(ENDED, 202, { scenario: 'fills', startedAt: STARTED_AT })).toEqual({
+      ...ENDED,
+      running: true,
+      scenario: 'fills',
+      startedAt: STARTED_AT,
+      runsToday: 2,
+    });
+  });
+
+  it('takes a 409 demo_running for the run it names: in progress, with its scenario and start, and already counted', () => {
+    expect(statusAfterAnswer(ENDED, 409, { error: 'demo_running', scenario: 'fails', startedAt: STARTED_AT })).toEqual({
+      ...ENDED,
+      running: true,
+      scenario: 'fails',
+      startedAt: STARTED_AT,
+    });
+  });
+
+  it.each([
+    ['409 pool_open', 409, { error: 'pool_open', poolId: 3 }],
+    ['429', 429, { error: 'demo_limit' }],
+    ['503', 503, { error: 'chain_unavailable' }],
+    ['403', 403, { error: 'demo_header_required' }],
+    ['404, the demo being off', 404, { error: 'not_found' }],
+    ['a 409 with a run but another error', 409, { error: 'conflict', scenario: 'fills', startedAt: STARTED_AT }],
+    ['a 202 with no JSON body', 202, null],
+    ['a 202 with an unknown scenario', 202, { scenario: 'drains', startedAt: STARTED_AT }],
+    ['a 202 with a start time as text', 202, { scenario: 'fills', startedAt: String(STARTED_AT) }],
+    ['a 409 demo_running with no start time', 409, { error: 'demo_running', scenario: 'fills' }],
+  ])('is null for %s, which reports no run', (_kind, status, body) => {
+    expect(statusAfterAnswer(ENDED, status, body)).toBeNull();
+  });
+
+  it('is null when GET /demo could not be read, which leaves nothing to complete the run with', () => {
+    expect(statusAfterAnswer(null, 202, { scenario: 'fills', startedAt: STARTED_AT })).toBeNull();
   });
 });
 

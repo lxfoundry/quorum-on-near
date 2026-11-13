@@ -32,6 +32,7 @@ import {
   poolToShow,
   poolTotals,
   readAll,
+  statusAfterAnswer,
   viewRequest,
   viewResult,
   withoutPoolParam,
@@ -146,10 +147,18 @@ let polling = false;
 let failing = false;
 let rpcId = 0;
 /**
- * The last `GET /demo`, or null when it could not be read or the demo is off.
+ * The last `GET /demo`, or null when it could not be read or the demo is off. A click answered with a
+ * run sets it to that run in progress, until a `GET /demo` sent after the answer arrives.
  * @type {DemoStatus | null}
  */
 let demoStatus = null;
+/** The `GET /demo` reads started so far: each read is numbered with this count when it starts. */
+let demoReadsStarted = 0;
+/**
+ * The reads numbered up to this one are stale, and their answers are dropped: `demoStatus` holds a
+ * read started later, or a click's answer that arrived after they were sent.
+ */
+let staleDemoReads = 0;
 /**
  * The last click on a demo button, once its answer (or its failure) has arrived.
  * @type {DemoClick | null}
@@ -474,7 +483,8 @@ async function tick() {
 /**
  * Reads `GET /demo` when the gateway's demo is on. Never throws: a read that fails, or returns
  * something malformed, leaves `demoStatus` null, which the demo line reports and which disables the
- * buttons.
+ * buttons. An answer is dropped when `demoStatus` already holds something newer: a read started
+ * later, or a click's answer that arrived after this read was sent.
  *
  * @param {PageConfig} config
  */
@@ -483,11 +493,18 @@ async function refreshDemo(config) {
     demoStatus = null;
     return;
   }
+  demoReadsStarted += 1;
+  const read = demoReadsStarted;
+  /** @type {DemoStatus | null} */
+  let status;
   try {
-    demoStatus = parseDemoStatus(await getJson('/demo'));
+    status = parseDemoStatus(await getJson('/demo'));
   } catch {
-    demoStatus = null;
+    status = null;
   }
+  if (read <= staleDemoReads) return;
+  staleDemoReads = read;
+  demoStatus = status;
 }
 
 /**
@@ -511,7 +528,9 @@ function renderDemo() {
 /**
  * A click on a demo button. It first removes `?pool=` from the URL, so that the page follows the
  * provider's newest pool, which is the one the run opens; then it asks the gateway to start the run,
- * shows the answer on the demo line for DEMO_ANSWER_MS, and refreshes.
+ * shows the answer on the demo line for DEMO_ANSWER_MS, and refreshes. An answer that reports a run
+ * (a `202`, or a `409` `demo_running`) stands for the demo's status, which keeps the buttons
+ * disabled, until a `GET /demo` sent after it arrives.
  *
  * @param {DemoScenario} scenario
  */
@@ -522,18 +541,28 @@ async function startRun(scenario) {
   const request = demoRequest(scenario);
   /** @type {DemoAnswer | null} */
   let answer = null;
+  /** @type {DemoStatus | null} */
+  let running = null;
   try {
     const response = await fetch(request.url, {
       method: request.method,
       headers: request.headers,
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
-    answer = parseDemoAnswer(response.status, await response.json().catch(() => null));
+    /** @type {unknown} */
+    const body = await response.json().catch(() => null);
+    answer = parseDemoAnswer(response.status, body);
+    running = statusAfterAnswer(demoStatus, response.status, body);
   } catch {
     answer = null;
   }
   demoSending = false;
   demoClick = { at: Date.now(), answer };
+  if (running !== null) {
+    demoStatus = running;
+    // Every read already on its way was sent before this answer.
+    staleDemoReads = demoReadsStarted;
+  }
   renderDemo();
   setTimeout(renderDemo, DEMO_ANSWER_MS);
   void tick();

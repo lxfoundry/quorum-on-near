@@ -3,7 +3,8 @@
  * view call and the decoding of its answer, structural checks of everything read from the RPC and
  * the gateway, the ledger totals, the buyer rows, the explorer links, the choice of pool, the notice
  * shown for another seller's pool, the countdown, and the demo controls: the request a demo button
- * sends, the page URL without `?pool=`, whether the buttons are shown and enabled, and the demo line.
+ * sends, the run its answer reports, the page URL without `?pool=`, whether the buttons are shown
+ * and enabled, and the demo line.
  * Amounts are decimal strings in base units at the edges and `bigint` inside.
  */
 
@@ -840,6 +841,32 @@ export function parseDemoStatus(value) {
  */
 export function parseDemoAnswer(status, body) {
   return { status, error: isObject(body) && typeof body.error === 'string' ? body.error : null };
+}
+
+/**
+ * The demo's status once a click is answered with a run: a `202` starts one, and a `409`
+ * `demo_running` names the one in progress, each with its `scenario` and `startedAt`. Either way that
+ * run is now in progress, whatever the last `GET /demo` (`last`) said, and a `202` counts one more run
+ * today; the rest is as `last` said. Null for any other answer, for one without a valid scenario and
+ * start, and when `last` is null, which leaves nothing to complete the run with (and already disables
+ * the buttons).
+ *
+ * @param {DemoStatus | null} last
+ * @param {number} status
+ * @param {unknown} body the answer's JSON body, or null when it had none
+ * @returns {DemoStatus | null}
+ */
+export function statusAfterAnswer(last, status, body) {
+  if (last === null || !isObject(body) || !isScenario(body.scenario) || !isCount(body.startedAt)) return null;
+  const started = status === 202;
+  if (!started && !(status === 409 && body.error === 'demo_running')) return null;
+  return {
+    ...last,
+    running: true,
+    scenario: body.scenario,
+    startedAt: body.startedAt,
+    runsToday: started ? last.runsToday + 1 : last.runsToday,
+  };
 }
 
 /**
