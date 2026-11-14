@@ -9,6 +9,9 @@ escrow contract (Rust), an HTTP 402 gateway that relays buyers' payments and iss
 swarm of scripted buyer agents, an MCP server through which an LLM agent buys seats, and a
 read-only live page.
 
+**Try it now, with nothing to install:** <https://quorum-on-near-demo.fly.dev> runs the whole flow on
+NEAR testnet when you click a button. See [level 0](#0-the-hosted-demo-nothing-to-install) below.
+
 ## What is simulated, and what is real
 
 **The provider is simulated. The money flow is not.**
@@ -99,12 +102,56 @@ code is in section 6 of the [design spec](docs/specs/2026-11-09-quorum-on-near-d
 
 | Level | Runs on | Needs |
 |---|---|---|
+| 0. Hosted demo | Any browser | Nothing |
 | a. Unit tests | Any OS, Windows included | Node 22.22.2 or later; pnpm 10.23.0 through Corepack; Rust through rustup |
 | b. Local sandbox | Linux (x86_64, aarch64), macOS on Apple silicon, or WSL2; glibc 2.38 or later (Ubuntu 24.04 or later) | Level a, plus cargo-near 0.23.0 |
 | c. NEAR testnet | As level b | Level b, plus near-cli-rs, a browser for Circle's faucet, and Claude Code for the MCP step |
 
 Rust 1.99.1, with the `wasm32-unknown-unknown` target, is pinned in `rust-toolchain.toml`; pnpm in
 `package.json` (`packageManager`). Node runs the TypeScript sources directly: there is no build step.
+
+### 0. The hosted demo (nothing to install)
+
+<https://quorum-on-near-demo.fly.dev> is the live page, served by this repository's gateway on one
+Fly.io machine, against NEAR testnet. Its accounts are sub-accounts of `quorum-hosted-7316.testnet`;
+the pools contract is
+[`pools.quorum-hosted-7316.testnet`](https://testnet.nearblocks.io/address/pools.quorum-hosted-7316.testnet),
+and the token is Circle's testnet USDC. The banner repeats what is simulated: the provider and its
+access. The money is real USDC on testnet.
+
+| Do | See |
+|---|---|
+| Open the page. | The banner, the provider's newest pool (or "The provider has not opened a pool yet."), two enabled buttons, and the line "Start a run to watch a pool from its first seat." |
+| Click **Start a pool that fills**. | The buttons disable and the demo line says a run started. A pool opens, and its bar fills as the scripted buyers commit, one row each in the buyers table. After about two and a half minutes the pool reads "Settled: the seller is paid", and "Paid to the seller" in the ledger is the seats' price plus the bonus. |
+| Once the run has ended, click **Start a pool that fails**. | A pool that only some of the buyers commit to. When its 3-minute deadline has passed, the gateway's keeper refunds it: the pool reads "Refunded", each buyer's row reads "refunded, bonus …", and the seller keeps only the dust. The run takes about three and a half minutes. |
+| Follow a `commit`, `settle` or `refund` link. | The transaction on NEAR testnet's explorer (nearblocks). |
+
+When a run ends, the demo line reads "The last run (fills) ended at <time>."
+
+Three transactions from the hosted runs, each checked on chain:
+
+- [A commit](https://testnet.nearblocks.io/txns/3wnFLhASgttWsyxSGLpKPNc5SUvXMmzgQsf18rkXVmLW): the
+  relayer signs and pays the gas; inside it is `buyer-05`'s NEP-366 delegate action, a
+  `ft_transfer_call` on the token that takes 12 seats in pool 6.
+- [A settlement](https://testnet.nearblocks.io/txns/HAZNvusXgffrMDgZMoQeTdSHzongLawHcfEEn7uTmf6x):
+  `settle` on pool 6, which paid the seller 0.036288 USDC, the seats' 0.034560 plus the 0.001728
+  bonus.
+- [A refund](https://testnet.nearblocks.io/txns/DAtK6zM2s2vZT7Rfwa6KZCTuP6tMHK8PvihFp3TvXQv1): one
+  `refund` on pool 5 that returned six buyers their seats' price and their shares of the bonus, and
+  paid the seller the 0.000072 USDC of dust.
+
+Measured with the hosted deployment's image, in a local rehearsal and on the Fly.io machine: a run
+that fills takes about two and a half minutes (2 min 26 s and 2 min 47 s) and costs about 0.041 NEAR,
+mostly storage on the pools account that is never freed; a run that fails takes about three and a half
+minutes and costs about 0.022 NEAR. In the rehearsal's checks, each commit burned at most 7.15 Tgas
+(the check's limit is 50 Tgas), and a payout's `ft_transfer` at most 2.29 Tgas with its callback at
+most 1.48 Tgas.
+
+The hosted demo has limits of its own. It runs one swarm run at a time (the first click wins; the
+other visitors watch), at most 100 a day, counted in memory and so restarted with the gateway. Its
+testnet NEAR and USDC are refilled by hand. If its RPC endpoint refuses reads, which providers do
+above a requests-per-second limit, a run can end early, and the page then shows the same line as for
+dry funds: "The last run ended with an error. Its testnet funds may need a refill."
 
 ### a. Unit tests (any OS)
 
@@ -370,6 +417,9 @@ run `claude mcp remove --scope local quorum-buyer`. A later session runs setup a
 - **The quorum is soft**: the seller can commit from a second account to top up a shortfall.
 - **In-flight holds live in memory** (gateway and MCP server); **one swarm at a time** per network
   and parent; **one MCP server per spend file**.
+- **The hosted demo** spends testnet NEAR that is refilled by hand, runs one swarm run at a time on
+  one machine, and shares one RPC endpoint's rate limit between the page, the keeper and the relay;
+  see [level 0](#0-the-hosted-demo-nothing-to-install).
 
 The full list, with the reasons, is in section 12 of the
 [design spec](docs/specs/2026-11-09-quorum-on-near-design.md#12-known-limits).

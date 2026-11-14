@@ -379,7 +379,9 @@ Done once, in this order:
   sites. It does not stop a script that sends the header itself.
 - **NEAR runs out before the cap does.** Pool and seat storage is never freed (design spec, section
   12). After the first setup the parent holds little more than 1 NEAR, and a refill from NEAR's web
-  faucet is 5 NEAR. The NEAR one run costs is measured in the rehearsal (section 7.5).
+  faucet is 5 NEAR. In the rehearsal (section 7.5), a `fills` run cost about 0.041 NEAR and a `fails`
+  run about 0.022 NEAR: what the parent, the relayer and the pools account had available for transfer
+  before the run, less what they had after it. A 5 NEAR refill therefore lasts about 121 runs.
 - **USDC drains** by the amount each run that fills moves to the provider, until `swarm reset`
   returns it (section 7.6).
 - **Every pool ever opened is read again and again.** The keeper (every 5 seconds by default),
