@@ -9,7 +9,7 @@ escrow contract (Rust), an HTTP 402 gateway that relays buyers' payments and iss
 swarm of scripted buyer agents, an MCP server through which an LLM agent buys seats, and a
 read-only live page.
 
-**Try it now, with nothing to install:** <https://quorum-on-near-demo.fly.dev> runs the whole flow on
+**Try it now, with nothing to install:** <https://quorum-on-near-demo.lxfoundry.ai> runs the whole flow on
 NEAR testnet when you click a button. See [level 0](#0-the-hosted-demo-nothing-to-install) below.
 
 ## What is simulated, and what is real
@@ -112,7 +112,7 @@ Rust 1.99.1, with the `wasm32-unknown-unknown` target, is pinned in `rust-toolch
 
 ### 0. The hosted demo (nothing to install)
 
-<https://quorum-on-near-demo.fly.dev> is the live page, served by this repository's gateway on one
+<https://quorum-on-near-demo.lxfoundry.ai> is the live page, served by this repository's gateway on one
 Fly.io machine, against NEAR testnet. Its accounts are sub-accounts of `quorum-hosted-7316.testnet`;
 the pools contract is
 [`pools.quorum-hosted-7316.testnet`](https://testnet.nearblocks.io/address/pools.quorum-hosted-7316.testnet),
