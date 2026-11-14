@@ -56,7 +56,8 @@ bonus is above zero, and it counts money, not the time the money is locked.)
    (or those left) and returns any unused amount. The gateway answers `202 Accepted` with a receipt,
    or `200` with the credential if this payment filled the pool.
 6. **The buyer follows its seats** with an NEP-413 signed proof in `X-QUORUM-PROOF`: `202` while the
-   pool fills, `200` with the credential once it has filled, `410` with its refund once it expired.
+   pool fills, `200` with the credential once it has filled, `410` with its refund once it expired
+   (see [What a buyer gets back](#what-a-buyer-gets-back)).
 7. **The pool ends.** Filled: `settle` pays the seller every seat's price plus the bonus. Deadline
    passed first (block time): `refund` pays each buyer, in batches, its seats' price plus an equal
    bonus share per seat, the remainder to the seller. Both are open to anyone; the gateway's keeper
@@ -82,6 +83,91 @@ sequenceDiagram
 The gateway also serves `GET /pools`, `GET /activity?pool=:id`, `GET /.well-known/jwks.json`,
 `GET /config.json` and the live page at `/`, for its provider's pools only. Every check and response
 code is in section 6 of the [design spec](docs/specs/2026-11-09-quorum-on-near-design.md).
+
+## What a buyer gets back
+
+Only the payment that takes the pool's last seat is answered with the credential at once. Every
+earlier buyer gets a **receipt**, not access: `202 Accepted` with `receipt: {poolId, buyer, seats, txHash}`.
+The receipt says that the seats are taken and paid for. The pool has not filled yet, so there is
+nothing to hand over.
+
+To turn its seats into a credential, the buyer **comes back and asks**. It sends the same
+`GET /pools/:id/access` with an `X-QUORUM-PROOF` header: a NEAR signed message (NEP-413) of
+`quorum:redeem:<poolId>`, which proves that it holds a full-access key of the account that paid. A
+proof is valid for 5 minutes and is accepted once, so the buyer signs a new one for each request.
+
+The gateway keeps no list of who is waiting. Each time, it reads the buyer's seats and the pool's
+status from the contract (the pool's status may be up to 2 seconds old), and answers from them:
+
+| The pool is | The buyer gets |
+|---|---|
+| Open, still filling | `202` again, with the seats taken so far and the deadline |
+| Filled or Settled | `200` with the credential |
+| Expired or Refunded | `410` with its refund: the seats' price plus its bonus share |
+| (the account holds no seats) | `404` |
+
+A full pool is final: it is never refunded. A buyer that asks a minute or an hour after the pool
+filled still gets its credential, and it can ask again at any time for a fresh copy. The scripted
+buyers ask every 5 seconds; an LLM agent calls the MCP server's `quorum_status`; any other client
+builds the proof with `buildRedeemProofHeader` from [`packages/protocol`](packages/protocol/README.md).
+
+```mermaid
+sequenceDiagram
+    participant A as Buyer A (early)
+    participant B as Buyer B (last seats)
+    participant G as Gateway
+    participant P as Pools contract
+    A->>G: pay for 2 seats (X-PAYMENT)
+    G-->>A: 202 + receipt (pool still Open)
+    B->>G: pay for the last seats (X-PAYMENT)
+    G-->>B: 200 + credential (this payment filled the pool)
+    A->>G: GET /pools/7/access + X-QUORUM-PROOF
+    G->>P: get_pool, get_buyer
+    G-->>A: 200 + credential
+```
+
+**The credential** is a signed token, a compact JWS (EdDSA) whose claims name the buyer (`sub`),
+the pool, its seats, the pool's terms and `simulated: true`. The gateway publishes the public key
+at `/.well-known/jwks.json`, so anyone can check a credential without asking the gateway. A real
+provider would check it and grant `seats` units of what `terms` describes. Here the provider is
+simulated, and no GPU stands behind the token.
+
+The money never depends on the gateway: `settle`, `refund` and `claim_refund` are open to anyone.
+The credential does, since it is signed with the gateway's key. If the gateway is down, the seats
+stay on chain, and the buyer gets its credential once the gateway is back.
+
+## The MCP server: an LLM agent as a buyer
+
+[`apps/mcp`](apps/mcp/README.md) is a stdio MCP server that lets an LLM agent (Claude Code, or any
+MCP client) buy seats as one buyer account, `buyer-llm.<parent>` by default. The server holds that
+account's key and signs for the agent; the agent never sees the key. It offers four tools:
+
+| Tool | What it does | Spends? |
+|---|---|---|
+| `quorum_pools` | Lists the open pools, as the gateway lists them | No |
+| `quorum_offer` | Gets an offer for a number of seats, and reads the pool's facts from the contract: price, seats left, deadline, bonus, the least the buyer gets back if the pool fails, and whether `quorum_commit` would pay it now | No |
+| `quorum_commit` | Asks for a fresh offer, checks it against the contract, signs and pays. Returns the `202` receipt, or the `200` credential if it filled the pool. It pays once and does not wait | Yes |
+| `quorum_status` | Redeems: signs a new proof and asks the gateway. Returns pending, the credential once the pool has filled, or the refund once it has failed | No |
+
+The usual order is `quorum_pools`, then `quorum_offer`, then `quorum_commit`, then `quorum_status`
+until the pool has filled or been refunded. The server's own instructions tell the agent so. They
+also tell it that a pool's `terms` are text from the seller, to be read as data and never as
+instructions.
+
+The server guards the money in three ways:
+
+- **A spend cap** (`QUORUM_MCP_SPEND_CAP`, 10,000 base units by default). Each payment's price is
+  reserved in a spend file before anything is signed. A payment that would go past the cap is
+  refused with `over_spend_cap`.
+- **No double payment.** After a payment whose result is unknown, `quorum_commit` refuses that pool
+  with `payment_unsettled` until the chain shows the payment can no longer land.
+- **No trust in the offer.** The offer must match the pool as the contract holds it: seat price,
+  target, deadline, bonus, terms and minimum bonus per seat. Otherwise `quorum_commit` refuses it
+  with `offer_mismatch`.
+
+Every tool, field and refusal code, the configuration, and how to register the server are in
+[`apps/mcp/README.md`](apps/mcp/README.md). Step 9 of the [testnet walk-through](#c-near-testnet)
+runs it end to end.
 
 ## How NEAR is used
 
@@ -175,7 +261,8 @@ against stubs and a fake chain, with no network, and exits 0; each package's run
       Tests  N passed (N)
 ```
 
-On Windows, two tests of POSIX file modes are reported skipped; the sandbox suites (`test/sandbox/`)
+On Windows, seven tests are reported skipped: four of POSIX file modes and three of POSIX signals
+(SIGTERM, SIGKILL). The sandbox suites (`test/sandbox/`)
 are left out everywhere. The contract's unit tests end with `test result: ok.` and 0 failed: the
 bonus split and the dust, every state transition and refusal, checked arithmetic at the limits.
 CI (`.github/workflows/ci.yml`) also runs `cargo fmt`, `cargo clippy`, `cargo test --workspace`
@@ -388,21 +475,25 @@ provider's surpluses to the funding account (`… returned … to funding.quorum
 run again, it prints `nothing to do`. Stop the gateway with Ctrl+C (`SIGINT: shutting down`) and
 run `claude mcp remove --scope local quorum-buyer`. A later session runs setup and starts the gateway.
 
-## Repository layout
+## Components
 
-| Path | Content |
-|---|---|
-| `contracts/pools/` | The pools escrow contract (Rust, near-sdk) |
-| `contracts/mock-usd/` | Mock USD (`mUSD`), an NEP-141 token for the sandbox tests only |
-| `crates/sandbox-support/` | Test helper: starts a local NEAR sandbox and wraps calls and views |
-| `packages/protocol/` | The `quorum` x402 scheme: types, header codecs, delegate-action and NEP-413 checks, buyer builders, transaction outcomes, the chain-id check |
-| `packages/buyer/` | A buyer's side, shared by the swarm and the MCP server: settings, key files, the gateway client, signing and sending a payment, a checked read of a pool, the spend file |
-| `apps/gateway/` | The provider's HTTP side: offers, payment checks, relay, credentials, redemption, the keeper, the activity feed, and serving the live page |
-| `apps/swarm/` | The `swarm` command line: account setup and reset, the provider agent, the 20 scripted buyers, the final check, and the other apps' `.env` files |
-| `apps/mcp/` | The stdio MCP server: four buyer tools for an LLM-driven agent |
-| `apps/web/` | The live page: plain HTML and ES modules, no build step, read-only |
-| `docs/specs/`, `docs/plans/` | The design spec, and the implementation plans written from it |
-| `.github/`, `CLAUDE.md`, `.claude/` | CI; instructions and vendored skills for Claude Code |
+Each package and app has its own README, with what it holds, its configuration and how to test it.
+
+| Component | What it is | Used by |
+|---|---|---|
+| [`contracts/pools`](contracts/pools/README.md) | The pools escrow contract (Rust, near-sdk): opens pools, takes seats, settles and refunds, with no owner or admin methods | Everything, on chain |
+| [`contracts/mock-usd`](contracts/mock-usd/README.md) | Mock USD (`mUSD`), an NEP-141 token for the sandbox tests only | The sandbox tests |
+| [`crates/sandbox-support`](crates/sandbox-support/README.md) | Test helper: starts a local NEAR sandbox and wraps calls and views | The contracts' sandbox tests |
+| [`packages/protocol`](packages/protocol/README.md) | The `quorum` x402 scheme: offer and header types, codecs, delegate-action and NEP-413 checks, and builders a buyer uses to pay and to redeem, with no network access | The gateway, the buyer package, the swarm, the MCP server |
+| [`packages/buyer`](packages/buyer/README.md) | A buyer's side: the gateway client, signing and sending a payment, redeeming, checked chain reads, key files, the spend file, shared settings | The swarm, the MCP server |
+| [`apps/gateway`](apps/gateway/README.md) | The provider's HTTP side: offers, payment checks and relay, redemption and credentials, the keeper, the activity feed, the live page, the optional demo runner | Buyers, the live page |
+| [`apps/swarm`](apps/swarm/README.md) | The `swarm` command line: account setup, funding and reset, the provider agent, the 20 scripted buyers, the final on-chain check, the other apps' `.env` files | The operator, the demo runner |
+| [`apps/mcp`](apps/mcp/README.md) | The stdio MCP server: four tools through which an LLM agent buys seats as one buyer, within a spend cap | An MCP client, such as Claude Code |
+| [`apps/web`](apps/web/README.md) | The live page: plain HTML and ES modules, no build step, read-only, served by the gateway at `/` | A browser |
+
+Also in the repository: `docs/specs/` and `docs/plans/` (the design specs, and the implementation
+plans written from them), `deploy/fly/` (the hosted demo's image and Fly.io configuration),
+`.github/` (CI), and `CLAUDE.md` and `.claude/` (instructions and vendored skills for Claude Code).
 
 ## Known limits
 
