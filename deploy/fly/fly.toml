@@ -9,6 +9,16 @@
 #   QUORUM_RPC_URL       the gateway's RPC endpoint (reads, relayer, keeper, keys from-seed at boot)
 #   QUORUM_DEMO_RPC_URL  optional: the endpoint a demo run uses; unset, a run uses the gateway's
 # An RPC endpoint is a secret because a provider may put its key in the URL's path.
+#
+# Custom domain. The app is served at quorum-on-near-demo.lxfoundry.ai. To set up or move it:
+#   1. In the domain's DNS, add a CNAME for the name to <app>.fly.dev, DNS only (not proxied), so that
+#      Fly's own validation reaches the app and the certificate is the one Fly issues.
+#   2. fly certs add <name> -a <app>, then fly certs setup <name> -a <app> to read the records Fly
+#      wants. Add its _acme-challenge CNAME, also DNS only.
+#   3. fly certs check <name> -a <app> until the certificate is issued. A failed validation counts
+#      against Let's Encrypt's limit of 5 per hostname per hour: fix DNS, then wait before checking again.
+#   4. Set QUORUM_GATEWAY_URL below to https://<name> and deploy while no demo run is active
+#      (GET /demo answers running:false).
 
 app = "quorum-on-near-demo"
 primary_region = "lhr"
@@ -33,8 +43,10 @@ kill_timeout = 300
   # the RPC endpoint never reaches a browser.
   QUORUM_RPC_PASSTHROUGH = "true"
   # The deployment's public URL: the credential issuer, the recipient that redemption proofs name, and
-  # where a demo run's buyers reach the gateway. Its host follows the app name.
-  QUORUM_GATEWAY_URL = "https://quorum-on-near-demo.fly.dev"
+  # where a demo run's buyers reach the gateway. Its host is the custom domain (see the note at the top
+  # of this file), not the app's fly.dev name. A redemption proof must name this host as its recipient,
+  # so a buyer's QUORUM_GATEWAY_URL has to be the same URL.
+  QUORUM_GATEWAY_URL = "https://quorum-on-near-demo.lxfoundry.ai"
   # The gateway's port; [http_service] internal_port is the same.
   QUORUM_GATEWAY_PORT = "8402"
   # The deployment's own parent account, used for nothing else.
