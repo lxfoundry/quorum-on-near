@@ -12,6 +12,16 @@ read-only live page.
 **Try it now, with nothing to install:** <https://quorum-on-near-demo.lxfoundry.ai> runs the whole flow on
 NEAR testnet when you click a button. See [level 0](#0-the-hosted-demo-nothing-to-install) below.
 
+## Demo
+
+<p align="center">
+  <a href="https://youtu.be/S6sHWdl3Kus"><img src="docs/media/video-thumbnail.png" alt="The Quorum on NEAR demo video: the title, Quorum on NEAR, a threshold group purchase with a refund bonus, above a grid of 192 seats, all taken" width="720"></a>
+  <br>
+  <sub>The demo video (1 min 54 s, narrated): the problem, the x402 <code>quorum</code> scheme, a pool that
+  fills and one that is refunded, and the contract's states. Its screens are illustrations; the runs on
+  the live page are real transactions on NEAR testnet.</sub>
+</p>
+
 ## What is simulated, and what is real
 
 **The provider is simulated. The money flow is not.**
