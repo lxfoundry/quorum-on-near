@@ -1,0 +1,73 @@
+name: Bug report
+description: Report something that is broken or would cause a problem
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please never paste secret keys, seed phrases or `.env` contents.
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Pools contract (contracts/pools)
+        - Gateway (apps/gateway)
+        - Swarm (apps/swarm)
+        - MCP server (apps/mcp)
+        - Live page (apps/web)
+        - Protocol or buyer package (packages/)
+        - Documentation
+        - Other / not sure
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Include the exact error message if there is one.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run ...
+        2. See error
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: v0.1.0 or a commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: network
+    attributes:
+      label: Where did it happen?
+      options:
+        - Hosted demo
+        - Local sandbox tests
+        - NEAR testnet (own deployment)
+        - Unit tests only
+  - type: input
+    id: onchain
+    attributes:
+      label: Pool id or transaction hash
+      description: Optional, if the problem involves a pool or a transaction on NEAR testnet.
+  - type: input
+    id: env
+    attributes:
+      label: Environment
+      description: Optional. OS, Node, Rust and pnpm versions.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues
+          required: true
